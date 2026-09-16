@@ -1,3 +1,4 @@
+import CFNetwork
 import CryptoKit
 import Darwin
 import Foundation
@@ -13,6 +14,26 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
 
     public static var bundledExecutableURL: URL {
         Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/openclaw-mac-node-sidecar")
+    }
+
+    public static func requiresURLSessionProxy(for url: URL) -> Bool {
+        guard let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() else {
+            return false
+        }
+        let rawProxies = CFNetworkCopyProxiesForURL(url as CFURL, settings).takeRetainedValue()
+        guard let proxies = rawProxies as? [[AnyHashable: Any]] else {
+            return true
+        }
+        return self.requiresURLSessionProxy(proxies)
+    }
+
+    static func requiresURLSessionProxy(_ proxies: [[AnyHashable: Any]]) -> Bool {
+        proxies.contains { proxy in
+            guard let type = proxy[kCFProxyTypeKey as String] as? String else {
+                return true
+            }
+            return type != kCFProxyTypeNone as String
+        }
     }
 
     public init(executableURL: URL, fingerprint: String? = nil, tlsParams: GatewayTLSParams? = nil) {

@@ -9,13 +9,15 @@ import OSLog
 struct MacNodeGatewayTLSSessionCache {
     private struct Key: Equatable {
         let url: URL
+        let usesRustSidecar: Bool
         let required: Bool?
         let expectedFingerprint: String?
         let allowTOFU: Bool?
         let storeKey: String?
 
-        init(url: URL, params: GatewayTLSParams?) {
+        init(url: URL, usesRustSidecar: Bool, params: GatewayTLSParams?) {
             self.url = url
+            self.usesRustSidecar = usesRustSidecar
             self.required = params?.required
             self.expectedFingerprint = params?.expectedFingerprint
             self.allowTOFU = params?.allowTOFU
@@ -26,14 +28,27 @@ struct MacNodeGatewayTLSSessionCache {
     private var cachedKey: Key?
     private var cachedBox: WebSocketSessionBox?
 
-    mutating func sessionBox(url: URL, params: GatewayTLSParams?) -> WebSocketSessionBox {
-        let key = Key(url: url, params: params)
+    mutating func sessionBox(url: URL, params: GatewayTLSParams?) -> WebSocketSessionBox? {
+        let usesRustSidecar = !RustGatewayWebSocketSession.requiresURLSessionProxy(for: url)
+        guard usesRustSidecar || params != nil else {
+            self.invalidate()
+            return nil
+        }
+        let key = Key(url: url, usesRustSidecar: usesRustSidecar, params: params)
         if let cachedKey = self.cachedKey, cachedKey == key, let cachedBox = self.cachedBox {
             return cachedBox
         }
-        let box = WebSocketSessionBox(session: RustGatewayWebSocketSession(
-            executableURL: RustGatewayWebSocketSession.bundledExecutableURL,
-            tlsParams: params))
+        let box: WebSocketSessionBox
+        if usesRustSidecar {
+            box = WebSocketSessionBox(session: RustGatewayWebSocketSession(
+                executableURL: RustGatewayWebSocketSession.bundledExecutableURL,
+                tlsParams: params))
+        } else if let params {
+            box = WebSocketSessionBox(session: GatewayTLSPinningSession(params: params))
+        } else {
+            self.invalidate()
+            return nil
+        }
         self.cachedKey = key
         self.cachedBox = box
         return box
