@@ -17,14 +17,33 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
     }
 
     public static func requiresURLSessionProxy(for url: URL) -> Bool {
-        guard let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() else {
-            return false
+        guard let proxyLookupURL = self.proxyLookupURL(for: url),
+              let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue()
+        else {
+            return true
         }
-        let rawProxies = CFNetworkCopyProxiesForURL(url as CFURL, settings).takeRetainedValue()
+        let rawProxies = CFNetworkCopyProxiesForURL(proxyLookupURL as CFURL, settings).takeRetainedValue()
         guard let proxies = rawProxies as? [[AnyHashable: Any]] else {
             return true
         }
         return self.requiresURLSessionProxy(proxies)
+    }
+
+    static func proxyLookupURL(for url: URL) -> URL? {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        switch components.scheme?.lowercased() {
+        case "wss":
+            components.scheme = "https"
+        case "ws":
+            components.scheme = "http"
+        case "http", "https":
+            break
+        default:
+            return nil
+        }
+        return components.url
     }
 
     static func requiresURLSessionProxy(_ proxies: [[AnyHashable: Any]]) -> Bool {
