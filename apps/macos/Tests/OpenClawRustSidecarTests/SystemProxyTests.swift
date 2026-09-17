@@ -1,4 +1,5 @@
 import CFNetwork
+import Foundation
 import Testing
 @testable import OpenClawRustSidecar
 
