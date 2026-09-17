@@ -38,6 +38,7 @@ import {
   startupCorpusTestFiles,
   stateStartupCorpusTestFiles,
 } from "../vitest/vitest.startup-corpus-paths.mjs";
+import { assertStartupCorpusCommand } from "./ci-startup-corpus.test-support.js";
 import {
   AMBIGUOUS_MAIN_PUSH_DIAGNOSTIC,
   CACHE_SAVE_V5,
@@ -4526,6 +4527,38 @@ describe("ci workflow guards", () => {
         }
       }
     }
+  });
+
+  it.each([
+    { cpus: 1, slots: 1 },
+    { cpus: 2, slots: 1 },
+    { cpus: 4, slots: 1 },
+    { cpus: 8, slots: 2 },
+    { cpus: 32, slots: 5 },
+    { cpus: 2, slots: 1, fail: "1/4" },
+  ])("bounds frozen legacy startup corpus admission: %j", (scenario) => {
+    const step = readCiWorkflow().jobs["checks-fast-core"].steps.find(
+      (candidate: WorkflowStep) => candidate.name === "Check startup corpus",
+    );
+    const script = expectDefined(step?.run, "startup corpus command").replace(
+      /\$\{\{[\s\S]*?\}\}/gu,
+      (expression) =>
+        String(
+          evaluateWorkflowExpression(expression, {
+            eventName: "workflow_dispatch",
+            repository: "openclaw/openclaw",
+            releaseGate: true,
+            frozenTarget: true,
+            runAttempt: 1,
+          }),
+        ),
+    );
+    assertStartupCorpusCommand(
+      script,
+      tempDirs.make("startup-corpus-admission-"),
+      { ...scenario, frozenTarget: true },
+      runWorkflowShellScript,
+    );
   });
 
   it("runs all baseline ratchets against the exact tested tree", () => {
