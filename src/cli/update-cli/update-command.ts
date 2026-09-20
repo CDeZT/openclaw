@@ -406,106 +406,114 @@ async function updateCommandInternal(
     mutableUpdatePrepared = true;
   };
 
-  const execution = await executeMutableUpdate({
-    ...target,
-    installKind,
-    timeoutMs,
-    updateStepTimeoutMs,
-    startedAt,
-    progress,
-    stop: presentation.stop,
-    opts,
-    shouldRestart,
-    stagedPackage: initialization?.stagedPackage,
-    packageTargetVersion: targetVersion ?? undefined,
-    packageUpdateNodeRunner,
-    managedServiceNodeRunner,
-    managedServiceRootRedirect,
-    managedServiceRoot,
-    invocationCwd,
-    recoveryState,
-    prepareMutableUpdate,
-    onActivation: () => {
-      presentation.suspend();
-      progress.deferLedgerWrites();
-    },
-  });
-  run.executorFence?.assertCurrent();
-  if (!execution) {
-    return;
-  }
-  const { ownedManagedUpdateContext, recoveryEnv, ...executionState } = execution;
-  const { result } = executionState;
-  result.runId = run.runId;
-  if (result.status === "skipped" && result.reason === "already-current") {
-    await activateCurrentCore();
-    presentation.stop();
-    return await finishAlreadyCurrentUpdate({
-      ...currentCoreFinalization,
-      root: result.root ?? root,
+  let releaseLocalTuiGate: (() => Promise<void>) | undefined;
+  try {
+    const execution = await executeMutableUpdate({
+      ...target,
+      installKind,
+      timeoutMs,
+      updateStepTimeoutMs,
+      startedAt,
+      progress,
+      stop: presentation.stop,
       opts,
-      result,
-      ownedManagedUpdateEnv: ownedManagedUpdateContext?.env,
-      packageUpdateNodeRunner: packageUpdateNodeRunner ?? managedServiceNodeRunner,
+      shouldRestart,
+      stagedPackage: initialization?.stagedPackage,
+      packageTargetVersion: targetVersion ?? undefined,
+      packageUpdateNodeRunner,
+      managedServiceNodeRunner,
+      managedServiceRootRedirect,
+      managedServiceRoot,
+      invocationCwd,
+      recoveryState,
+      prepareMutableUpdate,
+      onActivation: () => {
+        presentation.suspend();
+        progress.deferLedgerWrites();
+      },
+      onLocalTuiGateAcquired: (release) => {
+        releaseLocalTuiGate = release;
+      },
     });
-  }
-  recoveryState.triageTarget.root = result.root ?? root;
-  recoveryState.triageTarget.failureResult = result;
-  recoveryState.triageTarget.env =
-    recoveryEnv ?? ownedManagedUpdateContext?.env ?? recoveryState.triageTarget.env;
-  presentation.stop();
-  const finalization = {
-    ...executionState,
-    expectedVersion: targetVersion ?? undefined,
-    root,
-    previousInstallRoot: discoveredRoot,
-    installKindChanged: switchToGit || switchToPackage,
-    configSnapshot: ownedManagedUpdateContext?.configSnapshot ?? configSnapshot,
-    requestedChannel,
-    storedChannel,
-    channel,
-    downgradeRisk,
-    shouldRestart,
-    opts,
-    ownedManagedUpdateEnv: ownedManagedUpdateContext?.env,
-    controlPlaneUpdateSentinelMeta,
-    preUpdatePluginInstallRecords:
-      ownedManagedUpdateContext?.pluginInstallRecords ?? preUpdatePluginInstallRecords,
-    startedAt,
-    packageUpdateNodeRunner,
-    updateStepTimeoutMs,
-    invocationCwd,
-  };
-  const rollbackBlockedReason = opts.recovery
-    ? undefined
-    : await inspectActivatedUpdateState({
+    run.executorFence?.assertCurrent();
+    if (!execution) {
+      return;
+    }
+    const { ownedManagedUpdateContext, recoveryEnv, ...executionState } = execution;
+    const { result } = executionState;
+    result.runId = run.runId;
+    if (result.status === "skipped" && result.reason === "already-current") {
+      await activateCurrentCore();
+      presentation.stop();
+      return await finishAlreadyCurrentUpdate({
+        ...currentCoreFinalization,
+        root: result.root ?? root,
+        opts,
         result,
-        root,
-        packageUpdateNodeRunner,
-        schemaVersions: execution.schemaVersions,
-        candidateSchemaVersions: execution.candidateSchemaVersions,
-        config: finalization.configSnapshot.config,
-        env: ownedManagedUpdateContext?.env ?? run.env,
-        timeoutMs: updateStepTimeoutMs,
-      });
-  run.executorFence?.assertCurrent();
-  if (opts.recovery || rollbackBlockedReason) {
-    // Only candidate code may reopen migrated state, including during reporting and cleanup.
-    recoveryState.ledgerHandoffOwned = true;
-    const continued = await continueMigratedUpdateInFreshProcess(
-      { ...finalization, rollbackBlockedReason },
-      progress.pendingSteps,
-    );
-    recoveryState.ledgerHandoffCompleted = true;
-    opts.onResult?.(continued.result);
-    if (continued.exitCode !== 0) {
-      throw new UpdateCommandFailure(continued.result, continued.exitCode, undefined, {
-        automaticTriage: continued.automaticTriage,
+        ownedManagedUpdateEnv: ownedManagedUpdateContext?.env,
+        packageUpdateNodeRunner: packageUpdateNodeRunner ?? managedServiceNodeRunner,
       });
     }
-    return;
+    recoveryState.triageTarget.root = result.root ?? root;
+    recoveryState.triageTarget.failureResult = result;
+    recoveryState.triageTarget.env =
+      recoveryEnv ?? ownedManagedUpdateContext?.env ?? recoveryState.triageTarget.env;
+    presentation.stop();
+    const finalization = {
+      ...executionState,
+      expectedVersion: targetVersion ?? undefined,
+      root,
+      previousInstallRoot: discoveredRoot,
+      installKindChanged: switchToGit || switchToPackage,
+      configSnapshot: ownedManagedUpdateContext?.configSnapshot ?? configSnapshot,
+      requestedChannel,
+      storedChannel,
+      channel,
+      downgradeRisk,
+      shouldRestart,
+      opts,
+      ownedManagedUpdateEnv: ownedManagedUpdateContext?.env,
+      controlPlaneUpdateSentinelMeta,
+      preUpdatePluginInstallRecords:
+        ownedManagedUpdateContext?.pluginInstallRecords ?? preUpdatePluginInstallRecords,
+      startedAt,
+      packageUpdateNodeRunner,
+      updateStepTimeoutMs,
+      invocationCwd,
+    };
+    const rollbackBlockedReason = opts.recovery
+      ? undefined
+      : await inspectActivatedUpdateState({
+          result,
+          root,
+          packageUpdateNodeRunner,
+          schemaVersions: execution.schemaVersions,
+          candidateSchemaVersions: execution.candidateSchemaVersions,
+          config: finalization.configSnapshot.config,
+          env: ownedManagedUpdateContext?.env ?? run.env,
+          timeoutMs: updateStepTimeoutMs,
+        });
+    run.executorFence?.assertCurrent();
+    if (opts.recovery || rollbackBlockedReason) {
+      // Only candidate code may reopen migrated state, including during reporting and cleanup.
+      recoveryState.ledgerHandoffOwned = true;
+      const continued = await continueMigratedUpdateInFreshProcess(
+        { ...finalization, rollbackBlockedReason },
+        progress.pendingSteps,
+      );
+      recoveryState.ledgerHandoffCompleted = true;
+      opts.onResult?.(continued.result);
+      if (continued.exitCode !== 0) {
+        throw new UpdateCommandFailure(continued.result, continued.exitCode, undefined, {
+          automaticTriage: continued.automaticTriage,
+        });
+      }
+      return;
+    }
+    progress.flushLedgerWrites();
+    presentation.resume();
+    await finishUpdate(finalization);
+  } finally {
+    await releaseLocalTuiGate?.();
   }
-  progress.flushLedgerWrites();
-  presentation.resume();
-  await finishUpdate(finalization);
 }

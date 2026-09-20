@@ -3,14 +3,6 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayEventLoopHealth } from "../gateway/server/event-loop-health.js";
 
 const noteMock = vi.hoisted(() => vi.fn());
-const spawnSyncMock = vi.hoisted(() => vi.fn());
-
-vi.mock("node:child_process", async () => {
-  const { mockNodeChildProcessSpawnSync } = await import("openclaw/plugin-sdk/test-node-mocks");
-  return mockNodeChildProcessSpawnSync(spawnSyncMock, () =>
-    vi.importActual<typeof import("node:child_process")>("node:child_process"),
-  );
-});
 
 vi.mock("../../packages/terminal-core/src/note.js", () => ({ note: noteMock }));
 
@@ -28,43 +20,13 @@ const cpuPressure: GatewayEventLoopHealth = {
   utilization: 0.04,
   cpuCoreRatio: 2,
 };
-const localTuis = () => [{ pid: 101, command: "openclaw-tui --profile another-profile" }];
+const localTuis = () => [
+  { pid: 101, command: "openclaw-tui --profile another-profile", ownership: "ambiguous" as const },
+];
 
 describe("doctor WhatsApp responsiveness", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-  });
-
-  it("detects local TUI commands through the advisory finding", () => {
-    spawnSyncMock.mockReturnValue({
-      status: 0,
-      stdout: [
-        " 101 openclaw-tui",
-        " 102 /usr/bin/node /usr/lib/node_modules/openclaw/dist/index.js gateway --port 18789",
-        " 103 openclaw channels",
-        " 104 openclaw tui --local",
-        " 105 /usr/bin/openclaw chat",
-        " 106 helper --note 'openclaw tui'",
-        " 107 openclaw-helper openclaw terminal",
-        " 108 openclaw --flag tui",
-      ].join("\n"),
-    });
-    const findings = collectWhatsappResponsivenessHealthFindings({
-      cfg,
-      status: { eventLoop: cpuPressure },
-    });
-
-    if (process.platform === "win32") {
-      expect(findings).toEqual([]);
-      expect(spawnSyncMock).not.toHaveBeenCalled();
-    } else {
-      expect(findings).toEqual([expect.objectContaining({ target: "101, 104, 105" })]);
-      expect(spawnSyncMock).toHaveBeenCalledWith("ps", ["-axo", "pid=,command="], {
-        encoding: "utf8",
-        killSignal: "SIGKILL",
-        timeout: 1_000,
-      });
-    }
   });
 
   it.each<GatewayEventLoopHealth>([
@@ -114,6 +76,5 @@ describe("doctor WhatsApp responsiveness", () => {
     expect(collectWhatsappResponsivenessHealthFindings(params)).toEqual([]);
     noteWhatsappResponsivenessHealth(params);
     expect(noteMock).not.toHaveBeenCalled();
-    expect(spawnSyncMock).not.toHaveBeenCalled();
   });
 });

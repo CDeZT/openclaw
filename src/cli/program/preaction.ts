@@ -2,6 +2,7 @@
 import type { Command } from "commander";
 import type { ConfigFileSnapshot } from "../../config/types.js";
 import { setVerbose } from "../../globals.js";
+import { replaceOpenClawProcessTitleName } from "../../infra/openclaw-installation-id.js";
 import type { LogLevel } from "../../logging/levels.js";
 import { resolvePluginInstallInvalidConfigPolicy } from "../../plugins/install-config.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -33,7 +34,7 @@ function setProcessTitleForCommand(actionCommand: Command) {
   if (!name || name === CLI_NAME) {
     return;
   }
-  process.title = `${CLI_NAME}-${name}`;
+  process.title = replaceOpenClawProcessTitleName(process.title, `${CLI_NAME}-${name}`);
 }
 
 function shouldAllowInvalidConfigForAction(actionCommand: Command, commandPath: string[]): boolean {

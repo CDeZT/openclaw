@@ -51,7 +51,15 @@ describe("Doctor responsiveness contribution flow", () => {
     const fakePid = process.pid + 1_000_000;
     mocks.ps.mockReturnValue({
       status: 0,
-      stdout: `${fakePid} openclaw-tui --profile unrelated\n`,
+      stdout:
+        process.platform === "win32"
+          ? JSON.stringify({
+              ProcessId: fakePid,
+              CommandLine: "C:\\OpenClaw\\openclaw.exe tui",
+              OwnerSid: "S-1-fixture",
+              CurrentSid: "S-1-fixture",
+            })
+          : `${process.getuid?.() ?? 0} ${fakePid} Thu Aug 20 19:00:00 2026 openclaw-tui --profile unrelated\n`,
     });
     mocks.checkGatewayHealth.mockResolvedValue({ healthOk: true, authenticated: false, status });
     const ctx = createDoctorHealthFlowContext({
@@ -82,16 +90,24 @@ describe("Doctor responsiveness contribution flow", () => {
       const notes = mocks.note.mock.calls.filter(
         ([, title]) => title === "WhatsApp responsiveness",
       );
-      if (maintenance || process.platform === "win32") {
+      if (maintenance) {
         expect(mocks.ps).not.toHaveBeenCalled();
         expect(notes).toEqual([]);
       } else {
         expect(mocks.ps).toHaveBeenCalledTimes(1);
-        expect(mocks.ps).toHaveBeenCalledWith("ps", ["-axo", "pid=,command="], {
-          encoding: "utf8",
-          killSignal: "SIGKILL",
-          timeout: 1_000,
-        });
+        if (process.platform === "win32") {
+          expect(mocks.ps).toHaveBeenCalledWith(
+            expect.stringMatching(/powershell(?:\.exe)?$/iu),
+            expect.arrayContaining(["-NoProfile", "-Command"]),
+            { encoding: "utf8", killSignal: "SIGKILL", timeout: 1_000 },
+          );
+        } else {
+          expect(mocks.ps).toHaveBeenCalledWith("ps", ["-axo", "uid=,pid=,lstart=,command="], {
+            encoding: "utf8",
+            killSignal: "SIGKILL",
+            timeout: 1_000,
+          });
+        }
         expect(notes).toEqual([
           [
             "Gateway reports pressure, and local TUI clients were detected. This snapshot does not identify the source of the pressure.\n" +

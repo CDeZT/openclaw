@@ -43,4 +43,5 @@ export type MutableUpdateExecutionParams = {
     admitExecutor: (fence: UpdateRecoveryFence) => void,
   ) => Promise<void>;
   onActivation?: () => void;
+  onLocalTuiGateAcquired: (release: () => Promise<void>) => void;
 };

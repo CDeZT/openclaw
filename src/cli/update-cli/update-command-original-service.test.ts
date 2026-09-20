@@ -433,6 +433,7 @@ it.for([
         managedServiceRootRedirect: null,
         managedServiceRoot: rootA,
         recoveryState: { triageTarget: { env: state.env } },
+        onLocalTuiGateAcquired: vi.fn(),
         prepareMutableUpdate: async () => {
           fence.assertCurrent();
         },
@@ -731,6 +732,7 @@ it.each([
       managedServiceRootRedirect: null,
       managedServiceRoot: rootA,
       recoveryState: { triageTarget: { env: state.env } },
+      onLocalTuiGateAcquired: vi.fn(),
       prepareMutableUpdate: async () => {
         fence.assertCurrent();
       },

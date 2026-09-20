@@ -13,7 +13,7 @@ import {
 } from "./cli/precomputed-help.js";
 import { applyCliProfileEnv, parseCliProfileArgs } from "./cli/profile.js";
 import type { RootHelpRenderOptions } from "./cli/program/root-help.js";
-import { isNativeHookRelayArgv } from "./cli/respawn-policy.js";
+import { isNativeHookRelayArgv, isTerminalInteractiveRespawnArgv } from "./cli/respawn-policy.js";
 import { withCliProcessScope } from "./cli/runtime-cleanup-scope.js";
 import {
   configureGatewayStartupTraceConsoleFormatting,
@@ -31,6 +31,7 @@ import { tryHandleRootVersionFastPath } from "./entry.version-fast-path.js";
 import { normalizeEnv } from "./infra/env.js";
 import { isMainModule } from "./infra/is-main.js";
 import { ensureOpenClawExecMarkerOnProcess } from "./infra/openclaw-exec-env.js";
+import { formatOpenClawProcessTitle } from "./infra/openclaw-installation-id.js";
 import { installProcessWarningFilter } from "./infra/warning-filter.js";
 import {
   getManagedNodeHostStatePath,
@@ -205,7 +206,12 @@ if (
       // Only the final child emits the diagnostic warning; parents still enforce admission.
       await assertSupportedRuntime(undefined, undefined, process.argv, true, inheritedRuntimeEnv);
       // Idle respawn parents retain argv so offline maintenance can identify its launchers.
-      process.title = "openclaw";
+      // Keep a process-stable installation identity after Node rewrites argv.
+      // Update coordination uses this marker to avoid signaling another install.
+      process.title = formatOpenClawProcessTitle(
+        isTerminalInteractiveRespawnArgv(process.argv) ? "openclaw-tui" : "openclaw-cli",
+        installRoot,
+      );
       const parsedContainer = parseCliContainerArgs(process.argv);
       if (!parsedContainer.ok) {
         await writeCapturedCliArgumentError(parsedContainer.error);
