@@ -27,6 +27,7 @@ import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { listAgentModelsJsonPaths } from "../secrets/storage-scan.js";
+import { createRetainedAgentDatabaseMatcher } from "../state/agent-deletion-discovery.js";
 import { shortenHomePath } from "../utils.js";
 import type { DoctorPrompter } from "./doctor-prompter.js";
 
@@ -300,7 +301,15 @@ export async function maybeMigrateModelCatalogCredentials(params: {
     agentIds.length > 0
       ? agentIds.map((agentId) => resolveAgentDir(params.cfg, agentId, env))
       : [resolveDefaultAgentDir(params.cfg, env)];
-  const agentDirs = [...new Set([mainAgentDir, ...configuredAgentDirs, ...discoveredAgentDirs])];
+  const isRetained = createRetainedAgentDatabaseMatcher(env, () =>
+    agentIds.map((agentId) => ({
+      agentId,
+      path: path.join(resolveAgentDir(params.cfg, agentId, env), "openclaw-agent.sqlite"),
+    })),
+  );
+  const agentDirs = [
+    ...new Set([mainAgentDir, ...configuredAgentDirs, ...discoveredAgentDirs]),
+  ].filter((agentDir) => !isRetained(path.join(agentDir, "openclaw-agent.sqlite")));
   const mainStore = loadPersistedSharedAuthProfileStore(env) ?? emptyStore();
   const catalogs = agentDirs.map((agentDir) => collectAgentCatalogs(agentDir, warnings));
   const effectiveStores = catalogs.map(({ localStore }) =>

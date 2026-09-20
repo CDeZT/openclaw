@@ -25,10 +25,15 @@ import {
 } from "../config/sessions/session-entry-codec.js";
 import { transcriptEventReadBytesSql } from "../config/sessions/session-transcript-read-bytes.js";
 import type { SessionStoreTarget as ResolvedSessionStoreTarget } from "../config/sessions/targets.js";
-import { resolveAllAgentSessionStoreCandidateTargetsSync } from "../config/sessions/targets.js";
+import {
+  resolveAllAgentSessionStoreCandidateTargetsSync,
+  resolveAllAgentSessionStoreTargetsSync,
+  resolveConfiguredAgentDatabaseTargets,
+} from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { readAgentDatabaseAdmissionRefusal } from "../state/agent-database-admission.js";
+import { createRetainedAgentDatabaseMatcher } from "../state/agent-deletion-discovery.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
 import { tableExists, tableHasColumn } from "../state/openclaw-state-db-schema-helpers.js";
 
@@ -577,18 +582,38 @@ export function resolveTargetSqlitePath(
 export function projectExistingAgentDatabaseTargets(
   targets: readonly SessionStoreTarget[],
   env: NodeJS.ProcessEnv,
+  cfg: OpenClawConfig,
 ): ExistingAgentDatabaseTarget[] {
   const seenPaths = new Set<string>();
+  const isRetained = createRetainedAgentDatabaseMatcher(env, () =>
+    resolveConfiguredAgentDatabaseTargets(cfg, { env }),
+  );
   return targets.flatMap((target) => {
     if (readAgentDatabaseAdmissionRefusal(target.agentId, { env })) {
       return [];
     }
-    const sqlitePath = resolveTargetSqlitePath(target, env);
-    if (seenPaths.has(sqlitePath) || !fs.existsSync(sqlitePath)) {
+    const options = resolveTargetSqliteOptions(target, env);
+    const sqlitePath = resolveOpenClawAgentSqlitePath(options);
+    if (isRetained(sqlitePath) || seenPaths.has(sqlitePath) || !fs.existsSync(sqlitePath)) {
       return [];
     }
     seenPaths.add(sqlitePath);
     return [{ agentId: target.agentId, sqlitePath, storePath: target.storePath }];
+  });
+}
+
+/** Preserve retained stores and their legacy source files before import discovery can claim them. */
+export function excludeRetainedAgentDatabaseTargets<T extends SessionStoreTarget>(
+  targets: readonly T[],
+  env: NodeJS.ProcessEnv,
+  cfg: OpenClawConfig,
+): T[] {
+  const isRetained = createRetainedAgentDatabaseMatcher(env, () =>
+    resolveConfiguredAgentDatabaseTargets(cfg, { env }),
+  );
+  return targets.filter((target) => {
+    const options = resolveTargetSqliteOptions(target, env);
+    return !isRetained(resolveOpenClawAgentSqlitePath(options));
   });
 }
 
@@ -599,6 +624,16 @@ export function listExistingAgentDatabaseTargets(
   return projectExistingAgentDatabaseTargets(
     resolveAllAgentSessionStoreCandidateTargetsSync(cfg, { env }),
     env,
+    cfg,
+  );
+}
+
+/** Keep file-backed legacy inputs while excluding completed retained deletions. */
+export function listDoctorSessionStoreTargets(cfg: OpenClawConfig, env: NodeJS.ProcessEnv) {
+  return excludeRetainedAgentDatabaseTargets(
+    resolveAllAgentSessionStoreTargetsSync(cfg, { env }),
+    env,
+    cfg,
   );
 }
 

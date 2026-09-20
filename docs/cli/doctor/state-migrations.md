@@ -63,6 +63,14 @@ legacy workspace files it left untouched; it does not retire their files or
 proposal history. After the candidate is installed, the real Doctor runs the
 normal import, archival, and relocation against the operator's state.
 
+Completed agent deletions that intentionally kept their files are reported as
+`retained-by-deletion`, with the database path and an `openclaw agents add`
+command to restore the agent if wanted. Doctor excludes these stores from repairs
+and database readiness checks, preserving their bytes; they do not block other agents'
+migrations or update rehearsals. After restoring an agent, run
+`openclaw doctor --fix` with the same state/config to migrate its retained store.
+Pending file deletion still follows the deletion owner's existing safety checks.
+
 Doctor reports interrupted auth-profile archive recovery even when no new migration remains or you decline another migration. If recovery cannot finish, its warning includes the failure cause and leaves the pending source for recovery; do not delete it to silence the warning.
 
 `doctor --fix` also repairs an inconsistent completed auth migration only when its old receipt has no credential fingerprints, none of the migrated credentials remain in the current canonical store, and the preserved archive still matches the recorded source hash. Doctor reimports through the normal verified migration flow. Completed receipts with fingerprints, surviving migrated credentials, or no archive remain untouched, so removing credentials after a verified migration does not restore them from backup.

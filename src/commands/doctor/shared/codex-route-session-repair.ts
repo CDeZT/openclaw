@@ -22,7 +22,6 @@ import {
   scanDoctorSessionEntriesStrict,
   scanDoctorSessionEntriesTolerant,
 } from "../../../config/sessions/session-accessor.js";
-import { resolveAllAgentSessionStoreTargetsSync } from "../../../config/sessions/targets.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { loadJsonFileThroughSymlink } from "../../../infra/json-file.js";
@@ -32,6 +31,7 @@ import {
 } from "../../../infra/state-migrations.legacy-session-store.js";
 import { isValidAgentHarnessSessionStoreEntry } from "../../../sessions/agent-harness-session-key.js";
 import { resolveLegacyAuthProfilesPath } from "../../doctor-auth-legacy-paths.js";
+import { listDoctorSessionStoreTargets } from "../../doctor-session-sqlite-readers.js";
 import {
   isOpenAICodexAuthProfileRef,
   isBlockedLegacyCodexModelPair,
@@ -536,7 +536,7 @@ export async function maybeRepairCodexSessionRoutes(params: {
   const authProfileOnly = !params.shouldRepair && params.authProfileOnly === true;
   const shouldRepair = params.shouldRepair || authProfileOnly;
   const warnings: string[] = [];
-  const sessionTargets = resolveAllAgentSessionStoreTargetsSync(params.cfg, { env });
+  const sessionTargets = listDoctorSessionStoreTargets(params.cfg, env);
   const resolveRetired = authProfileOnly
     ? undefined
     : createRetiredModelRefRepairResolver({
