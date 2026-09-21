@@ -63,7 +63,7 @@ export type GatewayServiceInstallArgs = {
   definitionTransaction?: GatewayServiceDefinitionTransactionHooks;
 };
 
-export type GatewayServiceStageArgs = GatewayServiceInstallArgs;
+type GatewayServiceStageArgs = GatewayServiceInstallArgs;
 
 export type GatewayServiceManageArgs = {
   env: GatewayServiceEnv;
