@@ -1,0 +1,301 @@
+# Disposable diagnostic derivative. Never merge this workflow or its instrumented source.
+name: Temporary FreeBSD temp-root diagnostic producer
+on:
+  pull_request:
+    types: [opened]
+    branches: [main]
+    paths: [.github/workflows/freebsd-temp-root-diagnostic.yml]
+permissions:
+  contents: read
+concurrency:
+  group: freebsd-temp-root-diagnostic-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  candidate-package:
+    if: >-
+      github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
+      github.event_name == 'pull_request' && github.event.action == 'opened' &&
+      github.event.pull_request.state == 'open' && github.event.pull_request.draft &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
+      github.event.pull_request.head.repo.full_name == 'openclaw/openclaw' &&
+      github.event.pull_request.head.ref == 'test/freebsd-temp-root-diagnostic' &&
+      github.event.pull_request.user.login == 'vincentkoc'
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      CI: "true"
+      NODE_OPTIONS: --max-old-space-size=8192
+      OPENCLAW_VITEST_MAX_WORKERS: "2"
+      CANDIDATE_SHA: 1388021b60cd6b87ec5bb840fdcfbd06e39f3530
+      CANDIDATE_TREE: 282fcc4a3ee7d7af39c51fb39b97ca3545dff873
+      PRODUCT_SHA: 10725d8613c64f5efdc8ea58eae70a3b8f4276ac
+      PRODUCT_TREE: 74bddc0882c455c519931e40040c260df9951ee8
+      CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 5
+          persist-credentials: false
+      - name: Bind the diagnostic derivative and sole workflow carrier
+        run: |
+          set -euo pipefail
+          [[ "$CARRIER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
+          test "$(git show -s --format=%P HEAD)" = "$CANDIDATE_SHA"
+          test "$(git show -s --format=%P "$CANDIDATE_SHA")" = "$PRODUCT_SHA"
+          test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
+          test "$(git rev-parse "$PRODUCT_SHA^{tree}")" = "$PRODUCT_TREE"
+          test "$(git show -s --format=%P "$PRODUCT_SHA")" = "67214ac792717ee72cee7a4ae32b678ff12663fd a7c27c04a3d6e797b8974ad6ee22724724918e8a"
+          test "$(git diff --name-only "$CANDIDATE_SHA" HEAD)" = .github/workflows/freebsd-temp-root-diagnostic.yml
+          test -z "$(git status --porcelain)"
+          git -c gc.auto=0 -c maintenance.auto=false fetch --no-tags --depth=1 --no-write-fetch-head origin "$WORKFLOW_SHA"
+          test "$(git rev-parse "$CARRIER_SHA:.github/workflows/freebsd-temp-root-diagnostic.yml")" = "$(git rev-parse "$WORKFLOW_SHA:.github/workflows/freebsd-temp-root-diagnostic.yml")"
+          mkdir "$RUNNER_TEMP/freebsd-temp-diagnostic-proof"
+          python3 - <<'BIND'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          def git(*args): return subprocess.check_output(['git', *args])
+          product,candidate=os.environ['PRODUCT_SHA'],os.environ['CANDIDATE_SHA']
+          patch=git('diff','--full-index','--no-renames','--binary',product,candidate)
+          assert len(patch)==22914
+          assert hashlib.sha256(patch).hexdigest()=='9b8bad2f556f48db1dd4101a541fbdf0b4a9b874bcb01af600f70c0c4817f48a'
+          paths=git('diff','--name-only',product,candidate).decode().splitlines()
+          expected=['src/cli/update-cli/update-command-fresh-doctor.ts','src/config/io.snapshot.ts']
+          assert paths==expected
+          receipt=dict(product=product,productTree=os.environ['PRODUCT_TREE'],candidate=candidate,candidateTree=os.environ['CANDIDATE_TREE'],
+              patchSha256=hashlib.sha256(patch).hexdigest(),paths=paths,carrier=os.environ['CARRIER_SHA'],workflow=os.environ['WORKFLOW_SHA'],
+              eventMerge=os.environ['GITHUB_SHA'],run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+              scope='temporary closed cause and role-only filesystem observations; not a shipping repair or native qualification')
+          Path(os.environ['RUNNER_TEMP'],'freebsd-temp-diagnostic-proof','source-binding.json').write_text(json.dumps(receipt,indent=2)+'\n')
+          print(json.dumps(receipt))
+          BIND
+      - name: Prepare the canonical Git lifecycle owner
+        uses: ./.github/actions/git-owner
+      - name: Set up one frozen toolchain without a harness dependency install
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.21.0"
+          install-bun: "false"
+          install-deps: "false"
+          cache-mode: "off"
+      - name: Create one isolated product root and frozen dependency install
+        run: |
+          set -euo pipefail
+          test "$(node -p process.versions.node)" = 24.21.0
+          test "$(pnpm --version)" = 12.4.0
+          test ! -e node_modules
+          python3 -I -S "$CI_GIT_OWNER" --git 120 worktree add --detach "$RUNNER_TEMP/freebsd-temp-candidate" "$CANDIDATE_SHA"
+          cd "$RUNNER_TEMP/freebsd-temp-candidate"
+          CI=true DEPENDENCY_CACHE=false DEPENDENCY_CACHE_HIT=false FROZEN_LOCKFILE=true \
+            bash .github/actions/setup-node-env/install-dependencies.sh
+          git diff --exit-code
+          git diff --cached --exit-code
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'; import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+          import {createHash} from 'node:crypto'; import {execFileSync} from 'node:child_process'; import {createRequire} from 'node:module';
+          const root=process.cwd(),sha=b=>createHash('sha256').update(b).digest('hex');
+          const fingerprint=execFileSync(process.execPath,[`${root}/.github/actions/setup-node-env/dependency-fingerprint.mjs`,'--workspace',root,'--frozen-lockfile','true'],{encoding:'utf8'}).trim();
+          assert(!fs.lstatSync(`${root}/node_modules`).isSymbolicLink());
+          assert.equal(process.platform,'linux'); assert.equal(process.arch,'x64');
+          assert(process.report.getReport().header.glibcVersionRuntime,'this producer requires the selected GNU native package');
+          const require=createRequire(`${root}/package.json`),fsSafeMeta=require.resolve('@openclaw/fs-safe/package.json');
+          const fsSafeRoot=path.dirname(fs.realpathSync(fsSafeMeta)),meta=JSON.parse(fs.readFileSync(fsSafeMeta));
+          assert.equal(meta.name,'@openclaw/fs-safe'); assert.equal(meta.version,'0.18.0');
+          const nativeNames=['darwin-arm64','darwin-x64','linux-arm64-gnu','linux-arm64-musl','linux-x64-gnu','linux-x64-musl','win32-x64-msvc'].map(t=>`@openclaw/fs-safe-${t}`);
+          assert.deepEqual(Object.keys(meta.optionalDependencies).filter(n=>n.startsWith('@openclaw/fs-safe-')).sort(),nativeNames.toSorted());
+          for(const name of nativeNames) assert.equal(meta.optionalDependencies[name],'0.18.0');
+          const nativeName='@openclaw/fs-safe-linux-x64-gnu';
+          const nativeEntry=fs.realpathSync(createRequire(fsSafeMeta).resolve(nativeName));
+          let nativeRoot=path.dirname(nativeEntry);
+          while(!fs.existsSync(path.join(nativeRoot,'package.json'))) { const parent=path.dirname(nativeRoot); assert.notEqual(parent,nativeRoot); nativeRoot=parent; }
+          const nativeMeta=JSON.parse(fs.readFileSync(path.join(nativeRoot,'package.json')));
+          assert.equal(nativeMeta.name,nativeName); assert.equal(nativeMeta.version,'0.18.0');
+          function inventory(directory) {
+            const files=[];
+            function walk(relative) {
+              for(const name of fs.readdirSync(path.join(directory,relative)).sort()) {
+                if(name==='node_modules') continue;
+                const member=path.join(relative,name),file=path.join(directory,member),stat=fs.lstatSync(file);
+                assert(!stat.isSymbolicLink(),`unexpected package symlink: ${member}`);
+                if(stat.isDirectory()) walk(member);
+                else { assert(stat.isFile()); files.push({path:member,bytes:stat.size,sha256:sha(fs.readFileSync(file))}); }
+              }
+            }
+            walk(''); assert(files.length>0); return {files,inventorySha256:sha(JSON.stringify(files))};
+          }
+          const fsSafe=inventory(fsSafeRoot),native=inventory(nativeRoot);
+          for(const file of ['package.json','dist/advanced.js','dist/native.js','dist/file-hash.js']) assert(fsSafe.files.some(f=>f.path===file));
+          assert(native.files.some(f=>f.path.endsWith('.node')));
+          const inputPaths=['package.json','pnpm-lock.yaml','pnpm-workspace.yaml',...['file-transfer','llama-cpp','migrate-claude','onepassword','openshell','signal'].map(n=>`extensions/${n}/package.json`)];
+          const inputs=Object.fromEntries(inputPaths.map(p=>[p,sha(fs.readFileSync(p))]));
+          const receipt={source:process.env.CANDIDATE_SHA,node:process.versions.node,pnpm:execFileSync('pnpm',['--version'],{encoding:'utf8'}).trim(),
+            platform:process.platform,arch:process.arch,cpus:os.cpus().length,memory:os.totalmem(),dependencyFingerprint:fingerprint,
+            toolchainSha256:sha(fs.readFileSync(process.execPath)),inputs,
+            fsSafe:{version:meta.version,...fsSafe},native:{name:nativeName,version:nativeMeta.version,entry:path.relative(nativeRoot,nativeEntry),...native},
+            scope:'actual frozen producer install; final operator dependency custody remains separate'};
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/freebsd-temp-diagnostic-proof/toolchain.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
+          console.log(JSON.stringify(receipt));
+          NODE
+      - name: Build the final canonical package once
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/freebsd-temp-candidate"
+          node scripts/package-openclaw-for-docker.mjs --allow-unreleased-changelog \
+            --output-dir "$RUNNER_TEMP/freebsd-temp-candidate-package" --output-name candidate.tgz \
+            --pack-json "$RUNNER_TEMP/freebsd-temp-candidate-pack.json"
+          git diff --exit-code
+          git diff --cached --exit-code
+      - name: Authenticate actual observer and relay package bytes
+        run: |
+          set -euo pipefail
+          python3 - <<'EMIT'
+          import hashlib,json,os,tarfile
+          from pathlib import Path,PurePosixPath
+          root=Path(os.environ['RUNNER_TEMP']);proof=root/'freebsd-temp-diagnostic-proof'
+          package=root/'freebsd-temp-candidate-package/candidate.tgz'
+          modules=[];candidates=[];retained_bytes=0
+          with tarfile.open(package,'r:gz') as archive:
+              members=archive.getmembers();names=[member.name for member in members]
+              assert len(names)==len(set(names)),'duplicate package members'
+              for member in members:
+                  parts=PurePosixPath(member.name).parts
+                  assert not member.name.startswith('/') and '\\' not in member.name and '..' not in parts and parts[0]=='package','unsafe package member'
+              def read(name):
+                  matches=[member for member in members if member.name=='package/'+name]
+                  assert len(matches)==1 and matches[0].isfile(),name
+                  return archive.extractfile(matches[0]).read()
+              meta=json.loads(read('package.json'));build=json.loads(read('dist/build-info.json'))
+              assert build['commit']==os.environ['CANDIDATE_SHA']
+              assert meta['dependencies']['@openclaw/fs-safe']=='0.18.0'
+              finalizer='dist/infra/update-migrated-finalize.worker.js'
+              worker=read(finalizer)
+              assert worker==(root/'freebsd-temp-candidate'/finalizer).read_bytes()
+              for member in members:
+                  name=member.name
+                  if not name.startswith('package/dist/') or PurePosixPath(name).suffix not in {'.js','.mjs'}: continue
+                  assert member.isfile(),'runtime JavaScript must be a regular package member'
+                  data=archive.extractfile(member).read();relative=name.removeprefix('package/')
+                  marker=b'OPENCLAW_FREEBSD_TEMP_DIAGNOSTIC_V1 ' in data
+                  item=dict(file=relative,bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),markerCandidate=marker)
+                  modules.append(item)
+                  if not marker: continue
+                  assert data==(root/'freebsd-temp-candidate'/relative).read_bytes(),'packaged diagnostic differs from the source build'
+                  retained_bytes+=len(data)
+                  assert len(candidates)<16 and len(data)<=8*1024*1024 and retained_bytes<=32*1024*1024,'diagnostic evidence exceeds retention bound'
+                  retained=f'diagnostic-candidate-{len(candidates)+1}.js'
+                  (proof/retained).write_bytes(data)
+                  candidates.append(dict(**item,retained=retained))
+          inventory=dict(source=os.environ['CANDIDATE_SHA'],modules=modules,candidates=candidates)
+          encoded=json.dumps(inventory,indent=2)+'\n'
+          assert len(encoded.encode())<=8*1024*1024,'module inventory exceeds retention bound'
+          (proof/'diagnostic-module-inventory.json').write_text(encoded)
+          packages=[dict(role='candidate',source=os.environ['CANDIDATE_SHA'],build=build,
+              packageBytes=package.stat().st_size,packageSha256=hashlib.file_digest(package.open('rb'),'sha256').hexdigest(),
+              finalizer=dict(file=finalizer,bytes=len(worker),sha256=hashlib.sha256(worker).hexdigest()),fsSafe=meta['dependencies']['@openclaw/fs-safe'])]
+          (proof/'packages.json').write_text(json.dumps(packages,indent=2)+'\n')
+          print(json.dumps(dict(packages=packages,runtimeModules=len(modules),diagnosticCandidates=candidates)))
+          assert candidates,'no packaged diagnostic candidates; retained inventory records the search'
+          EMIT
+          node --input-type=module <<'EMIT'
+          import assert from 'node:assert/strict';import fs from 'node:fs';import {createRequire} from 'node:module';import {createHash} from 'node:crypto';
+          const require=createRequire(`${process.env.RUNNER_TEMP}/freebsd-temp-candidate/package.json`),{parse}=require('acorn');
+          const dir=`${process.env.RUNNER_TEMP}/freebsd-temp-diagnostic-proof`,sha=b=>createHash('sha256').update(b).digest('hex');
+          const inventory=JSON.parse(fs.readFileSync(`${dir}/diagnostic-module-inventory.json`)),receipts=[],observed=new Set();
+          const marker='OPENCLAW_FREEBSD_TEMP_DIAGNOSTIC_V1 ';
+          const member=(n,object,property)=>n?.type==='MemberExpression'&&!n.computed&&n.object?.type==='Identifier'&&n.object.name===object&&n.property?.name===property;
+          const builtinFs=n=>n?.type==='CallExpression'&&member(n.callee,'process','getBuiltinModule')&&n.arguments[0]?.value==='node:fs';
+          function walk(node,fn) {
+            if(!node||typeof node!=='object')return;fn(node);
+            for(const value of Object.values(node))if(Array.isArray(value))value.forEach(n=>walk(n,fn));else if(value&&typeof value==='object')walk(value,fn);
+          }
+          function outputMarker(n,init,seen=new Set()) {
+            if(!n)return false;
+            if(n.type==='Literal')return typeof n.value==='string'&&n.value.includes(marker);
+            if(n.type==='Identifier') {
+              if(seen.has(n.name))return false;
+              return outputMarker(init(n.name),init,new Set([...seen,n.name]));
+            }
+            if(n.type==='TemplateLiteral')return n.quasis.some(q=>(q.value.cooked??q.value.raw).includes(marker))||n.expressions.some(value=>outputMarker(value,init,seen));
+            return n.type==='BinaryExpression'&&n.operator==='+'&&(outputMarker(n.left,init,seen)||outputMarker(n.right,init,seen));
+          }
+          for(const candidate of inventory.candidates) {
+            const bytes=fs.readFileSync(`${dir}/${candidate.retained}`);assert.equal(bytes.length,candidate.bytes);assert.equal(sha(bytes),candidate.sha256);
+            const ast=parse(bytes.toString('utf8'),{ecmaVersion:'latest',sourceType:'module'}),sites=[];
+            function visit(n,ancestors=[]) {
+              if(!n||typeof n!=='object')return;
+              const callee=n.callee;
+              if(n.type==='CallExpression'&&callee?.type==='MemberExpression'&&!callee.computed&&callee.property?.name==='writeSync'&&n.arguments[0]?.value===2&&n.arguments[1]?.type==='Identifier') {
+                const owner=ancestors.findLast(a=>a.type==='TryStatement');
+                if(owner) {
+                  const declarations=new Map();
+                  walk(owner.block,d=>{if(d.type==='VariableDeclarator'&&d.id.type==='Identifier'){const values=declarations.get(d.id.name)??[];values.push(d.init);declarations.set(d.id.name,values)}});
+                  const init=name=>declarations.get(name)?.length===1?declarations.get(name)[0]:undefined;
+                  const fsOwner=callee.object.type==='Identifier'?init(callee.object.name):callee.object;
+                  const output=init(n.arguments[1].name);
+                  const bounded=ancestors.some(a=>a.type==='IfStatement'&&a.test?.type==='BinaryExpression'&&a.test.operator==='<='&&a.test.right?.value===8192&&a.test.left?.type==='CallExpression'&&member(a.test.left.callee,'Buffer','byteLength')&&a.test.left.arguments[0]?.name===n.arguments[1].name);
+                  if(builtinFs(fsOwner)&&outputMarker(output,init)&&bounded) {
+                    walk(output,d=>{
+                      if(d.type!=='CallExpression'||!member(d.callee,'JSON','stringify')||d.arguments[0]?.type!=='Identifier')return;
+                      const record=init(d.arguments[0].name);
+                      if(record?.type!=='ObjectExpression')return;
+                      const origin=record.properties.find(p=>p.type==='Property'&&!p.computed&&(p.key.name??p.key.value)==='origin')?.value?.value;
+                      if(['config-snapshot','config-validator-relay'].includes(origin)){sites.push({origin,writeStart:n.start,writeEnd:n.end,maxBytes:8192});observed.add(origin)}
+                    });
+                  }
+                }
+              }
+              const next=[...ancestors,n];
+              for(const value of Object.values(n))if(Array.isArray(value))value.forEach(v=>visit(v,next));else if(value&&typeof value==='object')visit(value,next);
+            }
+            visit(ast);
+            if(sites.length)receipts.push({...candidate,sites});
+          }
+          assert.deepEqual([...observed].sort(),['config-snapshot','config-validator-relay'].sort(),'both actual bounded diagnostic writes must survive packaging');
+          const result={source:process.env.CANDIDATE_SHA,emissionPassed:true,receipts,scope:'actual packaged observer and relay sites; native failure reproduction remains unrun'};
+          fs.writeFileSync(`${dir}/diagnostic-emission.json`,JSON.stringify(result,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify(result));
+          EMIT
+      - name: Seal the diagnostic package for a separately reviewed native consumer
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/freebsd-temp-candidate"
+          proof="$RUNNER_TEMP/freebsd-temp-diagnostic-proof"
+          git archive --format=tar.gz --prefix=openclaw/ "$CANDIDATE_SHA" > "$proof/source.tar.gz"
+          node scripts/install-smoke-candidate-payload.mts seal \
+            --archive "$proof/source.tar.gz" --package-dir "$RUNNER_TEMP/freebsd-temp-candidate-package" \
+            --output-dir "$proof/payload" --repository "$GITHUB_REPOSITORY" --target-sha "$CANDIDATE_SHA" \
+            --harness-repository "$GITHUB_REPOSITORY" --harness-sha "$CARRIER_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+          git diff --exit-code
+          git diff --cached --exit-code
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';import fs from 'node:fs';import {createHash} from 'node:crypto';
+          const dir=`${process.env.RUNNER_TEMP}/freebsd-temp-diagnostic-proof`,sha=f=>createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+          const packages=JSON.parse(fs.readFileSync(`${dir}/packages.json`));assert.equal(packages.length,1);
+          assert.equal(sha(`${process.env.RUNNER_TEMP}/freebsd-temp-candidate-package/candidate.tgz`),packages[0].packageSha256);
+          const emission=JSON.parse(fs.readFileSync(`${dir}/diagnostic-emission.json`));assert.equal(emission.emissionPassed,true);assert.equal(emission.source,process.env.CANDIDATE_SHA);
+          const manifest=JSON.parse(fs.readFileSync(`${dir}/payload/install-smoke-candidate-payload.json`));
+          assert.equal(manifest.targetSha,process.env.CANDIDATE_SHA);assert.equal(manifest.harnessSha,process.env.CARRIER_SHA);
+          assert.equal(manifest.files.find(f=>f.name==='candidate.tgz').sha256,packages[0].packageSha256);
+          const receipt={source:process.env.CANDIDATE_SHA,tree:process.env.CANDIDATE_TREE,carrier:process.env.CARRIER_SHA,
+            run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT,complete:true,packageBuildPassed:true,emissionPassed:true,
+            fsSafe:'0.18.0',manifestSha256:sha(`${dir}/payload/install-smoke-candidate-payload.json`),sourceArchiveSha256:sha(`${dir}/source.tar.gz`),packageVersion:manifest.packageVersion,
+            nativeProof:'unrun; one exact positive finalizer case requires separately authenticated consumer'};
+          fs.writeFileSync(`${dir}/complete.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify(receipt));
+          NODE
+      - name: Retain candidate custody and bounded emission evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: freebsd-temp-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/freebsd-temp-diagnostic-proof
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
