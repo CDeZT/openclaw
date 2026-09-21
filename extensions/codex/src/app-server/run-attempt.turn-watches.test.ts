@@ -11,12 +11,12 @@ import * as mediaStore from "openclaw/plugin-sdk/media-store";
 import { MAX_TIMER_TIMEOUT_MS } from "openclaw/plugin-sdk/number-runtime";
 import { describe, expect, it, vi } from "vitest";
 import * as approvalBridge from "./approval-bridge.js";
+import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
 import {
   expectSuccessfulAttempt,
   expectTimedOutAttempt,
   projectAttemptResult,
-  readAttemptTerminal,
-} from "./attempt-terminal.test-helper.js";
+} from "./attempt-terminal.test-support.js";
 import {
   TURN_FINALIZE_DRAIN_ABORT_GRACE_MS,
   TURN_TERMINAL_SETTLEMENT_TIMEOUT_MS,
