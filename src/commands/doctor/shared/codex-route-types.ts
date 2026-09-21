@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import type { ModelRefRepairResolver } from "./retired-model-ref-repair.js";
 
 export type MutableRecord = Record<string, unknown>;
 
@@ -57,6 +58,13 @@ export type ConfigRouteRepairResult = {
 export type SessionRouteRepairResult = {
   changed: boolean;
   sessionKeys: string[];
+};
+
+export type SessionModelRetirement = {
+  agentId: string;
+  resolve: ModelRefRepairResolver;
+  defaultModelRef?: string;
+  warnings: string[];
 };
 
 export type CodexSessionRouteRepairSummary = {

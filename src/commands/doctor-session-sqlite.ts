@@ -16,7 +16,13 @@ import {
 import { importSqliteSessionRowsBatch } from "../config/sessions/session-accessor.sqlite-import.js";
 import { normalizePersistedSessionEntryShape } from "../config/sessions/store-entry-shape.js";
 import { normalizeStoreSessionKey } from "../config/sessions/store-entry.js";
-import type { SessionStoreTarget as ResolvedSessionStoreTarget } from "../config/sessions/targets.js";
+import {
+  resolveAgentSessionStoreTargetsSync,
+  resolveAllAgentSessionStoreCandidateTargetsSync,
+  resolveAllAgentSessionStoreTargetsSync,
+  resolveSessionStoreTargets,
+  type SessionStoreTarget as ResolvedSessionStoreTarget,
+} from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   DeferredPluginMigrationConflictError,
@@ -92,7 +98,6 @@ import {
 import { recoverDoctorSessionSqliteTargets } from "./doctor-session-sqlite-recover-report.js";
 import { restoreDoctorSessionSqliteTargets } from "./doctor-session-sqlite-restore-report.js";
 import { reconcileSessionSqliteMigrationPublications } from "./doctor-session-sqlite-restore.js";
-import { resolveDoctorSessionSqliteTargets } from "./doctor-session-sqlite-targets.js";
 import {
   countRetainedSessionSources,
   prepareRetainedSessionImport,
@@ -612,6 +617,62 @@ function resolveDoctorSessionSqliteConfig(options: DoctorSessionSqliteOptions): 
   return options.store
     ? { agents: { entries: { [requestedAgentId]: { default: true } } } }
     : getRuntimeConfig();
+}
+
+function resolveDoctorSessionSqliteTargets(params: {
+  allAgents?: boolean;
+  agent?: string;
+  cfg: OpenClawConfig;
+  env: NodeJS.ProcessEnv;
+  mode: DoctorSessionSqliteMode;
+  store?: string;
+}): SessionStoreTarget[] {
+  if (params.store) {
+    return resolveSessionStoreTargets(params.cfg, { store: params.store }, { env: params.env });
+  }
+  const discoversHistory =
+    params.mode === "dry-run" || params.mode === "import" || params.mode === "validate";
+  if (
+    params.mode === "restore" ||
+    params.mode === "recover" ||
+    (discoversHistory && params.agent)
+  ) {
+    const candidates = resolveAllAgentSessionStoreCandidateTargetsSync(params.cfg, {
+      env: params.env,
+    });
+    if (!params.agent) {
+      return candidates;
+    }
+    const requestedAgentId = normalizeAgentId(params.agent);
+    return candidates.filter((target) => normalizeAgentId(target.agentId) === requestedAgentId);
+  }
+  if (params.agent) {
+    return resolveAgentSessionStoreTargetsSync(params.cfg, params.agent, { env: params.env });
+  }
+  if (params.allAgents) {
+    // Discovery must admit validated directories even before either registry exists.
+    const targets = discoversHistory
+      ? resolveAllAgentSessionStoreCandidateTargetsSync(params.cfg, { env: params.env })
+      : resolveAllAgentSessionStoreTargetsSync(params.cfg, { env: params.env });
+    if (!discoversHistory) {
+      return targets;
+    }
+    const legacyStorePath = path.join(resolveStateDir(params.env), "sessions", "sessions.json");
+    if (!fs.existsSync(legacyStorePath)) {
+      return targets;
+    }
+    const legacyTargets = resolveSessionStoreTargets(
+      params.cfg,
+      { allAgents: true },
+      { env: params.env },
+    ).map((target) => ({
+      agentId: target.agentId,
+      sqlitePath: resolveTargetSqlitePath(target),
+      storePath: legacyStorePath,
+    }));
+    return [...legacyTargets, ...targets];
+  }
+  return resolveSessionStoreTargets(params.cfg, {}, { env: params.env });
 }
 
 function filterLegacySessionStoreTargets(

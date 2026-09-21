@@ -7,6 +7,7 @@ import { resolveLegacyInheritedAuthAgentDir } from "../agents/legacy-inherited-a
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { hasErrnoCode } from "../infra/errno.js";
+import { createRetainedAgentDatabaseMatcher } from "../state/agent-deletion-discovery.js";
 import { resolveUserPath } from "../utils.js";
 
 function resolveLegacyAuthAgentDir(agentDir?: string): string {
@@ -83,6 +84,12 @@ export function listAuthProfileRepairCandidates(
   onUnavailable?: (pathname: string) => void,
 ): AuthProfileRepairCandidate[] {
   const candidates = new Map<string, AuthProfileRepairCandidate>();
+  const isRetained = createRetainedAgentDatabaseMatcher(
+    env,
+    () =>
+      listAgentIds(cfg).map((agentId) => ({ agentId, path: resolveAgentDir(cfg, agentId, env) })),
+    "agent-directory",
+  );
   const addCandidate = (agentDir: string | undefined): void => {
     // Retain the selected home's expanded directory for later SQLite writes too.
     const resolvedAgentDir = agentDir ? resolveUserPath(agentDir, env) : undefined;
@@ -110,7 +117,7 @@ export function listAuthProfileRepairCandidates(
   for (const agentDir of listExistingAgentDirsFromState(env, onUnavailable)) {
     addCandidate(agentDir);
   }
-  return [...candidates.values()];
+  return [...candidates.values()].filter(({ authPath }) => !isRetained(path.dirname(authPath)));
 }
 
 export function resolveLegacyAuthProfilesPath(agentDir?: string): string {

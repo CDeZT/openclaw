@@ -3,15 +3,14 @@ import path from "node:path";
 import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
 import { resolveAgentSessionDirsFromAgentsDirSync } from "../agents/session-dirs.js";
 import { formatCliCommand } from "../cli/command-format.js";
-import { quoteCliArg, quotePowerShellArg } from "../cli/quote-cli-arg.js";
 import { resolveStateDir } from "../config/paths.js";
 import { isSessionArchiveArtifactName } from "../config/sessions/artifacts.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { createAgentDatabaseDeletionClassifier } from "../state/agent-deletion-discovery.js";
 import {
-  readRetainedAgentDeletions,
-  type RetainedAgentDeletion,
+  readAgentDatabaseDeletionSnapshot,
+  type AgentDeletionJournalDisposition,
 } from "../state/agent-deletion-journal.read.js";
-import { readRegisteredAgentDatabases } from "../state/openclaw-agent-db-registry-listing.js";
 import {
   createOpenClawAgentDatabasePathMatcher,
   isPersistentOpenClawAgentDatabasePath,
@@ -19,13 +18,12 @@ import {
 } from "../state/openclaw-agent-db-registry.js";
 import { hasErrnoCode } from "./errno.js";
 import { isPathInside } from "./path-guards.js";
-import { SQLITE_SIDECAR_SUFFIXES } from "./sqlite-files.js";
 
 export type AgentDatabaseMigrationTarget = {
   agentId: string;
   path: string;
   realPath: string;
-  source: "configured" | "disk" | "registry" | "deletion";
+  source: "configured" | "disk" | "registry";
 };
 
 type CandidateTarget = Omit<AgentDatabaseMigrationTarget, "realPath">;
@@ -37,157 +35,64 @@ export type PreparedAgentDatabaseMigrationDiscovery = {
   discovery: ReturnType<typeof discoverAgentDatabaseMigrationTargets>;
 };
 
-function readAgentsDirectoryIdentity(env: NodeJS.ProcessEnv): string | null {
-  try {
-    const stat = fs.statSync(path.join(resolveStateDir(env), "agents"), { throwIfNoEntry: false });
-    return stat ? `${stat.dev}:${stat.ino}:${stat.mtimeMs}` : "missing";
-  } catch {
-    return null;
-  }
-}
-
-function sameTargets(
-  left: readonly { agentId: string; path: string }[],
-  right: readonly { agentId: string; path: string }[],
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every(
-      (target, index) =>
-        target.agentId === right[index]?.agentId && target.path === right[index]?.path,
-    )
-  );
-}
-
-function preparedDiscoveryIsCurrent(
-  prepared: PreparedAgentDatabaseMigrationDiscovery,
-  params: {
-    configuredAgentDatabaseTargets: readonly { agentId: string; path: string }[];
-    registeredAgentDatabases: readonly { agentId: string; path: string }[];
-    retainedDeletions: readonly RetainedAgentDeletion[];
-    env: NodeJS.ProcessEnv;
-  },
-): boolean {
-  const directoryIdentity = readAgentsDirectoryIdentity(params.env);
-  if (
-    prepared.stateDir !== resolveStateDir(params.env) ||
-    !sameTargets(prepared.configuredAgentDatabaseTargets, params.configuredAgentDatabaseTargets) ||
-    !sameTargets(prepared.registeredAgentDatabases, params.registeredAgentDatabases) ||
-    JSON.stringify(prepared.discovery.retainedDeletions) !==
-      JSON.stringify(params.retainedDeletions) ||
-    prepared.discovery.failures.length > 0 ||
-    directoryIdentity === null ||
-    directoryIdentity !== prepared.discovery.agentsDirectoryIdentity
-  ) {
-    return false;
-  }
-  try {
-    for (const [pathname, identity] of prepared.discovery.sourceIdentities) {
-      let realPath: string | undefined;
-      try {
-        realPath = fs.realpathSync.native(pathname);
-      } catch (error) {
-        if (!hasErrnoCode(error, "ENOENT")) {
-          return false;
-        }
-      }
-      if (
-        realPath !== identity.realPath ||
-        (identity.isFile !== undefined &&
-          (fs.statSync(pathname, { throwIfNoEntry: false })?.isFile() ?? false) !== identity.isFile)
-      ) {
-        return false;
-      }
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function listDefaultAgentDatabaseTargets(
-  env: NodeJS.ProcessEnv,
-  failure: (pathname: string, reason: string) => void,
-): CandidateTarget[] {
-  const agentsDir = path.join(resolveStateDir(env), "agents");
-  try {
-    return resolveAgentSessionDirsFromAgentsDirSync(agentsDir).map((sessionsDir) => {
-      const agentDir = path.dirname(sessionsDir);
-      return {
-        agentId: normalizeAgentId(path.basename(agentDir)),
-        path: path.join(agentDir, "agent", "openclaw-agent.sqlite"),
-        source: "disk" as const,
-      };
-    });
-  } catch (error) {
-    failure(agentsDir, `Could not enumerate agent databases under ${agentsDir}: ${String(error)}`);
-    return [];
-  }
-}
-
 /** Discover maintenance targets without mutating the registry or creating stores. */
 export function discoverAgentDatabaseMigrationTargets(params: {
   configuredAgentDatabaseTargets: readonly { agentId: string; path: string }[];
   registeredAgentDatabases: readonly { agentId: string; path: string }[];
-  retainedDeletions?: readonly RetainedAgentDeletion[];
+  retainedDeletions?: AgentDeletionJournalDisposition;
   env: NodeJS.ProcessEnv;
 }) {
   const warnings: string[] = [];
   const externalWarnings: string[] = [];
   const retainedDeletions =
-    params.retainedDeletions ?? readRetainedAgentDeletions({ env: params.env });
-  const retainedById = new Map(retainedDeletions.map((entry) => [entry.agentId, entry]));
-  const retainedByFile = new Map<
-    string,
-    {
-      target: AgentDatabaseMigrationTarget & { reason: "retained-by-deletion" };
-      deletion: RetainedAgentDeletion;
-    }
-  >();
+    params.retainedDeletions ??
+    readAgentDatabaseDeletionSnapshot(params.env)?.retainedDeletions ??
+    "unavailable";
+  const classifyDeletion = createAgentDatabaseDeletionClassifier({ ...params, retainedDeletions });
   const failures: Array<{ path: string; reason: string }> = [];
   const registryRemovals: Array<{ agentId: string; path: string; change?: string }> = [];
-  const agentsDirectoryIdentity = readAgentsDirectoryIdentity(params.env);
-  const sourceIdentities = new Map<string, { realPath?: string; isFile?: boolean }>();
+  const sourceIdentities = new Map<string, { realPath?: string }>();
   const failure = (pathname: string, reason: string) => {
     warnings.push(reason);
     failures.push({ path: pathname, reason });
   };
   const discard = (candidate: CandidateTarget, change?: string) => {
-    if (candidate.source === "registry") {
+    if (candidate.source === "registry" && retainedDeletions !== "unavailable") {
       registryRemovals.push({ agentId: candidate.agentId, path: candidate.path, change });
     }
   };
-  // Owner authority is explicit config, then the recorded registry fact, then
-  // directory-name inference. Recorded identity must beat a stale directory basename.
+  // Configured and registered surviving owners precede retained and inferred paths.
   const candidates: CandidateTarget[] = [
     ...params.configuredAgentDatabaseTargets.map((target) => ({
-      agentId: target.agentId,
-      path: target.path,
+      ...target,
       source: "configured" as const,
     })),
     ...params.registeredAgentDatabases.map((entry) => ({
-      agentId: entry.agentId,
-      path: entry.path,
+      ...entry,
       source: "registry" as const,
     })),
-    ...retainedDeletions.flatMap((deletion) => {
-      const files = new Set(deletion.databasePaths);
-      return deletion.databasePaths
-        .filter(
-          (pathname) =>
-            !SQLITE_SIDECAR_SUFFIXES.some(
-              (suffix) => pathname.endsWith(suffix) && files.has(pathname.slice(0, -suffix.length)),
-            ),
-        )
-        .map((pathname) => ({
-          agentId: deletion.agentId,
-          path: pathname,
-          source: "deletion" as const,
-        }));
-    }),
-    ...listDefaultAgentDatabaseTargets(params.env, failure),
+    ...(retainedDeletions === "unavailable" ? [] : retainedDeletions).flatMap((entry) =>
+      entry.databasePaths.map((pathname) => ({
+        agentId: entry.agentId,
+        path: pathname,
+        source: "disk" as const,
+      })),
+    ),
   ];
   const activeStateDir = resolveStateDir(params.env);
+  const agentsDir = path.join(activeStateDir, "agents");
+  try {
+    for (const sessionsDir of resolveAgentSessionDirsFromAgentsDirSync(agentsDir)) {
+      const agentDir = path.dirname(sessionsDir);
+      candidates.push({
+        agentId: normalizeAgentId(path.basename(agentDir)),
+        path: path.join(agentDir, "agent", "openclaw-agent.sqlite"),
+        source: "disk",
+      });
+    }
+  } catch (error) {
+    failure(agentsDir, `Could not enumerate agent databases under ${agentsDir}: ${String(error)}`);
+  }
   let activeStateDirRealPath: string | undefined;
   try {
     activeStateDirRealPath = fs.realpathSync.native(activeStateDir);
@@ -203,7 +108,6 @@ export function discoverAgentDatabaseMigrationTargets(params: {
   const targets: AgentDatabaseMigrationTarget[] = [];
   const seenPhysicalFiles = new Set<string>();
   for (const candidate of candidates) {
-    const deletion = retainedById.get(normalizeAgentId(candidate.agentId));
     // Preserve the original locator: lexical normalization of `link/../file`
     // can select a different file than filesystem symlink traversal does.
     const pathname = candidate.path;
@@ -223,6 +127,7 @@ export function discoverAgentDatabaseMigrationTargets(params: {
       }
     }
     sourceIdentities.set(pathname, { realPath });
+    const deletion = classifyDeletion(pathname, candidate.agentId);
     const isConfiguredPath =
       realPath !== undefined &&
       params.configuredAgentDatabaseTargets.some((configuredTarget) => {
@@ -260,14 +165,12 @@ export function discoverAgentDatabaseMigrationTargets(params: {
       }
     }
     if (!stat?.isFile()) {
-      sourceIdentities.set(pathname, { realPath, isFile: false });
       discard(candidate, `Removed missing agent database registry entry ${pathname}.`);
       if (candidate.source === "registry") {
         warnings.push(`Skipped missing registered agent database ${pathname}.`);
       }
       continue;
     }
-    sourceIdentities.set(pathname, { realPath, isFile: true });
     if (!realPath) {
       discard(candidate);
       failure(
@@ -281,41 +184,25 @@ export function discoverAgentDatabaseMigrationTargets(params: {
       continue;
     }
     if (deletion) {
-      if (!retainedByFile.has(physicalFile)) {
-        retainedByFile.set(physicalFile, {
-          target: { ...candidate, realPath, reason: "retained-by-deletion" },
-          deletion,
-        });
+      // A deleted alias must not claim a surviving owner's physical file.
+      if (classifyDeletion(pathname)) {
+        seenPhysicalFiles.add(physicalFile);
+        warnings.push(
+          `Held agent ${sanitizeForLog(deletion === "unavailable" ? candidate.agentId : deletion.agentId)} database ${sanitizeForLog(pathname)} (${deletion === "unavailable" ? "deletion journal unavailable" : "retained-by-deletion"}); run ${formatCliCommand("openclaw doctor --fix", params.env)} to inspect restoration.`,
+        );
       }
       continue;
     }
-    // A surviving recorded owner beats a tombstone; a directory basename does not.
-    if (candidate.source === "disk" && retainedByFile.has(physicalFile)) {
-      continue;
-    }
     seenPhysicalFiles.add(physicalFile);
-    retainedByFile.delete(physicalFile);
     targets.push({ ...candidate, path: pathname, realPath });
   }
-  const retainedTargets = [...retainedByFile.values()].map(({ target }) => target);
-  const notices = [...retainedByFile.values()].map(({ target, deletion }) => {
-    const quote = process.platform === "win32" ? quotePowerShellArg : quoteCliArg;
-    const restore = formatCliCommand(
-      `openclaw agents add ${quote(deletion.agentId)} --workspace ${quote(deletion.workspaceDir)} --agent-dir ${quote(deletion.agentDir)} --non-interactive`,
-      params.env,
-    );
-    return `Preserved agent database retained-by-deletion: ${sanitizeForLog(target.path)}. To restore this agent, run ${sanitizeForLog(restore)}, then ${formatCliCommand("openclaw doctor --fix", params.env)} with the same state/config.`;
-  });
   return {
     targets,
-    retainedTargets,
     retainedDeletions,
-    notices,
     registryRemovals,
     warnings,
     externalWarnings,
     failures,
-    agentsDirectoryIdentity,
     sourceIdentities,
   };
 }
@@ -326,42 +213,20 @@ export function resolveAgentDatabaseMigrationTargets(params: {
   configuredAgentDatabaseTargets: readonly { agentId: string; path: string }[];
   env: NodeJS.ProcessEnv;
   warnings: string[];
-  notices?: string[];
   preparedDiscovery?: PreparedAgentDatabaseMigrationDiscovery;
 }): { targets: AgentDatabaseMigrationTarget[]; recoverableWarningCount: number } {
-  let registeredAgentDatabases: readonly { agentId: string; path: string }[] = [];
-  let registryReadFailed = false;
-  try {
-    registeredAgentDatabases = readRegisteredAgentDatabases(
-      {
-        env: params.env,
-        includeIncompatibleSchemaVersions: true,
-      },
-      false,
-    );
-  } catch (error) {
-    registryReadFailed = true;
-    params.warnings.push(
-      `Failed enumerating registered agent databases for state migration: ${String(error)}`,
-    );
-  }
-  // Schema repair can rewrite registrations. Validate the prepared source once at mutation
-  // admission, including missing candidates, before applying its registry removals.
-  const retainedDeletions = readRetainedAgentDeletions({ env: params.env });
-  const discovery =
-    !registryReadFailed &&
-    params.preparedDiscovery &&
-    preparedDiscoveryIsCurrent(params.preparedDiscovery, {
-      ...params,
-      registeredAgentDatabases,
-      retainedDeletions,
-    })
-      ? params.preparedDiscovery.discovery
-      : discoverAgentDatabaseMigrationTargets({
-          ...params,
-          registeredAgentDatabases,
-          retainedDeletions,
-        });
+  const snapshot = readAgentDatabaseDeletionSnapshot(params.env);
+  // Rediscover after schema repair and admission; initialization cannot replace unknown history.
+  const retainedDeletions =
+    params.preparedDiscovery?.stateDir === resolveStateDir(params.env) &&
+    params.preparedDiscovery?.discovery.retainedDeletions === "unavailable"
+      ? "unavailable"
+      : (snapshot?.retainedDeletions ?? "unavailable");
+  const discovery = discoverAgentDatabaseMigrationTargets({
+    ...params,
+    registeredAgentDatabases: snapshot?.registeredAgentDatabases ?? [],
+    retainedDeletions,
+  });
   for (const removed of discovery.registryRemovals) {
     unregisterOpenClawAgentDatabase({ ...removed, env: params.env });
     if (removed.change) {
@@ -369,13 +234,11 @@ export function resolveAgentDatabaseMigrationTargets(params: {
     }
   }
   params.warnings.push(...discovery.warnings);
-  params.notices?.push(...discovery.notices);
   // Deliberate registry omissions are reported without blocking authorized stores.
   // Failed discovery never grants that disposition, even if it also omitted a foreign entry.
   return {
     targets: discovery.targets,
-    recoverableWarningCount:
-      registryReadFailed || discovery.failures.length > 0 ? 0 : discovery.warnings.length,
+    recoverableWarningCount: discovery.failures.length > 0 ? 0 : discovery.warnings.length,
   };
 }
 

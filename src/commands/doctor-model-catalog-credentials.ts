@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { note } from "../../packages/terminal-core/src/note.js";
-import { listAgentIds, resolveAgentDir, resolveDefaultAgentDir } from "../agents/agent-scope.js";
+import { listAgentIds, resolveAgentDir } from "../agents/agent-scope.js";
 import { AUTH_STORE_VERSION } from "../agents/auth-profiles/constants.js";
 import {
   loadPersistedAuthProfileStore,
@@ -293,23 +293,18 @@ export async function maybeMigrateModelCatalogCredentials(params: {
   const env = params.env ?? process.env;
   const stateDir = resolveStateDir(env);
   const mainAgentDir = resolveSharedMainAuthAgentDir(env);
-  const discoveredAgentDirs = listAgentModelsJsonPaths(params.cfg, stateDir, env).map(
-    (modelsPath) => path.dirname(modelsPath),
+  const isRetained = createRetainedAgentDatabaseMatcher(
+    env,
+    () =>
+      listAgentIds(params.cfg).map((agentId) => ({
+        agentId,
+        path: resolveAgentDir(params.cfg, agentId, env),
+      })),
+    "agent-directory",
   );
-  const agentIds = listAgentIds(params.cfg);
-  const configuredAgentDirs =
-    agentIds.length > 0
-      ? agentIds.map((agentId) => resolveAgentDir(params.cfg, agentId, env))
-      : [resolveDefaultAgentDir(params.cfg, env)];
-  const isRetained = createRetainedAgentDatabaseMatcher(env, () =>
-    agentIds.map((agentId) => ({
-      agentId,
-      path: path.join(resolveAgentDir(params.cfg, agentId, env), "openclaw-agent.sqlite"),
-    })),
-  );
-  const agentDirs = [
-    ...new Set([mainAgentDir, ...configuredAgentDirs, ...discoveredAgentDirs]),
-  ].filter((agentDir) => !isRetained(path.join(agentDir, "openclaw-agent.sqlite")));
+  const agentDirs = listAgentModelsJsonPaths(params.cfg, stateDir, env)
+    .map((modelsPath) => path.dirname(modelsPath))
+    .filter((agentDir) => !isRetained(agentDir));
   const mainStore = loadPersistedSharedAuthProfileStore(env) ?? emptyStore();
   const catalogs = agentDirs.map((agentDir) => collectAgentCatalogs(agentDir, warnings));
   const effectiveStores = catalogs.map(({ localStore }) =>

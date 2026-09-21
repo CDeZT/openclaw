@@ -1,27 +1,78 @@
-import { discoverAgentDatabaseMigrationTargets } from "../infra/state-migrations.media-persistence-targets.js";
-import { readRetainedAgentDeletions } from "./agent-deletion-journal.read.js";
-import { readRegisteredAgentDatabases } from "./openclaw-agent-db-registry-listing.js";
-import { createOpenClawAgentDatabasePathMatcher } from "./openclaw-agent-db-registry.js";
+import fs from "node:fs";
+import { resolveStateDir } from "../config/paths.js";
+import { isPathInside } from "../infra/path-guards.js";
+import { normalizeAgentId } from "../routing/session-key.js";
+import {
+  readAgentDatabaseDeletionSnapshot,
+  type AgentDeletionJournalDisposition,
+} from "./agent-deletion-journal.read.js";
+import {
+  createOpenClawAgentDatabasePathMatcher,
+  isPersistentOpenClawAgentDatabasePath,
+} from "./openclaw-agent-db-registry.js";
 
-/** Reuse the discovery owner's physical-store disposition for a prepared inventory. */
+type Target = { agentId: string; path: string };
+
+/** Recorded surviving owners can share retained files; directory-name inference cannot. */
+export function createAgentDatabaseDeletionClassifier(params: {
+  env: NodeJS.ProcessEnv;
+  retainedDeletions: AgentDeletionJournalDisposition;
+  configuredAgentDatabaseTargets: readonly Target[];
+  registeredAgentDatabases: readonly Target[];
+  artifactDirectories?: readonly Target[];
+}) {
+  const entries = params.retainedDeletions;
+  const samePath = createOpenClawAgentDatabasePathMatcher();
+  const recorded = params.artifactDirectories ?? [
+    ...params.configuredAgentDatabaseTargets,
+    ...params.registeredAgentDatabases,
+  ];
+  return (pathname: string, agentId?: string) => {
+    if (entries === "unavailable") {
+      return entries;
+    }
+    const deletion = entries.find(
+      (entry) =>
+        entry.agentId === agentId ||
+        (params.artifactDirectories ? [entry.agentDir] : entry.databasePaths).some((file) =>
+          samePath(file, pathname),
+        ),
+    );
+    if (!deletion) {
+      return undefined;
+    }
+    const surviving = recorded.some(
+      (target) =>
+        !entries.some((entry) => entry.agentId === normalizeAgentId(target.agentId)) &&
+        samePath(target.path, pathname) &&
+        (params.artifactDirectories !== undefined ||
+          (isPersistentOpenClawAgentDatabasePath(target.path, params.env) &&
+            (params.configuredAgentDatabaseTargets.includes(target) ||
+              isPathInside(
+                fs.realpathSync.native(resolveStateDir(params.env)),
+                fs.realpathSync.native(target.path),
+              )))),
+    );
+    return agentId === deletion.agentId || !surviving ? deletion : undefined;
+  };
+}
+
 export function createRetainedAgentDatabaseMatcher(
   env: NodeJS.ProcessEnv,
-  readConfiguredTargets: () => readonly { agentId: string; path: string }[],
+  readConfiguredTargets: () => readonly Target[],
+  namespace: "database" | "agent-directory" = "database",
 ) {
-  const retainedDeletions = readRetainedAgentDeletions({ env });
-  if (retainedDeletions.length === 0) {
-    return (_pathname: string) => false;
+  const snapshot = readAgentDatabaseDeletionSnapshot(env);
+  const retainedDeletions = snapshot?.retainedDeletions ?? "unavailable";
+  if (retainedDeletions === "unavailable" || retainedDeletions.length === 0) {
+    return (_pathname: string, _agentId?: string) => retainedDeletions === "unavailable";
   }
-  const { retainedTargets } = discoverAgentDatabaseMigrationTargets({
+  const configured = readConfiguredTargets();
+  return createAgentDatabaseDeletionClassifier({
     env,
     retainedDeletions,
-    configuredAgentDatabaseTargets: readConfiguredTargets(),
-    registeredAgentDatabases: readRegisteredAgentDatabases(
-      { env, includeIncompatibleSchemaVersions: true },
-      false,
-    ),
+    configuredAgentDatabaseTargets: configured,
+    artifactDirectories: namespace === "agent-directory" ? configured : undefined,
+    registeredAgentDatabases: snapshot?.registeredAgentDatabases ?? [],
   });
-  const samePath = createOpenClawAgentDatabasePathMatcher();
-  return (pathname: string): boolean =>
-    retainedTargets.some((target) => samePath(target.realPath, pathname));
 }

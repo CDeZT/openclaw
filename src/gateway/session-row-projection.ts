@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { listAgentIds, withAgentRosterFactsBatch } from "../agents/agent-scope-config.js";
+import { loadCombinedSessionStoreForGatewayCore } from "../config/sessions/combined-store-gateway.js";
 import { isInternalSessionEffectsKey } from "../config/sessions/internal-session-key.js";
 import { listSessionEntriesReadOnly } from "../config/sessions/session-accessor.sqlite-entry.js";
 import type { SessionStoreTarget } from "../config/sessions/targets.js";
@@ -38,7 +39,6 @@ import {
   readSessionRowEntry,
 } from "./session-row-projection-materialize.js";
 import * as records from "./session-row-projection-record.js";
-import { loadSessionRowProjectionTopology } from "./session-row-projection-topology.js";
 import { createSessionRowProjectionTranscriptUpdates } from "./session-row-projection-transcript.js";
 import {
   createSessionRowScopeMatcher,
@@ -204,7 +204,9 @@ export async function createSessionRowProjection(params: {
     const admitted = new Set<string>();
     const nextStores: typeof stores = new Map();
     const replaced = new Set<string>();
-    const loaded = loadSessionRowProjectionTopology(cfg, {
+    const loaded = loadCombinedSessionStoreForGatewayCore(cfg, {
+      includeIncognito: false,
+      preserveSentinelOwners: "physical",
       loadEntries(target, projection) {
         const opened = withOpenClawAgentDatabaseReadOnly(readOpenClawAgentDatabaseIdentity, {
           agentId: target.agentId,

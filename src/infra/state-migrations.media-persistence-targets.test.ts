@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
@@ -64,7 +64,6 @@ function readUserVersion(databasePath: string): number {
 }
 
 afterEach(() => {
-  vi.restoreAllMocks();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
   cleanupTempDirs(tempDirs);
@@ -140,7 +139,7 @@ describe("media persistence migration targets", () => {
     "config-changed",
     "deletion-completed",
     "deletion-restored",
-  ] as const)("validates prepared fleet discovery once before registry cleanup: %s", (scenario) => {
+  ] as const)("rechecks prepared fleet facts before registry cleanup: %s", (scenario) => {
     const stateDir = fs.realpathSync.native(makeTempDir(tempDirs, "media-prepared-targets-"));
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const mainPath = createLegacyAgentDatabase({ env });
@@ -185,7 +184,6 @@ describe("media persistence migration targets", () => {
       { env, includeIncompatibleSchemaVersions: true },
       false,
     );
-    const reads = vi.spyOn(fs, "readdirSync");
     const preparedDiscovery: PreparedAgentDatabaseMigrationDiscovery = {
       stateDir,
       configuredAgentDatabaseTargets,
@@ -230,9 +228,6 @@ describe("media persistence migration targets", () => {
       changes: [],
       warnings: [],
     });
-    expect(
-      reads.mock.calls.filter(([directory]) => directory === path.join(stateDir, "agents")),
-    ).toHaveLength(scenario === "unchanged" ? 1 : 2);
     expect(result.targets.map((target) => target.path)).toEqual(
       fileCreated ? [mainPath, missingPath] : scenario === "deletion-completed" ? [] : [mainPath],
     );
