@@ -1051,8 +1051,10 @@ printf 'status=%s\\n' "$status"
     expect(dockerfile).toContain("ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright");
     expect(dockerfile).toContain('mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"');
     expect(dockerfile).toContain(
-      "node /app/node_modules/playwright-core/cli.js install --with-deps chromium",
+      'node /app/node_modules/playwright-core/cli.js install --with-deps "$shell_option" chromium',
     );
+    expect(dockerfile).toContain("1|chromium) shell_option=--no-shell");
+    expect(dockerfile).toContain("headless-shell) shell_option=--only-shell");
   });
 
   it("verifies fs-safe native loading before and after Docker runtime assembly", () => {
