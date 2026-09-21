@@ -1,14 +1,6 @@
-import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import fs, {
-  chmodSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { spawnSync } from "node:child_process";
+import fs, { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
@@ -32,6 +24,20 @@ import * as testTimings from "../../scripts/lib/ci-test-timings.mts";
 import * as localCheckRuntime from "../../scripts/lib/local-check-runtime.mts";
 import { createCompactSplitTimingGeneration } from "../../scripts/lib/vitest-shard-metadata.mts";
 import { fullSuiteVitestShards } from "../vitest/vitest.test-shards.mjs";
+import {
+  baseline,
+  compactLog,
+  measuredFile,
+  sampleNow,
+  samplerJob,
+  samplerRun,
+  samplerToolingLog,
+  timingRun,
+  toolingFile,
+  withSamplerFixture,
+  workerLog,
+  workerResources,
+} from "./ci-test-timings.test-support.js";
 
 function uiLog(files: Record<string, number>, overhead = 0.6) {
   const body = Object.values(files).reduce((sum, value) => sum + value, 0);
@@ -43,36 +49,6 @@ function uiLog(files: Record<string, number>, overhead = 0.6) {
     `Duration ${body + Object.keys(files).length * overhead}s (transform 1s, setup 2ms, import 3s, tests ${body}s, environment 1ms)`,
   ].join("\n");
 }
-
-function timingRun(id: number, logs: CiTimingRun["logs"]): CiTimingRun {
-  return { id, createdAt: `2026-08-${String(20 + id).padStart(2, "0")}T23:00:00Z`, logs };
-}
-
-function compactLog(seconds: number, key = "core-unit-src-security-2") {
-  const end = new Date(Date.parse("2026-08-27T23:00:00Z") + seconds * 1000).toISOString();
-  return [
-    `2026-08-27T23:00:00.0000000Z [shard:${key}] begin`,
-    `${end} [shard:${key}] end (exit 0)`,
-    "2026-08-27T23:00:00Z [shard:failed] begin",
-    `${end} [shard:failed] end (exit 1)`,
-    "2026-08-27T23:00:00Z [shard:unfinished] begin",
-    `${end} [shard:orphan] end (exit 0)`,
-  ].join("\n");
-}
-
-const measuredFile = "ui/src/e2e/measured.e2e.test.ts";
-const baseline: CiTestTimings = {
-  compactGroupSeconds: { blacksmith: {}, github: {} },
-  runtimePlacementTimings: { blacksmith: [], github: [] },
-  repoE2eFileSeconds: {},
-  source: "median of 2 successful main CI runs: 1, 2",
-  toolingFileSeconds: { blacksmith: {}, github: {} },
-  uiE2e: { fileSeconds: { [measuredFile]: 100 }, perFileOverheadSeconds: 0.6 },
-  updatedAt: "2026-08-22",
-  version: 1,
-};
-
-const sampleNow = "2026-08-28T12:00:00.000Z";
 
 describe("runtime placement observations", () => {
   it("retains recorded runtime work when its current group gains a file", () => {
@@ -335,6 +311,7 @@ describe("runtime placement observations", () => {
             }
           : {},
       );
+      const workerSpy = vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([]);
       const spy = vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
       const options = {
         compactMode,
@@ -519,6 +496,7 @@ describe("runtime placement observations", () => {
       } finally {
         spy.mockRestore();
         compactSpy.mockRestore();
+        workerSpy.mockRestore();
         gatewayConfigSpy?.mockRestore();
         fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...originalShards);
       }
@@ -639,177 +617,6 @@ describe("runtime placement observations", () => {
     );
   });
 });
-
-function samplerRun(id: number, overrides: Record<string, unknown> = {}) {
-  return {
-    id,
-    path: ".github/workflows/ci.yml",
-    run_attempt: 1,
-    created_at: "2026-08-27T22:00:00Z",
-    status: "completed",
-    conclusion: "success",
-    event: "push",
-    head_branch: "main",
-    head_sha: "a".repeat(40),
-    ...overrides,
-  };
-}
-
-function samplerJob(id: number, runId: number, overrides: Record<string, unknown> = {}) {
-  return {
-    id,
-    run_id: runId,
-    run_attempt: 1,
-    head_sha: "a".repeat(40),
-    name: "checks-node-compact-small (1)",
-    status: "completed",
-    conclusion: "success",
-    labels: ["blacksmith-4vcpu-ubuntu-2404"],
-    started_at: "2026-08-27T23:00:00Z",
-    completed_at: "2026-08-27T23:10:00Z",
-    log: compactLog(20),
-    ...overrides,
-  };
-}
-
-const toolingFile = "test/scripts/measured.test.ts";
-
-function samplerToolingLog(seconds: number) {
-  const shard = "core-tooling-1-hosted-1";
-  const [begin, end] = compactLog(seconds + 1, shard).split("\n");
-  return [
-    `2026-08-27T23:00:00Z OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: ${encodeNodeTestGroups([{ shard_name: shard, configs: ["test/vitest/vitest.tooling.config.ts"], includePatterns: [toolingFile] }])}`,
-    begin,
-    `2026-08-27T23:00:01Z [shard:${shard}] ✓ tooling ${toolingFile} (1 test) ${seconds * 1000}ms`,
-    `2026-08-27T23:00:01Z [shard:${shard}] Duration ${seconds + 1}s`,
-    end,
-  ].join("\n");
-}
-
-type SamplerFixture = {
-  runs: ReturnType<typeof samplerRun>[];
-  jobs: ReturnType<typeof samplerJob>[];
-  releaseRuns?: ReturnType<typeof samplerRun>[];
-  toolingRuns?: ReturnType<typeof samplerRun>[];
-  seedRuns?: Record<string, ReturnType<typeof samplerRun>>;
-  runPages?: ReturnType<typeof samplerRun>[][];
-  jobPages?: Record<string, ReturnType<typeof samplerJob>[][]>;
-  jobTotals?: Record<string, number>;
-  baseline?: CiTestTimings;
-};
-
-function withSamplerFixture(
-  fixture: SamplerFixture,
-  check: (context: {
-    invoke: (
-      dryRun?: boolean,
-      count?: number,
-      toolingRunIds?: number[],
-    ) => SpawnSyncReturns<string>;
-    contents: () => string;
-    requests: () => string[][];
-    original: string;
-  }) => void,
-) {
-  const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "openclaw-ci-refit-")));
-  const fakeGh = path.join(directory, "gh");
-  const output = path.join(directory, "timings.json");
-  const requests = path.join(directory, "requests.jsonl");
-  const clock = path.join(directory, "clock.cjs");
-  const original = `${JSON.stringify(fixture.baseline ?? baseline, null, 2)}\n`;
-  try {
-    writeFileSync(output, original);
-    writeFileSync(requests, "");
-    writeFileSync(
-      clock,
-      `const OriginalDate = Date;
-global.Date = class extends OriginalDate {
-  constructor(...args) { super(...(args.length ? args : [${JSON.stringify(sampleNow)}])); }
-  static now() { return OriginalDate.parse(${JSON.stringify(sampleNow)}); }
-};\n`,
-    );
-    writeFileSync(
-      fakeGh,
-      `#!/usr/bin/env node
-const fs = require("node:fs");
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(requests)}, JSON.stringify(args) + "\\n");
-const fixture = ${JSON.stringify(fixture)};
-const endpoint = new URL(args[1], "https://api.github.com/");
-const page = Number(endpoint.searchParams.get("page") || 1);
-const size = Number(endpoint.searchParams.get("per_page") || 100);
-const slice = rows => rows.slice((page - 1) * size, page * size);
-if (args[1] === "--help") {
-  console.log("--allow-escape-sequences");
-} else if (endpoint.pathname.includes("/workflows/")) {
-  const ci = endpoint.pathname.includes("/ci.yml/");
-  const tooling = ci && endpoint.searchParams.get("event") === "pull_request";
-  const main = ci && !tooling;
-  const rows = tooling ? fixture.toolingRuns || [] : main ? fixture.runs : endpoint.pathname.includes("/openclaw-release-checks.yml/") ? fixture.releaseRuns || [] : [];
-  const selected = main && fixture.runPages ? fixture.runPages[page - 1] || [] : slice(rows);
-  console.log(JSON.stringify(args.at(-1).startsWith("[.workflow_runs") ? selected : {total_count: rows.length, workflow_runs: selected}));
-} else if (endpoint.pathname.endsWith("/jobs")) {
-  const match = endpoint.pathname.match(/\\/runs\\/(\\d+)(?:\\/attempts\\/(\\d+))?\\/jobs$/);
-  if (!match) process.exit(2);
-  const key = match[1] + ":" + (match[2] || "all");
-  const rows = fixture.jobs.filter(job => job.run_id === Number(match[1]) && (!match[2] || job.run_attempt === Number(match[2])));
-  const pages = fixture.jobPages?.[key];
-  console.log(JSON.stringify({total_count: fixture.jobTotals?.[key] ?? rows.length, jobs: pages ? pages[page - 1] || [] : slice(rows)}));
-} else if (endpoint.pathname.endsWith("/logs")) {
-  const id = Number(endpoint.pathname.split("/").at(-2));
-  const job = fixture.jobs.find(job => job.id === id);
-  if (!job) process.exit(2);
-  console.log(job.log);
-} else if (/\\/actions\\/runs\\/\\d+$/.test(endpoint.pathname)) {
-  const id = endpoint.pathname.split("/").at(-1);
-  const run = fixture.seedRuns?.[id] || (fixture.toolingRuns || []).find(run => run.id === Number(id));
-  if (!run) process.exit(2);
-  console.log(JSON.stringify(run));
-} else {
-  console.error("Unexpected gh request", args);
-  process.exit(2);
-}\n`,
-    );
-    chmodSync(fakeGh, 0o755);
-    check({
-      original,
-      contents: () => readFileSync(output, "utf8"),
-      requests: () =>
-        readFileSync(requests, "utf8")
-          .trim()
-          .split("\n")
-          .filter(Boolean)
-          .map((line) => JSON.parse(line) as string[]),
-      invoke: (dryRun = false, count = 2, toolingRunIds = []) =>
-        spawnSync(
-          process.execPath,
-          [
-            "--require",
-            clock,
-            "--import",
-            "tsx",
-            "scripts/ci-refit-test-timings.mts",
-            "--runs",
-            String(count),
-            "--repo",
-            "fixture/repo",
-            "--out",
-            output,
-            ...toolingRunIds.flatMap((id) => ["--tooling-run", String(id)]),
-            ...(dryRun ? ["--dry-run"] : []),
-          ],
-          {
-            cwd: fileURLToPath(new URL("../../", import.meta.url)),
-            encoding: "utf8",
-            timeout: 30_000,
-            env: { ...process.env, OPENCLAW_GH_BIN: fakeGh, GH_TOKEN: "fixture-token" },
-          },
-        ),
-    });
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-}
 
 it("rejects a populated baseline without fresh compact contributors before writing", () => {
   withSamplerFixture({ runs: [samplerRun(1), samplerRun(2)], jobs: [] }, (fixture) => {
@@ -1506,7 +1313,7 @@ describe("CI timing sampler provenance", () => {
         baseline: retained,
         runs: [],
         toolingRuns: [samplerRun(3, { event: "pull_request", head_branch: "feature" })],
-        jobs: [samplerJob(31, 3, { log: samplerToolingLog(40) })],
+        jobs: [samplerJob(31, 3, { log: `${workerResources()}\n${samplerToolingLog(40)}` })],
       },
       (fixture) => {
         const dryRun = fixture.invoke(true, 2, [3]);
@@ -1997,12 +1804,18 @@ describe("committed CI timing loader", () => {
       expect(loader.readRepoE2eFileTimings()).toEqual({});
       expect(loader.readCompactGroupTimings("blacksmith")).toEqual({});
       expect(loader.readCompactGroupTimings("github")).toEqual({});
+      expect(loader.readCompactWorkerTimings()).toEqual([]);
     },
   );
 
   it("reads the repo-relative file once and honors the disable switch even after caching", async () => {
     const data = {
       ...baseline,
+      compactWorkerTimings: refitTestTimings(
+        [1, 2].map((id) =>
+          timingRun(id, [{ kind: "compact", labels: ["ubuntu-24.04"], text: workerLog(90) }]),
+        ),
+      ).timings.compactWorkerTimings,
       compactGroupSeconds: { blacksmith: { group: 110 }, github: { group: 181 } },
       repoE2eFileSeconds: { "test/example.e2e.test.ts": 90 },
     };
@@ -2011,11 +1824,13 @@ describe("committed CI timing loader", () => {
     expect(loader.readRepoE2eFileTimings()).toEqual(data.repoE2eFileSeconds);
     expect(loader.readCompactGroupTimings("blacksmith")).toEqual({ group: 110 });
     expect(loader.readCompactGroupTimings("github")).toEqual({ group: 181 });
+    expect(loader.readCompactWorkerTimings()).toEqual(data.compactWorkerTimings);
     vi.stubEnv("OPENCLAW_CI_TEST_TIMINGS", "0");
     expect(loader.readUiE2eFileTimings()).toEqual({ fileSeconds: {}, perFileOverheadSeconds: 0 });
     expect(loader.readRepoE2eFileTimings()).toEqual({});
     expect(loader.readCompactGroupTimings("blacksmith")).toEqual({});
     expect(loader.readCompactGroupTimings("github")).toEqual({});
+    expect(loader.readCompactWorkerTimings()).toEqual([]);
     vi.stubEnv("OPENCLAW_CI_TEST_TIMINGS", undefined);
     expect(loader.readCompactGroupTimings("github")).toEqual({ group: 181 });
     expect(

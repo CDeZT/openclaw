@@ -91,7 +91,7 @@ async function main() {
   console.log(`Frozen UTC window: ${lower} through ${upper} (7 days).\n`);
   console.log("Release workflow SHAs identify tooling, not the measured target.\n");
   console.log(
-    "PR tooling measurements execute the merge-ref; workflow/job SHAs identify the PR head.\n",
+    "PR tooling measurements execute the merge-ref; compact worker observations retain that exact workload and execution class. Workflow/job SHAs identify the PR head.\n",
   );
   console.log(
     "| Source | Run | Attempt | Workflow SHA | Created (UTC) | Parsed profiles | Timing jobs |\n| --- | ---: | ---: | --- | --- | --- | ---: |",
@@ -210,8 +210,9 @@ async function main() {
       total_count: z.number().int().nonnegative(),
       workflow_runs: z.array(
         runSchema.extend({
-          // PRs measure their merge-ref, which is appropriate only for PR-only
-          // tooling. Their workflow/job head_sha identifies the PR head, not that merge.
+          // PRs measure their merge-ref. Only tooling files and exact class/workload
+          // observations admit these samples, never the main compact group maps.
+          // Their workflow/job head_sha identifies the PR head, not that merge.
           // A release dispatch can check out target_ref; push alone proves main.
           event: z.literal(event),
           head_branch: source === "main" ? z.literal("main") : z.string().min(1),
@@ -262,7 +263,8 @@ async function main() {
             ? compact
             : source === "tooling"
               ? contributingRunIds.toolingBlacksmith.length +
-                  contributingRunIds.toolingGithub.length >
+                  contributingRunIds.toolingGithub.length +
+                  contributingRunIds.compactWorkers.length >
                 0
               : contributingRunIds.repoE2e.length > 0;
         if (contributes) {
@@ -352,8 +354,14 @@ async function main() {
   console.log(
     `Independent PR tooling contributors: ${new Set([...toolingBlacksmith, ...toolingGithub]).size} (Blacksmith: ${toolingBlacksmith.length}; GitHub: ${toolingGithub.length}).${seedTooling ? " Explicit tooling seed; single-run measurements allowed." : ""}\n`,
   );
+  console.log(
+    `Independent compact worker contributors: ${contributingRunIds.compactWorkers.length}. Exact runner, CPU, worker, concurrency and workload observations require two runs.\n`,
+  );
   ciTestTimingsSchema.parse(timings);
-  console.log(`Sampled successful CI and release-check runs: ${runIds.join(", ")}\n`);
+  console.log(
+    `Sampled successful main CI, release-check and PR merge-ref runs: ${runIds.join(", ")}\n`,
+  );
+  console.log(`Timing source: ${timings.source}\n`);
   console.log("| Key | Old seconds | New seconds | Delta |\n| --- | ---: | ---: | ---: |");
   for (const change of changes) {
     const delta =

@@ -502,6 +502,23 @@ jobs retain `planConcurrency: 1`. The refit preserves each complete child span,
 including contention, without subtracting setup or rewriting historical costs. Runner-profile
 calibration remains a separate admission policy.
 
+Compact child observations also retain the requested runner label, observed CPU
+count, effective child workers, and admitted plan concurrency. The planner uses
+matching configuration, environment, and complete file membership on the
+candidate job's execution class before packing. A two-worker observation on the
+2-CPU class cannot be replaced by a faster eight-worker observation on the
+32-class. Direct observations are wall seconds, including serial configurations;
+they are not multiplied by a worker ratio or discounted by the hybrid profile.
+Existing admission floors remain intact when a newer observation is faster.
+Worker pins and measured-worker fallback eligibility use the runtime's existing
+owner. Multiple compatible observed allowances retain the largest measured wall
+for admission. If placement loses a larger runner, an exact workload observation
+remains a fallback floor. Only families already using the measured-worker policy
+project that wall to fewer workers using the observed allowance ratio; serial
+groups keep the unscaled wall, and additional workers never imply a speedup.
+Observed job allowances remain separate from each child's worker pin. Missing
+workload observations retain the existing positive fallback costs.
+
 For split compact groups, the refit also records the parent cost from a complete
 generation within one run and runner profile. It sums each part's median span,
 takes the largest complete generation or direct parent measurement in that run,
@@ -533,7 +550,13 @@ compact measurements. Docs-only runs and unparseable logs do not fill that quota
 It also reads the newest five successful `ci.yml` `pull_request` runs for the
 PR-only numbered tooling family. These tests execute the PR merge-ref, not a
 canonical main revision; that provenance is appropriate for PR-only tooling.
-PR logs update only `toolingFileSeconds`, never main compact or release weights.
+PR logs update `toolingFileSeconds` and exact `compactWorkerTimings`; they never
+update legacy main compact parents or release weights. Capacity observations
+retain their exact file inventory, including partial PR selections, so a partial
+selection cannot become a complete parent measurement. Main and PR provenance
+remain separate in the generated source description. Each capacity class uses
+the existing two-independent-run minimum, median, outlier filter, and 15% write
+threshold; missing observations are retained across partial plans.
 Tooling measurements are collected ahead of planner activation: run `35506602947`
 exceeds the current hosted and hybrid row caps when applied. Keep activation
 separate until measured test improvements or approved capacity make every profile fit.

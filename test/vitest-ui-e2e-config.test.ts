@@ -50,6 +50,7 @@ function timingFile(fileSeconds: Record<string, number>, perFileOverheadSeconds 
     source: "fixture measurements",
     uiE2e: { fileSeconds, perFileOverheadSeconds },
     compactGroupSeconds: { blacksmith: {}, github: {} },
+    compactWorkerTimings: [],
     runtimePlacementTimings: { blacksmith: [], github: [] },
     repoE2eFileSeconds: {},
     toolingFileSeconds: { blacksmith: {}, github: {} },

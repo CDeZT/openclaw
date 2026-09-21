@@ -20,6 +20,7 @@ import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { decodeNodeTestGroups } from "./lib/ci-node-test-groups-codec.mts";
+import { usesMeasuredCiNodeTestWorkers } from "./lib/ci-node-test-workers.mts";
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
 import { isConstrainedCiCheckHost, isExclusiveCiTestConfig } from "./lib/local-check-runtime.mts";
 import { parsePositiveInt, readPositiveEnvInt } from "./lib/numeric-options.mjs";
@@ -488,14 +489,6 @@ export async function runShardPlans(plans: ShardPlan[], options: RunShardOptions
       `[shard:resources] logicalCpuCount=${hostResources.logicalCpuCount} totalMemoryBytes=${hostResources.totalMemoryBytes} requested plans=${requestedConcurrency} admitted plans=${concurrency}`,
     );
   }
-  const measuredHost =
-    hostResources !== null &&
-    !isConstrainedCiCheckHost(hostResources) &&
-    concurrency === 1 &&
-    baseEnv.RUNNER_ENVIRONMENT === "self-hosted" &&
-    baseEnv.FROZEN_TARGET !== "true"
-      ? hostResources
-      : null;
   const admittedPlans = plans.map((entry): ShardPlan => {
     if (entry.kind !== "group" || entry.plan.fallbackMaxWorkers === undefined) {
       return entry;
@@ -505,7 +498,15 @@ export async function runShardPlans(plans: ShardPlan[], options: RunShardOptions
       entry.plan.minTotalMemoryBytes === undefined
         ? 0
         : parsePositiveInt(entry.plan.minTotalMemoryBytes, "Worker memory floor");
-    if (measuredHost && measuredHost.totalMemoryBytes >= minTotalMemoryBytes) {
+    if (
+      usesMeasuredCiNodeTestWorkers({
+        hostResources,
+        concurrency,
+        runnerEnvironment: baseEnv.RUNNER_ENVIRONMENT,
+        frozenTarget: baseEnv.FROZEN_TARGET,
+        minTotalMemoryBytes,
+      })
+    ) {
       return entry;
     }
     return {

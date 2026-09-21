@@ -54,12 +54,14 @@ import {
   isParallelCommandsGroup,
   estimateCommandWorkerSeconds,
 } from "./ci-command-test-plan.mts";
+import { createCompactWorkerCostResolver } from "./ci-compact-worker-cost.mts";
 import { isCiProofTestFile } from "./ci-proof-test-inventory.mts";
 import { rebalanceRuntimeTestJobs } from "./ci-runtime-test-placement.mts";
 import { isRuntimePlacementIncludePatterns } from "./ci-test-timings-schema.mts";
 import {
   readCompactGroupTimings,
   readCompleteSplitGenerationSeconds,
+  readCompactWorkerTimings,
   readRuntimePlacementTimings,
   resolveRuntimePlacementSeconds,
 } from "./ci-test-timings.mts";
@@ -3702,6 +3704,39 @@ function createCompactNodeTestShardBundles(
     );
   const includeTooling = compactMode !== "push" && includesReleaseOnlyTooling(options);
   const isBlacksmithProfile = (options.runnerBackend ?? "blacksmith") === "blacksmith";
+  const usesBlacksmithCapacity = (runner: string) =>
+    isBlacksmithProfile ||
+    (options.runnerBackend === "hybrid" &&
+      [DEFAULT_NODE_TEST_RUNNER, BUNDLED_NODE_TEST_RUNNER, EXTRA_LARGE_NODE_TEST_RUNNER].includes(
+        runner,
+      ));
+  const capacityForGroups = (groups: NodeTestShardGroup[]) => {
+    const owner = groups[0]!;
+    const requestedConcurrency =
+      usesBlacksmithCapacity(owner.runner) &&
+      groups.length > 1 &&
+      groups.every(isParallelCompactGroup)
+        ? 2
+        : 1;
+    const promoted =
+      owner.runner === EXTRA_LARGE_NODE_TEST_RUNNER ||
+      requestedConcurrency === 2 ||
+      (isBlacksmithProfile && groups.some((group) => group.configs.includes(TOOLING_CONFIG))) ||
+      (options.runnerBackend === "hybrid" &&
+        usesBlacksmithCapacity(owner.runner) &&
+        groups.some((group) =>
+          group.includePatterns?.some((file) => TOOLING_DECLARATION_COMPILER_TEST_FILES.has(file)),
+        )) ||
+      (usesBlacksmithCapacity(owner.runner) &&
+        groups.some((group) => group.shard_name === "agentic-cli"));
+    return {
+      runner: promoted ? EXTRA_LARGE_NODE_TEST_RUNNER : owner.runner,
+      requestedConcurrency,
+      planConcurrency: groups.some((group) => group.configs.some(isExclusiveCiTestConfig))
+        ? 1
+        : requestedConcurrency,
+    };
+  };
   const packsHostedTooling = compactMode === "pull-request" && options.runnerBackend === "github";
   let bestTailDonation: HostedToolingTailDonation | undefined;
   const collectTailDonation =
@@ -3851,6 +3886,8 @@ function createCompactNodeTestShardBundles(
     NodeTestShardGroup,
     { seconds: number; family: string | undefined }
   >();
+  const workerTimings = readCompactWorkerTimings();
+  const measuredStripeSeconds = createCompactWorkerCostResolver(workerTimings);
   const prepareStripe = (group: NodeTestShardGroup) => {
     let facts = stripeFacts.get(group);
     if (!facts) {
@@ -3865,12 +3902,30 @@ function createCompactNodeTestShardBundles(
     }
     return facts;
   };
-  const estimateStripeSeconds = (group: NodeTestShardGroup) => prepareStripe(group).seconds;
-  const estimateBinSeconds = (groups: NodeTestShardGroup[]) => {
+  const estimateStripeSeconds = (
+    group: NodeTestShardGroup,
+    capacity: Pick<CompactNodeTestShard, "runner" | "planConcurrency"> = capacityForGroups([group]),
+  ) =>
+    Math.max(
+      prepareStripe(group).seconds,
+      measuredStripeSeconds(group, {
+        ...capacity,
+        runner:
+          options.runnerBackend === "github" || !usesBlacksmithCapacity(capacity.runner)
+            ? "ubuntu-24.04"
+            : capacity.runner === BUNDLED_NODE_TEST_RUNNER
+              ? DEFAULT_NODE_TEST_RUNNER
+              : capacity.runner,
+      }) ?? 0,
+    );
+  const estimateBinSeconds = (
+    groups: NodeTestShardGroup[],
+    capacity: Pick<CompactNodeTestShard, "runner" | "planConcurrency"> = capacityForGroups(groups),
+  ) => {
     const mode = mergeVitestPretestBuildModes(groups.map((group) => group.pretestBuildMode));
     const buildSeconds = mode ? VITEST_PRETEST_BUILD_SECONDS[mode] : 0;
     return (
-      groups.reduce((seconds, group) => seconds + estimateStripeSeconds(group), 0) +
+      groups.reduce((seconds, group) => seconds + estimateStripeSeconds(group, capacity), 0) +
       Math.round(
         buildSeconds *
           (options.runnerBackend === "github" ? COMPACT_GITHUB_GROUP_SECONDS_SCALE : 1),
@@ -3899,12 +3954,6 @@ function createCompactNodeTestShardBundles(
     (sharedFamily || hasDistinctStripeFamilies(groups)) &&
     (parallel || groups.length <= COMPACT_NODE_TEST_JOB_GROUPS) &&
     seconds(groups) <= secondsCap;
-  const usesBlacksmithCapacity = (runner: string) =>
-    isBlacksmithProfile ||
-    (options.runnerBackend === "hybrid" &&
-      [DEFAULT_NODE_TEST_RUNNER, BUNDLED_NODE_TEST_RUNNER, EXTRA_LARGE_NODE_TEST_RUNNER].includes(
-        runner,
-      ));
   const hostedToolingGroups: NodeTestShardGroup[] = [];
   let packedBins = [...groupsByRunner.values()].flatMap((groups) => {
     const usesBlacksmithRunner = usesBlacksmithCapacity(groups[0].runner);
@@ -4056,38 +4105,17 @@ function createCompactNodeTestShardBundles(
     const jobIndex = (nextJobIndexByClass.get(jobClass) ?? 0) + 1;
     nextJobIndexByClass.set(jobClass, jobIndex);
     const checkName = `checks-node-compact-${jobClass}-${jobIndex}`;
-    const runner = firstGroup.runner;
     const pretestBuildMode = mergeVitestPretestBuildModes(
       bin.map((group) => group.pretestBuildMode),
     );
-    // The runner admits overlap only after measuring capacity; exclusive and
-    // runtime-building jobs stay serial regardless of the requested class.
-    const planConcurrency =
-      usesBlacksmithCapacity(firstGroup.runner) &&
-      bin.length > 1 &&
-      bin.every(isParallelCompactGroup)
-        ? 2
-        : 1;
-    // Tooling and the full CLI need host capacity while keeping serial isolation.
-    // Promote only the emitted runner so packing, names and timing keys stay stable.
-    const capacityRunner =
-      runner === EXTRA_LARGE_NODE_TEST_RUNNER ||
-      planConcurrency === 2 ||
-      (isBlacksmithProfile && bin.some((group) => group.configs.includes(TOOLING_CONFIG))) ||
-      (options.runnerBackend === "hybrid" &&
-        usesBlacksmithCapacity(runner) &&
-        bin.some((group) =>
-          group.includePatterns?.some((file) => TOOLING_DECLARATION_COMPILER_TEST_FILES.has(file)),
-        )) ||
-      (usesBlacksmithCapacity(runner) && bin.some((group) => group.shard_name === "agentic-cli"))
-        ? EXTRA_LARGE_NODE_TEST_RUNNER
-        : runner;
+    const capacity = capacityForGroups(bin);
+    const planConcurrency = capacity.requestedConcurrency;
     compactJobs.push({
       checkName,
       groups: bin,
       ...(pretestBuildMode ? { pretestBuildMode } : {}),
       requiresDist: firstGroup.requiresDist,
-      runner: capacityRunner,
+      runner: capacity.runner,
       shardName: `compact-${jobClass}-${jobIndex}`,
       // Whole-config groups run entire suites; keep their generous timeout.
       ...(bin.some((group) => !group.includePatterns)
@@ -4185,21 +4213,23 @@ function createCompactNodeTestShardBundles(
     if (placementJobs.some((job) => job.groups.some((group) => measured(group) !== undefined))) {
       // Observe complete existing envelopes only after splitting/packing. These
       // floors cannot feed a runtime cost back into ordinary stripe generation.
-      const cost = (groups: NodeTestShardGroup[]) =>
+      const cost = (groups: NodeTestShardGroup[], job: CompactNodeTestShard) =>
         VITEST_PRETEST_BUILD_SECONDS.runtime +
         groups.reduce(
           (total, group) =>
             total +
             Math.max(
-              estimateStripeSeconds(group),
+              estimateStripeSeconds(group, { ...job, planConcurrency: 1 }),
               isParallelCommandsGroup(group) || measured(group) === undefined
                 ? estimateCompactGroupSeconds(group, "hybrid")
                 : Math.round(measured(group)! * COMPACT_HYBRID_GROUP_SECONDS_SCALE),
             ),
           0,
         );
-      const admits = (groups: NodeTestShardGroup[]) =>
-        admitsCompactBin(groups, COMPACT_HYBRID_RUNTIME_JOB_SECONDS, cost);
+      const admits = (groups: NodeTestShardGroup[], job: CompactNodeTestShard) =>
+        admitsCompactBin(groups, COMPACT_HYBRID_RUNTIME_JOB_SECONDS, (entries) =>
+          cost(entries, job),
+        );
       const prepareRecipient = (job: CompactNodeTestShard) => {
         if (job.planConcurrency !== 2) {
           return job.groups;
@@ -4316,6 +4346,12 @@ function createCompactNodeTestShardBundles(
     if (usesBlacksmithCapacity(job.runner) && job.runner === BUNDLED_NODE_TEST_RUNNER) {
       job.runner = DEFAULT_NODE_TEST_RUNNER;
     }
+    // Final placement can retain a promoted host after losing a sibling.
+    // Preserve its admission floor while pricing that actual execution class.
+    job.predictedSeconds = Math.max(
+      job.predictedSeconds ?? 0,
+      Math.ceil(estimateBinSeconds(job.groups, job)),
+    );
   }
 
   // Split/packing admission retains the two-worker retry budget. Once placement

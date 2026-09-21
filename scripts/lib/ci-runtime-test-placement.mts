@@ -10,15 +10,15 @@ export function rebalanceRuntimeTestJobs(
     runnerRank,
     prepareRecipient,
   }: {
-    cost: (groups: NodeTestShardGroup[]) => number;
-    admits: (groups: NodeTestShardGroup[]) => boolean;
+    cost: (groups: NodeTestShardGroup[], job: CompactNodeTestShard) => number;
+    admits: (groups: NodeTestShardGroup[], job: CompactNodeTestShard) => boolean;
     runnerRank: (job: Pick<CompactNodeTestShard, "runner">) => number;
     prepareRecipient: (job: CompactNodeTestShard) => NodeTestShardGroup[] | undefined;
   },
 ) {
   const donors = jobs.filter((job) => job.pretestBuildMode === "runtime");
-  for (const donor of donors.toSorted((a, b) => cost(b.groups) - cost(a.groups))) {
-    if (admits(donor.groups)) {
+  for (const donor of donors.toSorted((a, b) => cost(b.groups, b) - cost(a.groups, a))) {
+    if (admits(donor.groups, donor)) {
       continue;
     }
     let best:
@@ -39,7 +39,7 @@ export function rebalanceRuntimeTestJobs(
         continue;
       }
       const remaining = donor.groups.filter((entry) => entry !== group);
-      if (!admits(remaining)) {
+      if (!admits(remaining, donor)) {
         continue;
       }
       for (const recipient of jobs) {
@@ -52,12 +52,12 @@ export function rebalanceRuntimeTestJobs(
           continue;
         }
         const combined = [...prepared, group];
-        const recipientSeconds = cost(combined);
-        const maximum = Math.max(cost(remaining), recipientSeconds);
+        const recipientSeconds = cost(combined, recipient);
+        const maximum = Math.max(cost(remaining, donor), recipientSeconds);
         // When the retained donor dominates both choices, keep more receiver
         // headroom instead of selecting whichever job happened to appear first.
         if (
-          admits(combined) &&
+          admits(combined, recipient) &&
           (!best ||
             maximum < best.maximum ||
             (maximum === best.maximum &&
@@ -81,7 +81,7 @@ export function rebalanceRuntimeTestJobs(
     // An over-budget unchanged plan is still runnable; estimates are not gates
     // for test coverage. Only proposed replacements must satisfy admission.
     if (job.pretestBuildMode === "runtime") {
-      job.predictedSeconds = Math.ceil(cost(job.groups));
+      job.predictedSeconds = Math.ceil(cost(job.groups, job));
     }
   }
 }

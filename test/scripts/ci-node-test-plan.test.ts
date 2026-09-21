@@ -1311,6 +1311,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     vi.doMock("../../scripts/lib/ci-test-timings.mts", () => ({
       ...testTimings,
       readCompactGroupTimings: () => timings,
+      readCompactWorkerTimings: () => [],
       readRuntimePlacementTimings: () => [],
     }));
     try {
@@ -1863,6 +1864,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   );
 
   it("keeps hybrid fallback bounds when other measurements change", () => {
+    vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([]);
     vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
     const timings = vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({});
     const options = {
@@ -2166,6 +2168,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   });
 
   it("partitions whole-config runtime consumers from ordinary serial CLI work", () => {
+    vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([]);
     const originalShards = fullSuiteVitestShards.slice();
     const config = "test/vitest/vitest.cli-process.config.ts";
     const selected = originalShards
@@ -2227,6 +2230,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   });
 
   it("spends the hybrid CLI budget only on complete affordable non-build bins", () => {
+    vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([]);
     const originalShards = fullSuiteVitestShards.slice();
     const originalProcessFiles = cliProcessTestFiles.slice();
     const configs = new Set([
@@ -2661,6 +2665,31 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
                 : 150;
           if (profile.name === "GitHub-hosted" && shard.pretestBuildMode) {
             expect(shard.groups.every((group) => group.pretestBuildMode)).toBe(true);
+          }
+          if ((shard.predictedSeconds ?? 0) > budget) {
+            // A measured indivisible child retains its truthful wall and owns
+            // the job alone; its cost cannot admit another packing partner.
+            expect(shard.groups).toHaveLength(1);
+            const group = shard.groups[0]!;
+            const observation = expectDefined(
+              testTimings
+                .readCompactWorkerTimings()
+                .find(
+                  (entry) =>
+                    entry.runner === shard.runner &&
+                    entry.configs.join(",") === group.configs.join(",") &&
+                    entry.includePatterns.toSorted().join(",") ===
+                      group.includePatterns?.toSorted().join(","),
+                ),
+              "measured over-budget singleton",
+            );
+            expect(shard.predictedSeconds).toBe(
+              observation.seconds +
+                (shard.pretestBuildMode
+                  ? shardMetadata.VITEST_PRETEST_BUILD_SECONDS[shard.pretestBuildMode]
+                  : 0),
+            );
+            continue;
           }
           expect(shard.predictedSeconds, profile.name).toBeLessThanOrEqual(budget);
         }
@@ -3916,6 +3945,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   it.each(["blacksmith", "github", "hybrid"])(
     "shares one prepared runtime across affordable %s tooling groups",
     (runnerBackend) => {
+      vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([]);
       const targets = [
         PRIVATE_QA_TOOLING_TEST,
         "test/e2e/qa-lab/runtime/gateway-support-export-runtime.test.ts",
@@ -4099,6 +4129,61 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expect(await createToolingFixturePlan(params)).toEqual(plan);
     },
   );
+
+  it("admits compact children using their observed runner and worker class", async () => {
+    const fixture = {
+      files: Array.from({ length: 32 }, (_, index) => `test/scripts/capacity-${index}.test.ts`),
+      shards: [
+        {
+          config: "test/vitest/vitest.full-core-tooling.config.ts",
+          name: "core-tooling",
+          projects: ["test/vitest/vitest.tooling.config.ts"],
+        },
+      ],
+      timings: {},
+      fileSeconds: () => 2,
+      options: {
+        compactMode: "pull-request" as const,
+        runnerBackend: "hybrid",
+        includeReleaseOnlyPluginShards: false as const,
+      },
+    };
+    const baseline = await createToolingFixturePlan(fixture);
+    const observations = baseline
+      .flatMap((job) => job.groups)
+      .map((group) => ({
+        runner: DEFAULT_NODE_TEST_RUNNER,
+        cpuCount: 2,
+        totalMemoryBytes: 8 * 1024 ** 3,
+        jobWorkers: 2,
+        workers: 2,
+        planConcurrency: 1,
+        configs: group.configs,
+        env: {},
+        includePatterns: group.includePatterns!,
+        seconds: 100,
+      }));
+    vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([
+      ...observations,
+      ...observations.map((observation) => ({
+        ...observation,
+        runner: EXTRA_LARGE_NODE_TEST_RUNNER,
+        cpuCount: 8,
+        totalMemoryBytes: 32 * 1024 ** 3,
+        jobWorkers: 8,
+        workers: 8,
+        seconds: 1,
+      })),
+    ]);
+    const measured = await createToolingFixturePlan(fixture);
+    expect(measured.length).toBeGreaterThan(baseline.length);
+    expect(measured.map((job) => [job.predictedSeconds, job.groups.length])).toEqual(
+      observations.map(() => [100, 1]),
+    );
+    expect(
+      measured.flatMap((job) => job.groups.flatMap((group) => group.includePatterns!)).toSorted(),
+    ).toEqual(fixture.files.toSorted());
+  });
 
   it("shares a small hosted tooling tail without lowering its runner owner", async () => {
     const compiler = "test/scripts/write-unified-entry-dts.test.ts";

@@ -4,6 +4,7 @@ import {
   ciTestTimingsSchema,
   isRuntimePlacementIncludePatterns,
   type CiTestTimings,
+  type CompactWorkerTiming,
   type RuntimePlacementTiming,
 } from "./ci-test-timings-schema.mts";
 import { parseCompactSplitTimingKey } from "./vitest-shard-metadata.mts";
@@ -11,6 +12,7 @@ import { parseCompactSplitTimingKey } from "./vitest-shard-metadata.mts";
 const emptyUiTimings = { fileSeconds: {}, perFileOverheadSeconds: 0 };
 const emptyGroupTimings: Readonly<Record<string, number>> = {};
 const emptyRuntimeTimings: readonly RuntimePlacementTiming[] = [];
+const emptyCompactWorkerTimings: readonly CompactWorkerTiming[] = [];
 let cachedTimings: CiTestTimings | null | undefined;
 let cachedReadFileSync: typeof fs.readFileSync | undefined;
 
@@ -48,6 +50,10 @@ export function readCompactGroupTimings(
   profile: "blacksmith" | "github",
 ): Readonly<Record<string, number>> {
   return readTestTimings()?.compactGroupSeconds[profile] ?? emptyGroupTimings;
+}
+
+export function readCompactWorkerTimings(): readonly CompactWorkerTiming[] {
+  return readTestTimings()?.compactWorkerTimings ?? emptyCompactWorkerTimings;
 }
 
 export function readRepoE2eFileTimings(): Readonly<Record<string, number>> {

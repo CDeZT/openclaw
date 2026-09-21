@@ -1,9 +1,13 @@
 import { stripVTControlCharacters } from "node:util";
 import { decodeNodeTestGroups } from "./ci-node-test-groups-codec.mts";
+import { usesMeasuredCiNodeTestWorkers } from "./ci-node-test-workers.mts";
 import {
+  compactWorkerTimingIdentity,
+  isCompactWorkerTiming,
   isRuntimePlacementTiming,
   runtimePlacementTimingIdentity,
   type CiTestTimings,
+  type CompactWorkerTiming,
   type RuntimePlacementTiming,
 } from "./ci-test-timings-schema.mts";
 import { parseCompactSplitTimingKey } from "./vitest-shard-metadata.mts";
@@ -25,7 +29,18 @@ type RuntimeTimingGroup = {
   configs: string[];
   includePatterns: string[];
   env?: Record<string, string>;
+  fallbackMaxWorkers?: number;
+  minTotalMemoryBytes?: number;
 };
+
+function isStringEnv(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((entry) => typeof entry === "string")
+  );
+}
 
 function readRuntimeTimingGroups(text: string): RuntimeTimingGroup[] {
   const encoded = new Set(
@@ -56,16 +71,182 @@ function readRuntimeTimingGroups(text: string): RuntimeTimingGroup[] {
         "includePatterns" in group &&
         strings(group.includePatterns) &&
         group.includePatterns.length > 0 &&
-        (!("env" in group) ||
-          (typeof group.env === "object" &&
-            group.env !== null &&
-            !Array.isArray(group.env) &&
-            Object.values(group.env).every((value) => typeof value === "string")))
+        (!("fallbackMaxWorkers" in group) ||
+          (typeof group.fallbackMaxWorkers === "number" &&
+            Number.isSafeInteger(group.fallbackMaxWorkers) &&
+            group.fallbackMaxWorkers > 0)) &&
+        (!("minTotalMemoryBytes" in group) ||
+          (typeof group.minTotalMemoryBytes === "number" &&
+            Number.isSafeInteger(group.minTotalMemoryBytes) &&
+            group.minTotalMemoryBytes > 0)) &&
+        (!("env" in group) || isStringEnv(group.env))
       );
     });
   } catch {
     // Historical/malformed descriptors cannot supply a placement identity.
     return [];
+  }
+}
+
+function readCompactWorkerLog(
+  text: string,
+  labels: string[],
+  samples: Samples,
+  observations: Map<string, CompactWorkerTiming>,
+) {
+  const unique = (values: string[]) => {
+    const distinct = new Set(values);
+    return distinct.size === 1 ? [...distinct][0] : undefined;
+  };
+  const runner = unique(labels.filter((label) => /^(?:blacksmith-|ubuntu-)/u.test(label)));
+  const workersText = unique(
+    [
+      ...text.matchAll(/\d{4}-\d\d-\d\dT[\d:.]+Z\s+detected cores=\d+ [^\n]* -> workers=(\d+)$/gmu),
+    ].map((match) => match[1]!),
+  );
+  const resourcesText = unique(
+    [
+      ...text.matchAll(
+        /\d{4}-\d\d-\d\dT[\d:.]+Z\s+\[shard:resources\] (logicalCpuCount=\d+ totalMemoryBytes=\d+ requested plans=\d+ admitted plans=\d+)$/gmu,
+      ),
+    ].map((match) => match[1]!),
+  );
+  const resources =
+    resourcesText &&
+    /^logicalCpuCount=(\d+) totalMemoryBytes=(\d+) requested plans=\d+ admitted plans=(\d+)$/u.exec(
+      resourcesText,
+    );
+  if (!runner || !workersText || !resources) {
+    return;
+  }
+  const envLines = text
+    .split("\n")
+    .map((line) => /^\d{4}-\d\d-\d\dT[\d:.]+Z\s+(.*)$/u.exec(line)?.[1] ?? "");
+  const readEnv = (name: string) => {
+    const values = new Set<string>();
+    for (let index = 0; index < envLines.length; index += 1) {
+      const match = new RegExp(`^${name}: (.*)$`, "u").exec(envLines[index]!);
+      if (!match) {
+        continue;
+      }
+      let value = match[1]!.trim();
+      // Actions pretty-prints toJson(matrix.env), timestamping every line.
+      // Env values are strings, so an object cannot contain a nested closing row.
+      if (value === "{") {
+        while (++index < envLines.length) {
+          const line = envLines[index]!;
+          value += `\n${line}`;
+          if (line.trim() === "}") {
+            break;
+          }
+        }
+      }
+      values.add(value);
+    }
+    return values;
+  };
+  const runnerEnvironments = readEnv("RUNNER_ENVIRONMENT");
+  const frozenTargets = readEnv("FROZEN_TARGET");
+  const jobEnvs = readEnv("OPENCLAW_NODE_TEST_ENV_JSON");
+  if ([runnerEnvironments, frozenTargets, jobEnvs].some((values) => values.size > 1)) {
+    return;
+  }
+  const hostResources = {
+    logicalCpuCount: Number(resources[1]),
+    totalMemoryBytes: Number(resources[2]),
+  };
+  const planConcurrency = Number(resources[3]);
+  const jobWorkers = Number(workersText);
+  if (
+    ![
+      hostResources.logicalCpuCount,
+      hostResources.totalMemoryBytes,
+      planConcurrency,
+      jobWorkers,
+    ].every((value) => Number.isSafeInteger(value) && value > 0)
+  ) {
+    return;
+  }
+  let jobEnv: Record<string, string> = {};
+  const encodedJobEnv = [...jobEnvs][0];
+  if (encodedJobEnv) {
+    try {
+      const value: unknown = JSON.parse(encodedJobEnv);
+      if (value !== null) {
+        if (!isStringEnv(value)) {
+          return;
+        }
+        jobEnv = value;
+      }
+    } catch {
+      return;
+    }
+  }
+  const descriptors = readRuntimeTimingGroups(text);
+  const starts = new Map<string, number>();
+  for (const line of text.split("\n")) {
+    const event =
+      /(\d{4}-\d\d-\d\dT[\d:.]+Z)\s+\[shard:([^\]]+)\] (begin|end \(exit (\d+)\))/u.exec(line);
+    if (!event) {
+      continue;
+    }
+    const key = event[2]!;
+    if (event[3] === "begin") {
+      starts.set(key, Date.parse(event[1]!));
+      continue;
+    }
+    const started = starts.get(key);
+    starts.delete(key);
+    const matches = descriptors.filter((group) => (group.timing_key ?? group.shard_name) === key);
+    if (event[4] !== "0" || started === undefined || matches.length !== 1) {
+      continue;
+    }
+    const group = matches[0]!;
+    const pins = [jobEnv.OPENCLAW_VITEST_MAX_WORKERS, group.env?.OPENCLAW_VITEST_MAX_WORKERS]
+      .filter((value) => value !== undefined)
+      .map(Number);
+    if (!pins.every((value) => Number.isSafeInteger(value) && value > 0)) {
+      continue;
+    }
+    const fallback =
+      group.fallbackMaxWorkers !== undefined &&
+      !usesMeasuredCiNodeTestWorkers({
+        hostResources,
+        concurrency: planConcurrency,
+        runnerEnvironment: [...runnerEnvironments][0],
+        frozenTarget: [...frozenTargets][0],
+        minTotalMemoryBytes: group.minTotalMemoryBytes,
+      })
+        ? group.fallbackMaxWorkers
+        : jobWorkers;
+    const duration = (Date.parse(event[1]!) - started) / 1000;
+    const observation = {
+      runner,
+      cpuCount: hostResources.logicalCpuCount,
+      totalMemoryBytes: hostResources.totalMemoryBytes,
+      jobWorkers,
+      workers: Math.min(jobWorkers, fallback, ...pins),
+      planConcurrency,
+      configs: group.configs,
+      env: Object.fromEntries(
+        Object.entries({ ...jobEnv, ...group.env })
+          .filter(([name]) => name !== "OPENCLAW_VITEST_MAX_WORKERS")
+          .toSorted(([a], [b]) => a.localeCompare(b)),
+      ),
+      includePatterns: group.includePatterns.toSorted(),
+      seconds: Math.max(1, Math.round(duration)),
+    };
+    if (duration > 0 && isCompactWorkerTiming(observation)) {
+      const identity = compactWorkerTimingIdentity(observation);
+      observations.set(identity, {
+        ...observation,
+        totalMemoryBytes: Math.min(
+          observation.totalMemoryBytes,
+          observations.get(identity)?.totalMemoryBytes ?? Infinity,
+        ),
+      });
+      recordSample(samples, identity, duration);
+    }
   }
 }
 const MIN_PRUNE_RUNS = 3;
@@ -279,6 +460,15 @@ function runtimePlacementSecondsMap(observations: readonly RuntimePlacementTimin
   );
 }
 
+function compactWorkerSecondsMap(observations: readonly CompactWorkerTiming[] = []) {
+  return Object.fromEntries(
+    observations.map((observation) => [
+      compactWorkerTimingIdentity(observation),
+      observation.seconds,
+    ]),
+  );
+}
+
 function recordCompleteParentSamples(samples: Samples, observedParents: Set<string>) {
   const generations = new Map<
     string,
@@ -353,6 +543,7 @@ export function refitTestTimings(
     github: new Map<string, number[]>(),
     toolingBlacksmith: new Map<string, number[]>(),
     toolingGithub: new Map<string, number[]>(),
+    compactWorkers: new Map<string, number[]>(),
   };
   const contributingRuns = {
     uiE2e: new Set<number>(),
@@ -361,6 +552,7 @@ export function refitTestTimings(
     github: new Set<number>(),
     toolingBlacksmith: new Set<number>(),
     toolingGithub: new Set<number>(),
+    compactWorkers: new Set<number>(),
   };
   const overhead: number[] = [];
   const observedParents = { blacksmith: new Set<string>(), github: new Set<string>() };
@@ -373,6 +565,13 @@ export function refitTestTimings(
       .flat()
       .map((observation) => [runtimePlacementTimingIdentity(observation), observation]),
   );
+  const previousCompactWorkers = new Map<string, CompactWorkerTiming>(
+    (previous?.compactWorkerTimings ?? []).map((observation) => [
+      compactWorkerTimingIdentity(observation),
+      observation,
+    ]),
+  );
+  const compactWorkerDescriptors = new Map(previousCompactWorkers);
   const uniqueRuns = new Map<number, CiTimingRun>();
   for (const run of runs) {
     const retained = uniqueRuns.get(run.id);
@@ -390,6 +589,7 @@ export function refitTestTimings(
       github: new Map<string, number[]>(),
       toolingBlacksmith: new Map<string, number[]>(),
       toolingGithub: new Map<string, number[]>(),
+      compactWorkers: new Map<string, number[]>(),
     };
     const currentRuntime = {
       blacksmith: new Map<string, number[]>(),
@@ -397,6 +597,9 @@ export function refitTestTimings(
     };
     for (const log of run.logs) {
       const text = stripVTControlCharacters(log.text);
+      if (!options.seedTooling && (log.kind === "tooling" || log.kind === "compact")) {
+        readCompactWorkerLog(text, log.labels, current.compactWorkers, compactWorkerDescriptors);
+      }
       if (log.kind === "tooling") {
         const profile = log.labels.some((label) => label.startsWith("blacksmith-"))
           ? "toolingBlacksmith"
@@ -422,6 +625,7 @@ export function refitTestTimings(
       "github",
       "toolingBlacksmith",
       "toolingGithub",
+      "compactWorkers",
     ] as const) {
       // Missing or unparseable profile logs are not evidence that its keys disappeared.
       if (current[profile].size > 0) {
@@ -440,6 +644,12 @@ export function refitTestTimings(
     measuredOverhead === undefined ||
     (oldOverhead !== undefined && Math.abs(measuredOverhead - oldOverhead) <= oldOverhead * 0.15);
   const runIds = [...new Set(runs.map((run) => run.id))].toSorted((a, b) => a - b);
+  const sourceRunIds = (kinds: CiTimingRun["logs"][number]["kind"][]) =>
+    [...uniqueRuns.values()]
+      .filter((run) => run.logs.some((log) => kinds.includes(log.kind)))
+      .map((run) => run.id)
+      .toSorted((a, b) => a - b)
+      .join(", ") || "none";
   function refitRuntime(profile: "blacksmith" | "github"): RuntimePlacementTiming[] {
     return Object.entries(
       refitMap(
@@ -466,6 +676,16 @@ export function refitTestTimings(
         observedParents.github,
       ),
     },
+    // PRs can select arbitrary subsets. Keep unobserved classes and workloads;
+    // one run, including retries, cannot establish a new class measurement.
+    compactWorkerTimings: Object.entries(
+      refitMap(samples.compactWorkers, compactWorkerSecondsMap(previous?.compactWorkerTimings), 0),
+    ).map(([identity, measuredSeconds]) => {
+      const retained = previousCompactWorkers.get(identity);
+      return retained?.seconds === measuredSeconds
+        ? retained
+        : Object.assign({}, compactWorkerDescriptors.get(identity)!, { seconds: measuredSeconds });
+    }),
     repoE2eFileSeconds: refitMap(
       samples.repoE2e,
       previous?.repoE2eFileSeconds,
@@ -477,7 +697,7 @@ export function refitTestTimings(
     },
     source: options.seedTooling
       ? `tooling seed from successful pull_request CI merge-ref runs: ${runIds.join(", ")}; retained other timings: ${previous?.source ?? "none"}`
-      : `median of ${runIds.length} successful CI and release-check runs: ${runIds.join(", ")}`,
+      : `medians from successful main CI runs: ${sourceRunIds(["compact", "uiE2e"])}; release-check runs: ${sourceRunIds(["repoE2e"])}; pull_request CI merge-ref runs (tooling files and exact compact worker observations): ${sourceRunIds(["tooling"])}`,
     // PR plans may select only part of tooling. Absence is not evidence that
     // a file disappeared; preserve unobserved measurements across those windows.
     toolingFileSeconds: {
@@ -517,6 +737,11 @@ export function refitTestTimings(
   };
   const changes: { key: string; old: number | undefined; next: number | undefined }[] = [];
   const comparedMaps: [string, Record<string, number>, Record<string, number> | undefined][] = [
+    [
+      "compactWorkerTimings",
+      compactWorkerSecondsMap(timings.compactWorkerTimings),
+      compactWorkerSecondsMap(previous?.compactWorkerTimings),
+    ],
     ...(["blacksmith", "github"] as const).map(
       (profile): [string, Record<string, number>, Record<string, number>] => [
         `runtimePlacementTimings.${profile}`,
@@ -576,6 +801,7 @@ export function refitTestTimings(
       uiE2e: [...contributingRuns.uiE2e].toSorted((a, b) => a - b),
       toolingBlacksmith: [...contributingRuns.toolingBlacksmith].toSorted((a, b) => a - b),
       toolingGithub: [...contributingRuns.toolingGithub].toSorted((a, b) => a - b),
+      compactWorkers: [...contributingRuns.compactWorkers].toSorted((a, b) => a - b),
     },
   };
 }

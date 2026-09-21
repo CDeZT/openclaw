@@ -6,6 +6,34 @@ export type RuntimePlacementTiming = {
   seconds: number;
 };
 
+export type CompactWorkerTiming = {
+  runner: string;
+  cpuCount: number;
+  totalMemoryBytes: number;
+  jobWorkers: number;
+  workers: number;
+  planConcurrency: number;
+  configs: string[];
+  env: Record<string, string>;
+  includePatterns: string[];
+  seconds: number;
+};
+
+export function compactWorkerTimingIdentity(group: Omit<CompactWorkerTiming, "seconds">): string {
+  return JSON.stringify({
+    runner: group.runner,
+    cpuCount: group.cpuCount,
+    jobWorkers: group.jobWorkers,
+    workers: group.workers,
+    planConcurrency: group.planConcurrency,
+    configs: group.configs,
+    env: Object.entries(group.env)
+      .filter(([key]) => key !== "OPENCLAW_VITEST_MAX_WORKERS")
+      .toSorted(([a], [b]) => a.localeCompare(b)),
+    includePatterns: group.includePatterns.toSorted(),
+  });
+}
+
 export function runtimePlacementTimingIdentity(
   group: Omit<RuntimePlacementTiming, "seconds">,
 ): string {
@@ -19,6 +47,7 @@ export function runtimePlacementTimingIdentity(
 
 export type CiTestTimings = {
   compactGroupSeconds: { blacksmith: Record<string, number>; github: Record<string, number> };
+  compactWorkerTimings: CompactWorkerTiming[];
   runtimePlacementTimings: {
     blacksmith: RuntimePlacementTiming[];
     github: RuntimePlacementTiming[];
@@ -104,11 +133,50 @@ function isRuntimePlacementTimings(value: unknown): value is RuntimePlacementTim
   );
 }
 
+export function isCompactWorkerTiming(value: unknown): value is CompactWorkerTiming {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      "runner",
+      "cpuCount",
+      "totalMemoryBytes",
+      "jobWorkers",
+      "workers",
+      "planConcurrency",
+      "configs",
+      "env",
+      "includePatterns",
+      "seconds",
+    ]) &&
+    typeof value.runner === "string" &&
+    value.runner.length > 0 &&
+    [
+      value.cpuCount,
+      value.totalMemoryBytes,
+      value.jobWorkers,
+      value.workers,
+      value.planConcurrency,
+      value.seconds,
+    ].every((entry) => typeof entry === "number" && Number.isSafeInteger(entry) && entry > 0) &&
+    typeof value.workers === "number" &&
+    typeof value.jobWorkers === "number" &&
+    value.workers <= value.jobWorkers &&
+    isNonemptyStrings(value.configs) &&
+    isRecord(value.env) &&
+    !Object.hasOwn(value.env, "OPENCLAW_VITEST_MAX_WORKERS") &&
+    Object.entries(value.env).every(
+      ([key, entry]) => key.length > 0 && typeof entry === "string",
+    ) &&
+    isRuntimePlacementIncludePatterns(value.includePatterns)
+  );
+}
+
 function isCiTestTimings(value: unknown): value is CiTestTimings {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, [
       "compactGroupSeconds",
+      "compactWorkerTimings",
       "runtimePlacementTimings",
       "repoE2eFileSeconds",
       "source",
@@ -122,6 +190,7 @@ function isCiTestTimings(value: unknown): value is CiTestTimings {
   }
   const {
     compactGroupSeconds,
+    compactWorkerTimings,
     runtimePlacementTimings,
     repoE2eFileSeconds,
     source,
@@ -155,6 +224,10 @@ function isCiTestTimings(value: unknown): value is CiTestTimings {
     hasExactKeys(compactGroupSeconds, ["blacksmith", "github"]) &&
     isSecondsMap(compactGroupSeconds.blacksmith) &&
     isSecondsMap(compactGroupSeconds.github) &&
+    Array.isArray(compactWorkerTimings) &&
+    compactWorkerTimings.every(isCompactWorkerTiming) &&
+    new Set(compactWorkerTimings.map(compactWorkerTimingIdentity)).size ===
+      compactWorkerTimings.length &&
     isRecord(runtimePlacementTimings) &&
     hasExactKeys(runtimePlacementTimings, ["blacksmith", "github"]) &&
     isRuntimePlacementTimings(runtimePlacementTimings.blacksmith) &&
