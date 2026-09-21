@@ -17,6 +17,10 @@ import {
   createGatewayMatrixPluginManifest,
   type GatewayMatrixTask,
 } from "./code-mode-matrix-gateway-fixtures.ts";
+import {
+  readSqliteTranscriptPayload,
+  sqliteTranscriptPayloadColumns,
+} from "./sqlite-transcript-payload.mjs";
 
 type RecordValue = Record<string, unknown>;
 type ToolCall = { id: string; name: string; args: RecordValue; eventIndex: number };
@@ -1036,9 +1040,14 @@ function transcriptRows(stateDir: string): { seq: number; event: unknown }[] {
   );
   try {
     return db
-      .prepare("SELECT seq,event_json FROM transcript_events ORDER BY session_id,seq")
+      .prepare(
+        `SELECT seq, ${sqliteTranscriptPayloadColumns(db)} FROM transcript_events ORDER BY session_id,seq`,
+      )
       .all()
-      .map((row) => ({ seq: Number(row.seq), event: JSON.parse(String(row.event_json)) }));
+      .map((row) => ({
+        seq: Number(row.seq),
+        event: JSON.parse(readSqliteTranscriptPayload(row)),
+      }));
   } finally {
     db.close();
   }

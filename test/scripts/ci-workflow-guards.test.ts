@@ -16,7 +16,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { devNull, tmpdir } from "node:os";
+import { availableParallelism, devNull, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runInNewContext } from "node:vm";
@@ -13914,6 +13914,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       writeExecutable(path.join(bin, "node"), [
         "#!/bin/sh",
         'test -f dist/.buildstamp || { echo "runtime not prepared" >&2; exit 1; }',
+        'if [ "$1" = "-p" ]; then exec "$STARTUP_CORPUS_NODE" "$@"; fi',
         'label="${OPENCLAW_TEST_STARTUP_CORPUS_SHARD:-config}"',
         'case "$label" in */*) label="${label%/*}-${label#*/}" ;; esac',
         'printf "%s\\n" "$@" > "$STARTUP_CORPUS_ARGS.$label"',
@@ -13935,6 +13936,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           ...process.env,
           PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
           STARTUP_CORPUS_ARGS: argsPath,
+          STARTUP_CORPUS_NODE: testNodeExecPath,
         },
       });
       expect(result.status, result.stdout + result.stderr).toBe(0);
@@ -13961,7 +13963,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       if (scenario.splitCorpus) {
         expect(readArgs("config")).toEqual([
           ...commonArgs,
-          "--maxWorkers=4",
+          `--maxWorkers=${Math.min(4, availableParallelism())}`,
           "src/config/config-startup-corpus.test.ts",
           ...stateStartupCorpusTestFiles.toSorted(),
         ]);

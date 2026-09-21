@@ -5170,7 +5170,7 @@ describe("update-cli", () => {
             expect.objectContaining({
               step: "requested",
               status: "failed",
-              detail: "Exit code: 1",
+              detail: `Exit code: 1; ${boundary} failed`,
               exitCode: 1,
               failureFacts: [
                 expect.objectContaining({ check: "requested", message: failure.message }),
