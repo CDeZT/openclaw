@@ -3,6 +3,14 @@ import type { PortListener, PortUsageStatus } from "../../infra/ports-types.js";
 import { defaultRuntime } from "../../runtime.js";
 import { printDaemonStatus } from "./status.print.js";
 
+export function callArg(mock: { mock: { calls: unknown[][] } }, index = 0): unknown {
+  const call = mock.mock.calls[index];
+  if (!call) {
+    throw new Error(`Expected mock call ${index}`);
+  }
+  return call[0];
+}
+
 export function capturePrintedDaemonStatus(
   status: Parameters<typeof printDaemonStatus>[0],
   options: Parameters<typeof printDaemonStatus>[1],

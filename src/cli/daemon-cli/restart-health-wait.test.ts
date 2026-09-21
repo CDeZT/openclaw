@@ -603,6 +603,65 @@ describe("restart health", () => {
     expect(sleep).toHaveBeenCalledTimes(25);
   });
 
+  it("retains restart grace for a missing service unless the diagnostic caller opts in", async () => {
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    const service = makeGatewayService({ status: "stopped" });
+    vi.mocked(service.readRuntime).mockResolvedValue({ status: "stopped", missingUnit: true });
+
+    const snapshot = await waitForGatewayHealthyRestart({ service, port: 18789 });
+
+    expect(snapshot).toMatchObject({
+      healthy: false,
+      waitOutcome: "stopped-free",
+      elapsedMs: 12_500,
+    });
+  });
+
+  it("does not reuse a strict absence fact for a later missing-unit runtime", async () => {
+    const provenRuntime = { status: "stopped", missingUnit: true };
+    const service = makeGatewayService({ status: "stopped" });
+    vi.mocked(service.readRuntime)
+      .mockResolvedValueOnce(provenRuntime)
+      .mockResolvedValue({ status: "stopped", missingUnit: true });
+    inspectPortUsage
+      .mockResolvedValueOnce({ port: 18789, status: "unknown", listeners: [], hints: [] })
+      .mockResolvedValue({ port: 18789, status: "free", listeners: [], hints: [] });
+
+    const snapshot = await waitForGatewayHealthyRestart({
+      service,
+      port: 18789,
+      timeoutMs: 1_000,
+      isServiceAbsent: (runtime) => runtime === provenRuntime,
+    });
+
+    expect(snapshot).toMatchObject({
+      healthy: false,
+      waitOutcome: "timeout",
+      elapsedMs: 1_000,
+      runtime: { status: "stopped", missingUnit: true },
+    });
+    expect(snapshot.runtime).not.toBe(provenRuntime);
+  });
+
+  it("retains ordinary restart owner-read rejection after awaited port inspection", async () => {
+    const failure = new Error("Gateway owner became unreadable");
+    inspectPortUsage.mockImplementation(async (port) => {
+      readGatewayOwnerLease.mockImplementation(() => {
+        throw failure;
+      });
+      return { port, status: "free", listeners: [], hints: [] };
+    });
+
+    await expect(
+      waitForGatewayHealthyRestart({
+        service: makeGatewayService({ status: "stopped" }),
+        port: 18789,
+      }),
+    ).rejects.toBe(failure);
+    expect(inspectPortUsage).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it("keeps waiting while a launchd KeepAlive supervisor can retry", async () => {
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
 

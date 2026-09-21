@@ -36,6 +36,13 @@ openclaw status --usage --agent work
 
 Status starts one monotonic probe deadline when the command begins. Local readiness, Gateway status, provider usage, and deep health consume the remaining allowance. Remote targets and explicit Gateway URLs skip local readiness but keep the same deadline. Local probes report the observed startup phase while waiting. If the Gateway is still starting when the budget expires, status reports “still starting” instead of unreachable and skips deep channel probes. JSON keeps the status report and adds `gateway.readiness: "still-starting"` and `gateway.startupPhase`. An explicit `--timeout` limits that shared allowance.
 
+When native service inspection proves the local service is absent, the selected
+port is free, and no live or uncertain Gateway owner is recorded, status reports
+unreachable without waiting for startup. A missing command or ordinary
+missing-unit runtime hint alone, failed native inspection, or a service belonging
+to another context does not prove absence. The absence verdict applies only to
+that runtime observation. Observed cold starts retain the shared deadline above.
+
 Channels without a probe, such as WhatsApp, report lifecycle health instead.
 In the Health table, `healthy` is `OK`; degraded lifecycle states and failed
 probes remain `WARN`. A lifecycle `OK` does not mean a live probe ran.

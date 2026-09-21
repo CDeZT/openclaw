@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { hasErrnoCode } from "../infra/errno.js";
 import {
   GATEWAY_SERVICE_KIND,
   GATEWAY_SERVICE_MARKER,
@@ -14,6 +15,7 @@ import { resolveLaunchAgentLabel } from "./launchd-label.js";
 import { decodeLaunchdPlistMetadata } from "./launchd-plist.js";
 import { resolveDaemonHomeDir } from "./paths.js";
 import { execSchtasks } from "./schtasks-exec.js";
+import { ServiceDefinitionInspectionError } from "./service-inspection-error.js";
 import { parseSystemdExecStart, splitSystemdLogicalLines } from "./systemd-unit.js";
 
 export type ExtraGatewayService = {
@@ -189,18 +191,34 @@ function isLegacyLabel(label: string): boolean {
   return lower.includes("clawdbot");
 }
 
-async function readDirEntries(dir: string): Promise<string[]> {
+async function readDirEntries(dir: string, requireComplete = false): Promise<string[]> {
   try {
     return await fs.readdir(dir);
-  } catch {
+  } catch (error) {
+    if (requireComplete) {
+      // ENOENT can also mean a dangling directory link, not an absent scan root.
+      const absent =
+        hasErrnoCode(error, "ENOENT") &&
+        (await fs.lstat(dir).then(
+          () => false,
+          (statError: unknown) => hasErrnoCode(statError, "ENOENT"),
+        ));
+      if (!absent) {
+        throw new ServiceDefinitionInspectionError(dir);
+      }
+    }
     return [];
   }
 }
 
-async function readServiceFile(filePath: string): Promise<Buffer | null> {
+async function readServiceFile(filePath: string, requireComplete = false): Promise<Buffer | null> {
   try {
     return await fs.readFile(filePath);
   } catch {
+    // A listed definition that disappears or cannot be read cannot prove absence.
+    if (requireComplete) {
+      throw new ServiceDefinitionInspectionError(filePath);
+    }
     return null;
   }
 }
@@ -216,9 +234,10 @@ async function collectServiceFiles(params: {
   dir: string;
   extension: string;
   isIgnoredName: (name: string) => boolean;
+  requireComplete?: boolean;
 }): Promise<ServiceFileEntry[]> {
   const out: ServiceFileEntry[] = [];
-  const entries = await readDirEntries(params.dir);
+  const entries = await readDirEntries(params.dir, params.requireComplete);
   for (const entry of entries) {
     if (!entry.endsWith(params.extension)) {
       continue;
@@ -228,7 +247,7 @@ async function collectServiceFiles(params: {
       continue;
     }
     const fullPath = path.join(params.dir, entry);
-    const contents = await readServiceFile(fullPath);
+    const contents = await readServiceFile(fullPath, params.requireComplete);
     if (contents === null) {
       continue;
     }
@@ -295,12 +314,14 @@ async function scanSystemdDir(params: {
   dir: string;
   scope: "user" | "system";
   includeManagedOpenClaw?: boolean;
+  requireComplete?: boolean;
 }): Promise<ExtraGatewayService[]> {
   const results: ExtraGatewayService[] = [];
   const candidates = await collectServiceFiles({
     dir: params.dir,
     extension: ".service",
     isIgnoredName: params.includeManagedOpenClaw ? () => false : isIgnoredSystemdName,
+    requireComplete: params.requireComplete,
   });
 
   for (const { entry, name, fullPath, contents: bytes } of candidates) {
@@ -331,7 +352,9 @@ async function scanSystemdDir(params: {
   return results;
 }
 
-export async function findSystemGatewayServices(): Promise<ExtraGatewayService[]> {
+export async function findSystemGatewayServices(
+  options: { requireComplete?: boolean } = {},
+): Promise<ExtraGatewayService[]> {
   if (process.platform !== "linux") {
     return [];
   }
@@ -344,10 +367,14 @@ export async function findSystemGatewayServices(): Promise<ExtraGatewayService[]
           dir,
           scope: "system",
           includeManagedOpenClaw: true,
+          requireComplete: options.requireComplete,
         })),
       );
     }
-  } catch {
+  } catch (error) {
+    if (options.requireComplete) {
+      throw error;
+    }
     return [];
   }
 

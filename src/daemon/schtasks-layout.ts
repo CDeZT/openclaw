@@ -325,6 +325,8 @@ export async function readScheduledTaskCommand(
   env: GatewayServiceEnv,
   options?: GatewayServiceReadOptions,
 ): Promise<GatewayServiceCommandConfig | null> {
+  const deadline =
+    options?.timeoutMs === undefined ? undefined : performance.now() + options.timeoutMs;
   const scriptPath = resolveTaskScriptPath(env);
   try {
     const content = decodeWindowsLauncherScript({ buffer: await fs.readFile(scriptPath) });
@@ -392,9 +394,12 @@ export async function readScheduledTaskCommand(
     if (!options?.requireEffective) {
       return null;
     }
+    const remaining = deadline === undefined ? undefined : deadline - performance.now();
     if (
       hasErrnoCode(error, "ENOENT") &&
-      (await isScheduledTaskDefinitionAbsent(env, options.timeoutMs).catch(() => false))
+      (remaining === undefined || remaining > 0) &&
+      (await isScheduledTaskDefinitionAbsent(env, remaining).catch(() => false)) &&
+      (deadline === undefined || performance.now() < deadline)
     ) {
       return null;
     }

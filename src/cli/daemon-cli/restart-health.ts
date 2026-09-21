@@ -328,6 +328,8 @@ type GatewayRestartWaitOptions = {
   expectedBuildId?: string | null;
   requireRunningService?: boolean;
   requirePluginHealth?: boolean;
+  /** Strict absence for this exact runtime observation, not an ordinary missing-unit hint. */
+  isServiceAbsent?: (runtime: GatewayServiceRuntime) => boolean;
   supervisorKeepsAlive?: boolean;
   isStartupMigrationActive?: typeof hasActiveStartupMigrationLease;
   probeHosts?: readonly string[];
@@ -553,14 +555,35 @@ export async function waitForGatewayHealthyRestart(
     if (snapshot.staleGatewayPids.length > 0 && snapshot.runtime.status !== "running") {
       return withWaitContext(snapshot, "stale-pids", elapsedMs);
     }
-    const stoppedFree =
-      snapshot.runtime.status === "stopped" && snapshot.portUsage.status === "free";
-    const owner = stoppedFree
-      ? readGatewayOwnerLease({ env: params.env, port: params.port })
-      : undefined;
+    let stoppedFree = snapshot.runtime.status === "stopped" && snapshot.portUsage.status === "free";
+    let owner: ReturnType<typeof readGatewayOwnerLease> = undefined;
+    try {
+      owner = stoppedFree
+        ? readGatewayOwnerLease({ env: params.env, port: params.port })
+        : undefined;
+    } catch (error) {
+      if (!params.isServiceAbsent) {
+        throw error;
+      }
+      // Diagnostic absence needs a successful post-probe owner read. Unknown
+      // ownership also blocks the ordinary stopped/free grace exit below.
+      snapshot = {
+        ...snapshot,
+        runtime: { status: "unknown", detail: "Gateway owner could not be inspected." },
+      };
+      stoppedFree = false;
+    }
     if (owner && owner.state !== "dead") {
       observedOwner = owner.owner;
     } else if (owner?.state === "dead" && owner.owner === observedOwner) {
+      return withWaitContext(snapshot, "stopped-free", elapsedMs);
+    }
+    if (
+      params.isServiceAbsent?.(snapshot.runtime) &&
+      stoppedFree &&
+      (!owner || owner.state === "dead") &&
+      !params.supervisorKeepsAlive
+    ) {
       return withWaitContext(snapshot, "stopped-free", elapsedMs);
     }
     // A previous crashed owner cannot describe replacement startup. Keep native

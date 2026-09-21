@@ -6,6 +6,7 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 import { hasErrnoCode } from "../infra/errno.js";
 import { isGatewayServiceEnv } from "./constants.js";
 import { resolveDaemonHomeDir } from "./paths.js";
+import { ServiceDefinitionInspectionError } from "./service-inspection-error.js";
 import type {
   GatewayServiceEnv,
   SystemdGatewayInstallation,
@@ -21,6 +22,8 @@ const SYSTEM_SYSTEMD_UNIT_DIRS = [
   "/lib/systemd/system",
 ] as const;
 
+type SystemdScopeInspectionOptions = { requireComplete?: boolean };
+
 /** Proves service absence without interpreting failed manager commands as absence. */
 export async function isSystemdServiceAbsent(
   env: GatewayServiceEnv,
@@ -34,7 +37,7 @@ export async function isSystemdServiceAbsent(
       opts.timeoutMs,
       { requireLoaded: true },
     );
-    return (await findInstalledSystemdGatewayScope(env)) === null;
+    return (await findInstalledSystemdGatewayScope(env, { requireComplete: true })) === null;
   }
   if (
     env.DBUS_SESSION_BUS_ADDRESS ||
@@ -95,17 +98,27 @@ export async function isSystemdServiceAbsent(
       }
     }
   }
-  return (await findInstalledSystemdGatewayScope(env)) === null;
+  return (await findInstalledSystemdGatewayScope(env, { requireComplete: true })) === null;
 }
 
-async function findSystemSystemdUnitPath(env: GatewayServiceEnv): Promise<string | null> {
+async function findSystemSystemdUnitPath(
+  env: GatewayServiceEnv,
+  options?: SystemdScopeInspectionOptions,
+): Promise<string | null> {
   const serviceFile = `${resolveSystemdServiceName(env)}.service`;
   for (const dir of SYSTEM_SYSTEMD_UNIT_DIRS) {
     const candidate = path.posix.join(dir, serviceFile);
     try {
-      await fs.access(candidate);
+      if (options?.requireComplete) {
+        await fs.lstat(candidate);
+      } else {
+        await fs.access(candidate);
+      }
       return candidate;
-    } catch {
+    } catch (error) {
+      if (options?.requireComplete && !hasErrnoCode(error, "ENOENT")) {
+        throw new ServiceDefinitionInspectionError(candidate);
+      }
       continue;
     }
   }
@@ -122,7 +135,7 @@ export async function assertNoSystemGatewayOwnership(
   await assertNoSystemSystemdOwnership(`${resolveSystemdServiceName(env)}.service`, timeoutMs);
 }
 
-async function findMarkerOwnedSystemSystemdUnit(): Promise<{
+async function findMarkerOwnedSystemSystemdUnit(options?: SystemdScopeInspectionOptions): Promise<{
   unitName: string;
   unitPath: string;
 } | null> {
@@ -131,8 +144,11 @@ async function findMarkerOwnedSystemSystemdUnit(): Promise<{
   const { findSystemGatewayServices } = await import("./inspect.js");
   let services: Awaited<ReturnType<typeof findSystemGatewayServices>>;
   try {
-    services = await findSystemGatewayServices();
-  } catch {
+    services = await findSystemGatewayServices(options);
+  } catch (error) {
+    if (options?.requireComplete) {
+      throw error;
+    }
     return null;
   }
   for (const svc of services) {
@@ -155,30 +171,42 @@ async function findMarkerOwnedSystemSystemdUnit(): Promise<{
 
 async function findUserSystemdGatewayScope(
   env: GatewayServiceEnv,
+  options?: SystemdScopeInspectionOptions,
 ): Promise<SystemdServiceReadTarget | null> {
   const canonicalUnitName = `${resolveSystemdServiceName(env)}.service`;
   let userPath: string | null;
   try {
     userPath = resolveSystemdUnitPath(env);
-  } catch {
+  } catch (error) {
+    if (options?.requireComplete) {
+      throw error;
+    }
     userPath = null;
   }
   if (!userPath) {
     return null;
   }
   try {
-    await fs.access(userPath);
+    if (options?.requireComplete) {
+      await fs.lstat(userPath);
+    } else {
+      await fs.access(userPath);
+    }
     return { scope: "user", unitName: canonicalUnitName, unitPath: userPath };
-  } catch {
+  } catch (error) {
+    if (options?.requireComplete && !hasErrnoCode(error, "ENOENT")) {
+      throw new ServiceDefinitionInspectionError(userPath);
+    }
     return null;
   }
 }
 
 async function findSystemSystemdGatewayScope(
   env: GatewayServiceEnv,
+  options?: SystemdScopeInspectionOptions,
 ): Promise<SystemdServiceReadTarget | null> {
   const canonicalUnitName = `${resolveSystemdServiceName(env)}.service`;
-  const systemPath = await findSystemSystemdUnitPath(env);
+  const systemPath = await findSystemSystemdUnitPath(env, options);
   if (systemPath) {
     return { scope: "system", unitName: canonicalUnitName, unitPath: systemPath };
   }
@@ -187,7 +215,7 @@ async function findSystemSystemdGatewayScope(
   }
   // System-scope installs may use a non-canonical unit name; fall back to a
   // marker-owned lookup before declaring no system unit exists.
-  const owned = await findMarkerOwnedSystemSystemdUnit();
+  const owned = await findMarkerOwnedSystemSystemdUnit(options);
   return owned ? { scope: "system", unitName: owned.unitName, unitPath: owned.unitPath } : null;
 }
 
@@ -197,10 +225,11 @@ async function findSystemSystemdGatewayScope(
  */
 export async function findSystemdGatewayInstallation(
   env: GatewayServiceEnv,
+  options?: SystemdScopeInspectionOptions,
 ): Promise<SystemdGatewayInstallation> {
   const [user, system] = await Promise.all([
-    findUserSystemdGatewayScope(env),
-    findSystemSystemdGatewayScope(env),
+    findUserSystemdGatewayScope(env, options),
+    findSystemSystemdGatewayScope(env, options),
   ]);
   if (system) {
     // A template is shared; native inspection needs this account's runnable instance.
@@ -240,8 +269,9 @@ export async function findSystemdGatewayInstallation(
  */
 export async function findInstalledSystemdGatewayScope(
   env: GatewayServiceEnv,
+  options?: SystemdScopeInspectionOptions,
 ): Promise<SystemdServiceReadTarget | null> {
-  const installation = await findSystemdGatewayInstallation(env);
+  const installation = await findSystemdGatewayInstallation(env, options);
   // User-first: dueling resolves to the user scope, same as a user-only install.
   if (installation.kind === "dueling" || installation.kind === "user") {
     return installation.user;

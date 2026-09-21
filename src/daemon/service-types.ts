@@ -110,6 +110,8 @@ export type GatewayServiceEnvArgs = {
   // cannot hang status reads indefinitely. Only status read paths set this;
   // control/install paths leave it unset to preserve their existing behavior.
   timeoutMs?: number;
+  /** Strict observation must retain unavailable definition evidence as unknown. */
+  requireEffective?: boolean;
 };
 
 /** Live recovery custody, never reconstructed from a saved record alone. Loading

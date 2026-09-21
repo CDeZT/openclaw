@@ -1,13 +1,15 @@
 import { resolveConfigPath, resolveGatewayPort, resolveStateDir } from "../../config/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { mergeGatewayServiceEnv } from "../../daemon/service-env-merge.js";
+import type { GatewayServiceRuntime } from "../../daemon/service-runtime.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js";
-import { resolveGatewayService } from "../../daemon/service.js";
+import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { isImplicitLocalGatewayTarget } from "../../gateway/call.js";
 import { resolveGatewayProbeAuthSafeWithSecretInputs } from "../../gateway/probe-auth.js";
 import { readGatewayOwnerLease } from "../../infra/gateway-owner-lease.js";
 import { LOOPBACK_PORT_PROBE_HOSTS } from "../../infra/ports-probe.js";
 import { parseTcpPortFromArgs } from "../../infra/tcp-port.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { resolveGatewayRestartProbeContext } from "./restart-health-probe.js";
 import { DEFAULT_RESTART_HEALTH_TIMEOUT_MS } from "./restart-health.constants.js";
 import { waitForGatewayHealthyRestart, type GatewayRestartSnapshot } from "./restart-health.js";
@@ -52,6 +54,7 @@ export async function waitForGatewayDiagnosticReadiness(opts: {
   const port = opts.localPortOverride ?? resolveGatewayPort(probeContext.config);
   const nativeService = resolveGatewayService();
   let nativeCommand: Promise<GatewayServiceCommandConfig | null> | undefined;
+  let runtimeObservation: { absentRuntime?: GatewayServiceRuntime } = {};
   return waitForGatewayHealthyRestart({
     port,
     timeoutMs: opts.timeoutMs ?? DEFAULT_RESTART_HEALTH_TIMEOUT_MS,
@@ -59,10 +62,14 @@ export async function waitForGatewayDiagnosticReadiness(opts: {
     probeContext,
     probeHosts: LOOPBACK_PORT_PROBE_HOSTS,
     requirePluginHealth: false,
+    isServiceAbsent: (runtime) => runtimeObservation.absentRuntime === runtime,
     onProgress: opts.onProgress,
     service: {
       readCommand: async () => null,
       readRuntime: async (env, options) => {
+        // Reset before every read. Late completion can only mark its own observation.
+        const observation: typeof runtimeObservation = {};
+        runtimeObservation = observation;
         const owner = readGatewayOwnerLease({ env, port });
         if (
           owner?.state === "live" &&
@@ -73,25 +80,56 @@ export async function waitForGatewayDiagnosticReadiness(opts: {
         const startedAt = performance.now();
         const command = await (nativeCommand ??= nativeService
           .readCommand(env, options)
-          .catch(() => null));
+          .catch((error: unknown) => {
+            if (hasCommandProcessCleanupError(error)) {
+              throw error;
+            }
+            return null;
+          }));
+        const remainingTimeoutMs =
+          options?.timeoutMs === undefined
+            ? undefined
+            : options.timeoutMs - (performance.now() - startedAt);
+        if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) {
+          return { status: "unknown", detail: "Service inspection deadline expired." };
+        }
+        const runtimeOptions = {
+          ...options,
+          ...(remainingTimeoutMs === undefined ? {} : { timeoutMs: remainingTimeoutMs }),
+        };
+        if (!command) {
+          // A null best-effort command can also mean failed inspection. Let the
+          // native service owner prove absence without loading a missing unit.
+          const state = await readGatewayServiceState(nativeService, {
+            env,
+            ...runtimeOptions,
+            requireEffective: true,
+            requireLoadedCommand: true,
+          });
+          if (
+            !state.installed &&
+            state.command === null &&
+            state.loadState.status === "not-loaded" &&
+            state.runtime?.status === "stopped" &&
+            state.runtime.missingUnit === true
+          ) {
+            observation.absentRuntime = state.runtime;
+            return state.runtime;
+          }
+          return { status: "unknown" };
+        }
         const serviceEnv = mergeGatewayServiceEnv(env, command);
         const servicePort =
           parseTcpPortFromArgs(command?.programArguments) ??
           resolveGatewayPort(probeContext.config, serviceEnv);
         if (
-          !command ||
           servicePort !== port ||
           resolveStateDir(serviceEnv) !== resolveStateDir(env) ||
           resolveConfigPath(serviceEnv) !== resolveConfigPath(env)
         ) {
           return { status: "unknown" };
         }
-        return nativeService.readRuntime(env, {
-          ...options,
-          ...(options?.timeoutMs === undefined
-            ? {}
-            : { timeoutMs: Math.max(1, options.timeoutMs - (performance.now() - startedAt)) }),
-        });
+        return nativeService.readRuntime(env, runtimeOptions);
       },
     },
   });
