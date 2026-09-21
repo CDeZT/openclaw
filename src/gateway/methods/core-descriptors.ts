@@ -704,4 +704,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["webSearch.status", "web-search", "operator.read", "2026.9"],
   ["webSearch.test", "web-search", "operator.admin", "2026.9"],
   ["sessions.providerReview.continue", "sessions-provider-review", "operator.write", "2026.9"],
+  // Self-service personal instructions never authorize shared workspace writes.
+  ["users.personalFile.get", "users", "operator.read", "2026.9"],
+  ["users.personalFile.set", "users", "operator.read", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

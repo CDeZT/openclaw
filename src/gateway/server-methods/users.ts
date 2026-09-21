@@ -38,6 +38,7 @@ import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./typ
 import { publishUserPreferencesChanged } from "./user-preference-events.js";
 import { usersAuthConnectHandlers } from "./users-auth-connect.js";
 import { usersGitHubHandlers } from "./users-github.js";
+import { usersPersonalFileHandlers } from "./users-personal-file.js";
 import {
   requireProfileMutationAccess,
   resolveAuthenticatedProfileId,
@@ -78,6 +79,7 @@ function profileError(error: unknown) {
 export const usersHandlers: GatewayRequestHandlers = {
   ...usersAuthConnectHandlers,
   ...usersGitHubHandlers,
+  ...usersPersonalFileHandlers,
   "users.list": async ({ params, respond }) => {
     if (!assertValidParams(params, validateUsersListParams, "users.list", respond)) {
       return;

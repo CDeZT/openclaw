@@ -970,6 +970,8 @@ enum class GatewayMethod(
   WebSearchStatus("webSearch.status"),
   WebSearchTest("webSearch.test"),
   SessionsProviderReviewContinue("sessions.providerReview.continue"),
+  UsersPersonalFileGet("users.personalFile.get"),
+  UsersPersonalFileSet("users.personalFile.set"),
 }
 
 enum class GatewayEvent(

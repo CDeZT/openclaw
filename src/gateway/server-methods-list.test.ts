@@ -237,6 +237,8 @@ describe("listGatewayMethods", () => {
       "webSearch.status",
       "webSearch.test",
       "sessions.providerReview.continue",
+      "users.personalFile.get",
+      "users.personalFile.set",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
     const methods = listGatewayMethods();
@@ -294,6 +296,8 @@ describe("listGatewayMethods", () => {
       "webSearch.status",
       "webSearch.test",
       "sessions.providerReview.continue",
+      "users.personalFile.get",
+      "users.personalFile.set",
     ]);
   });
 
@@ -480,6 +484,8 @@ describe("listGatewayMethods", () => {
       "webSearch.status",
       "webSearch.test",
       "sessions.providerReview.continue",
+      "users.personalFile.get",
+      "users.personalFile.set",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));
