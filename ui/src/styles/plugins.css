@@ -51,14 +51,6 @@
   flex: 0 0 auto;
 }
 
-/* This settings-style header sits below floating navigation/window chrome. */
-.shell--nav-collapsed:not(.shell--mobile-nav) .plugins-hub-header,
-html.openclaw-native-desktop .shell:not(.shell--mobile-nav) .plugins-hub-header {
-  margin-top: calc(
-    var(--openclaw-native-titlebar-height, 52px) + var(--page-toolbar-clearance, 0px)
-  );
-}
-
 @media (max-width: 768px) {
   .plugins-hub-header .page-title {
     font-size: 22px;

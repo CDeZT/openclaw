@@ -4643,8 +4643,7 @@ wa-dropdown.sidebar-identity-menu::part(menu) {
    overlaps, in narrow columns. Older Mac builds drop the web cluster below the
    drag region (top: 52px), so collapsed navigation there keeps an extra band
    under the row. */
-.shell:not(.shell--mobile-nav):not(.shell--settings)
-  .content:not(.content--chat):not(:has(.plugins-hub-header)) {
+.shell:not(.shell--mobile-nav):not(.shell--settings) .content:not(.content--chat) {
   --page-toolbar-height: 52px;
   --page-toolbar-clearance: 0px;
   --page-toolbar-reserve: 0px;
