@@ -237,7 +237,9 @@ export class QaGatewayChildLifecycle {
       await this.finalizeRetainedArtifacts(stopped, opts, errors);
       // Late cleanup preserves a run-only result only when no cleanup fails.
       // Otherwise the suite must treat the new artifact cleanup failure as fatal.
-      return errors.length === stopped.errors.length ? stopped : { process: stopped.process, errors };
+      return errors.length === stopped.errors.length
+        ? stopped
+        : { process: stopped.process, errors };
     });
   }
 
