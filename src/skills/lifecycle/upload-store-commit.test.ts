@@ -7,7 +7,11 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { commitSkillUploadInDatabase } from "./upload-store-commit.js";
-import { createSkillUploadStore } from "./upload-store.test-support.js";
+import {
+  beginSkillUploadInDatabase,
+  appendSkillUploadChunkInDatabase,
+  claimSkillUploadInDatabase,
+} from "./upload-store.kernel.js";
 
 type RequireUploadMetadata = typeof import("./upload-store.sqlite.js").requireUploadMetadata;
 
@@ -54,7 +58,32 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
 async function makeStore() {
   const root = tempDirs.make("openclaw-skill-upload-commit-");
   const databasePath = path.join(root, "openclaw.sqlite");
-  return { databasePath, store: createSkillUploadStore({ path: databasePath, tempRootDir: root }) };
+  return { databasePath };
+}
+
+function stageUpload(databasePath: string, slug: string, archive: Buffer, expectedSha?: string) {
+  const options = {
+    database: openOpenClawStateDatabase({ path: databasePath }),
+    path: databasePath,
+  };
+  const createdAt = Date.now();
+  const begun = beginSkillUploadInDatabase(
+    {
+      kind: "skill-archive",
+      slug,
+      sizeBytes: archive.length,
+      sha256: expectedSha,
+      force: false,
+      createdAt,
+      expiresAt: createdAt + 60_000,
+    },
+    options,
+  );
+  appendSkillUploadChunkInDatabase(
+    { uploadId: begun.uploadId, offset: 0, decoded: archive, currentTime: createdAt },
+    options,
+  );
+  return begun;
 }
 
 function stateDatabase(databasePath: string) {
@@ -94,24 +123,164 @@ function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-describe("skill upload commit kernel", () => {
+describe("skill upload transaction kernels", () => {
+  it("keeps archive bytes out of metadata reads until the install claim", async () => {
+    const { databasePath } = await makeStore();
+    const options = {
+      database: openOpenClawStateDatabase({ path: databasePath }),
+      path: databasePath,
+    };
+    const db = stateDatabase(databasePath);
+    const archiveReads: Array<{ bytes: number; inTransaction: boolean }> = [];
+    const nativeBlobs = new WeakSet<Uint8Array>();
+    const bufferFrom = vi.spyOn(Buffer, "from");
+    const observeRow = (row: Record<string, unknown>) => {
+      for (const bytes of [row.chunk_blob, row.archive_blob]) {
+        if (bytes instanceof Uint8Array) {
+          nativeBlobs.add(bytes);
+        }
+      }
+      if (row.archive_blob instanceof Uint8Array) {
+        archiveReads.push({
+          bytes: row.archive_blob.byteLength,
+          inTransaction: db.isTransaction,
+        });
+      }
+    };
+    const nativePrepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      const statement = nativePrepare(sql);
+      const nativeGet = statement.get.bind(statement);
+      vi.spyOn(statement, "get").mockImplementation(
+        new Proxy(nativeGet, {
+          apply(get, _receiver, bindings) {
+            const row = get(...bindings);
+            if (row) {
+              observeRow(row);
+            }
+            return row;
+          },
+        }),
+      );
+      const iterate = statement.iterate.bind(statement);
+      vi.spyOn(statement, "iterate").mockImplementation(function* (...bindings) {
+        for (const row of iterate(...bindings)) {
+          observeRow(row);
+          yield row;
+        }
+        return undefined;
+      });
+      return statement;
+    });
+    try {
+      const firstChunk = Buffer.alloc(4 * 1024 * 1024, 0x61);
+      const secondChunk = Buffer.alloc(4 * 1024 * 1024, 0x62);
+      const archive = Buffer.concat([firstChunk, secondChunk]);
+      const createdAt = Date.now();
+      const begin = beginSkillUploadInDatabase(
+        {
+          kind: "skill-archive",
+          slug: "large-skill",
+          sizeBytes: archive.length,
+          keyHash: "large-upload",
+          force: false,
+          createdAt,
+          expiresAt: createdAt + 60_000,
+        },
+        options,
+      );
+      appendSkillUploadChunkInDatabase(
+        {
+          uploadId: begin.uploadId,
+          offset: 0,
+          decoded: firstChunk,
+          currentTime: Date.now(),
+        },
+        options,
+      );
+      appendSkillUploadChunkInDatabase(
+        {
+          uploadId: begin.uploadId,
+          offset: firstChunk.length,
+          decoded: secondChunk,
+          currentTime: Date.now(),
+        },
+        options,
+      );
+      const staged = stateDatabase(databasePath)
+        .prepare("SELECT length(archive_blob) AS bytes FROM skill_uploads WHERE upload_id = ?")
+        .get(begin.uploadId) as { bytes: number };
+      expect(staged.bytes).toBe(0);
+      expect(chunkCount(databasePath, begin.uploadId)).toBe(2);
+
+      commitSkillUploadInDatabase(
+        { uploadId: begin.uploadId, requestedSha: sha256(archive) },
+        options,
+      );
+      const committed = stateDatabase(databasePath)
+        .prepare("SELECT length(archive_blob) AS bytes FROM skill_uploads WHERE upload_id = ?")
+        .get(begin.uploadId) as { bytes: number };
+      expect(committed.bytes).toBe(archive.length);
+      expect(chunkCount(databasePath, begin.uploadId)).toBe(0);
+      expect(
+        beginSkillUploadInDatabase(
+          {
+            kind: "skill-archive",
+            slug: "large-skill",
+            sizeBytes: archive.length,
+            keyHash: "large-upload",
+            force: false,
+            createdAt,
+            expiresAt: createdAt + 60_000,
+          },
+          options,
+        ),
+      ).toMatchObject({ uploadId: begin.uploadId, receivedBytes: archive.length });
+      expect(commitSkillUploadInDatabase({ uploadId: begin.uploadId }, options)).toMatchObject({
+        sha256: sha256(archive),
+      });
+      expect(() =>
+        appendSkillUploadChunkInDatabase(
+          {
+            uploadId: begin.uploadId,
+            offset: archive.length,
+            decoded: Buffer.from("a"),
+            currentTime: Date.now(),
+          },
+          options,
+        ),
+      ).toThrow("upload is already committed");
+      expect(archiveReads).toEqual([]);
+      const claimed = claimSkillUploadInDatabase(
+        {
+          uploadId: begin.uploadId,
+          leaseOwner: "metadata-proof",
+          installLeaseMs: 60_000,
+          currentTime: Date.now(),
+        },
+        options,
+      );
+      expect(claimed.archive_blob).toEqual(new Uint8Array(archive));
+      expect(archiveReads).toEqual([{ bytes: archive.length, inTransaction: true }]);
+      const copiedBytes = bufferFrom.mock.calls.reduce((total, [value]) => {
+        const input: unknown = value;
+        return (
+          total + (input instanceof Uint8Array && nativeBlobs.has(input) ? input.byteLength : 0)
+        );
+      }, 0);
+      expect(copiedBytes).toBe(0);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it.each(["committed", "expired committed", "expired incomplete"] as const)(
     "reconciles chunks deleted before the metadata reread: %s",
     async (outcome) => {
-      const { databasePath, store } = await makeStore();
+      const { databasePath } = await makeStore();
       const archive = Buffer.from("concurrent-commit");
       const digest = sha256(archive);
-      const begin = await store.begin({
-        kind: "skill-archive",
-        slug: "concurrent-commit-skill",
-        sizeBytes: archive.length,
-        sha256: digest,
-      });
-      await store.chunk({
-        uploadId: begin.uploadId,
-        offset: 0,
-        dataBase64: archive.toString("base64"),
-      });
+      const begin = stageUpload(databasePath, "concurrent-commit-skill", archive, digest);
       let now = Date.now();
       vi.spyOn(Date, "now").mockImplementation(() => now);
       let competingWriteFinished = false;
@@ -169,18 +338,9 @@ describe("skill upload commit kernel", () => {
   );
 
   it("rejects publication when the upload expires after chunk assembly", async () => {
-    const { databasePath, store } = await makeStore();
+    const { databasePath } = await makeStore();
     const archive = Buffer.from("expires-during-commit");
-    const begin = await store.begin({
-      kind: "skill-archive",
-      slug: "expires-during-commit",
-      sizeBytes: archive.length,
-    });
-    await store.chunk({
-      uploadId: begin.uploadId,
-      offset: 0,
-      dataBase64: archive.toString("base64"),
-    });
+    const begin = stageUpload(databasePath, "expires-during-commit", archive);
     const database = openOpenClawStateDatabase({ path: databasePath });
     let now = begin.expiresAt - 1;
     vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -199,18 +359,9 @@ describe("skill upload commit kernel", () => {
   it.each([false, true])(
     "rechecks expiry after transaction admission with external install lease=%s",
     async (leased) => {
-      const { databasePath, store } = await makeStore();
+      const { databasePath } = await makeStore();
       const archive = Buffer.from("expires-during-admission");
-      const begin = await store.begin({
-        kind: "skill-archive",
-        slug: "admission-expiry",
-        sizeBytes: archive.length,
-      });
-      await store.chunk({
-        uploadId: begin.uploadId,
-        offset: 0,
-        dataBase64: archive.toString("base64"),
-      });
+      const begin = stageUpload(databasePath, "admission-expiry", archive);
       const database = openOpenClawStateDatabase({ path: databasePath });
       if (leased) {
         database.db

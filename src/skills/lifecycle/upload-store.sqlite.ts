@@ -58,7 +58,7 @@ export function resolveSkillUploadDatabaseOptions(options: {
   };
 }
 
-export function openSkillUploadDatabase(options: OpenClawStateDatabaseOptions) {
+function openSkillUploadDatabase(options: OpenClawStateDatabaseOptions) {
   const database = openOpenClawStateDatabase(options);
   return {
     database,

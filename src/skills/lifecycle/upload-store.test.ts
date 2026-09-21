@@ -15,11 +15,12 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { commitSkillUploadInDatabase } from "./upload-store-commit.js";
 import { SkillUploadRequestError } from "./upload-store-error.js";
+import { beginSkillUploadInDatabase } from "./upload-store.kernel.js";
 import {
   deleteExpiredSkillUploadUnlessLeasedInDatabase,
   renewSkillUploadInstallLease,
 } from "./upload-store.sqlite.js";
-import { createSkillUploadStore } from "./upload-store.test-support.js";
+import { createSkillUploadStore, observeSkillUploadRenewal } from "./upload-store.test-support.js";
 
 const ACTIVE_UPLOAD_LIMIT = 32;
 
@@ -145,7 +146,22 @@ describe("skill upload store", () => {
         await store.begin({ kind: "skill-archive", slug: `active-${i}`, sizeBytes: 1 });
       }
       try {
-        await store.begin({ kind: "skill-archive", slug: "too-many", sizeBytes: 1 });
+        const createdAt = Date.now();
+        beginSkillUploadInDatabase(
+          {
+            kind: "skill-archive",
+            slug: "too-many",
+            sizeBytes: 1,
+            force: false,
+            createdAt,
+            expiresAt: createdAt + 60_000,
+          },
+          {
+            database: openOpenClawStateDatabase({
+              path: path.join(activeLimitRoot, "openclaw.sqlite"),
+            }),
+          },
+        );
       } catch (err) {
         activeUploadLimitError = err;
       }
@@ -325,116 +341,6 @@ describe("skill upload store", () => {
     await expect(
       reopened.commit({ uploadId: begin.uploadId, sha256: sha256(archive) }),
     ).resolves.toMatchObject({ sha256: sha256(archive) });
-  });
-
-  it("keeps archive bytes out of metadata reads until the install claim", async () => {
-    const { databasePath, store } = await makeStore();
-    const db = stateDatabase(databasePath);
-    const archiveReads: Array<{ bytes: number; inTransaction: boolean }> = [];
-    const nativeBlobs = new WeakSet<Uint8Array>();
-    const bufferFrom = vi.spyOn(Buffer, "from");
-    const observeRow = (row: Record<string, unknown>) => {
-      for (const bytes of [row.chunk_blob, row.archive_blob]) {
-        if (bytes instanceof Uint8Array) {
-          nativeBlobs.add(bytes);
-        }
-      }
-      if (row.archive_blob instanceof Uint8Array) {
-        archiveReads.push({
-          bytes: row.archive_blob.byteLength,
-          inTransaction: db.isTransaction,
-        });
-      }
-    };
-    const nativePrepare = db.prepare.bind(db);
-    vi.spyOn(db, "prepare").mockImplementation((sql) => {
-      const statement = nativePrepare(sql);
-      const nativeGet = statement.get.bind(statement);
-      vi.spyOn(statement, "get").mockImplementation(
-        new Proxy(nativeGet, {
-          apply(get, _receiver, bindings) {
-            const row = get(...bindings);
-            if (row) {
-              observeRow(row);
-            }
-            return row;
-          },
-        }),
-      );
-      const iterate = statement.iterate.bind(statement);
-      vi.spyOn(statement, "iterate").mockImplementation(function* (...bindings) {
-        for (const row of iterate(...bindings)) {
-          observeRow(row);
-          yield row;
-        }
-        return undefined;
-      });
-      return statement;
-    });
-    try {
-      const firstChunk = Buffer.alloc(4 * 1024 * 1024, 0x61);
-      const secondChunk = Buffer.alloc(4 * 1024 * 1024, 0x62);
-      const archive = Buffer.concat([firstChunk, secondChunk]);
-      const begin = await store.begin({
-        kind: "skill-archive",
-        slug: "large-skill",
-        sizeBytes: archive.length,
-        idempotencyKey: "large-upload",
-      });
-      await store.chunk({
-        uploadId: begin.uploadId,
-        offset: 0,
-        dataBase64: firstChunk.toString("base64"),
-      });
-      await store.chunk({
-        uploadId: begin.uploadId,
-        offset: firstChunk.length,
-        dataBase64: secondChunk.toString("base64"),
-      });
-      const staged = stateDatabase(databasePath)
-        .prepare("SELECT length(archive_blob) AS bytes FROM skill_uploads WHERE upload_id = ?")
-        .get(begin.uploadId) as { bytes: number };
-      expect(staged.bytes).toBe(0);
-      expect(chunkCount(databasePath, begin.uploadId)).toBe(2);
-
-      await store.commit({ uploadId: begin.uploadId, sha256: sha256(archive) });
-      const committed = stateDatabase(databasePath)
-        .prepare("SELECT length(archive_blob) AS bytes FROM skill_uploads WHERE upload_id = ?")
-        .get(begin.uploadId) as { bytes: number };
-      expect(committed.bytes).toBe(archive.length);
-      expect(chunkCount(databasePath, begin.uploadId)).toBe(0);
-      await expect(
-        store.begin({
-          kind: "skill-archive",
-          slug: "large-skill",
-          sizeBytes: archive.length,
-          idempotencyKey: "large-upload",
-        }),
-      ).resolves.toMatchObject({ uploadId: begin.uploadId, receivedBytes: archive.length });
-      await expect(store.commit({ uploadId: begin.uploadId })).resolves.toMatchObject({
-        sha256: sha256(archive),
-      });
-      await expectUploadError(
-        store.chunk({ uploadId: begin.uploadId, offset: archive.length, dataBase64: "YQ==" }),
-        "upload is already committed",
-      );
-      expect(archiveReads).toEqual([]);
-      await store.withCommittedUpload(begin.uploadId, async (record) => {
-        const materialized = await fs.readFile(record.archivePath);
-        expect(materialized).toHaveLength(archive.length);
-        expect(materialized.equals(archive), "materialized archive bytes").toBe(true);
-      });
-      expect(archiveReads).toEqual([{ bytes: archive.length, inTransaction: true }]);
-      const copiedBytes = bufferFrom.mock.calls.reduce((total, [value]) => {
-        const input: unknown = value;
-        return (
-          total + (input instanceof Uint8Array && nativeBlobs.has(input) ? input.byteLength : 0)
-        );
-      }, 0);
-      expect(copiedBytes).toBe(0);
-    } finally {
-      vi.restoreAllMocks();
-    }
   });
 
   it("uses the expiry and idempotency indexes", async () => {
@@ -728,6 +634,8 @@ describe("skill upload store", () => {
     const entered = deferred();
     const release = deferred();
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const intervals = vi.spyOn(globalThis, "setInterval");
+    const renewalSettled = observeSkillUploadRenewal();
     const pinned = store.withCommittedUpload(committed.uploadId, async () => {
       entered.resolve();
       await release.promise;
@@ -743,7 +651,12 @@ describe("skill upload store", () => {
           .get(committed.uploadId) as { heartbeat_at: number }
       ).heartbeat_at;
       now += 10;
-      await vi.advanceTimersByTimeAsync(10);
+      const heartbeat = intervals.mock.calls.find(([, delay]) => delay === 10)?.[0];
+      if (!heartbeat) {
+        throw new Error("Install heartbeat was not scheduled");
+      }
+      heartbeat();
+      await renewalSettled;
       const renewedHeartbeat = (
         db
           .prepare(
