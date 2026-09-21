@@ -5,6 +5,7 @@ import { expect, it, onTestFinished, vi } from "vitest";
 import type { SqliteWorkerRequest } from "../../infra/sqlite-worker-contract.js";
 import { getActiveGatewayRootWorkCount } from "../../process/gateway-work-admission.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
+import { captureTaskDeliveryWork } from "../../tasks/task-registry-delivery.test-support.js";
 import { clearCronJobActive, markCronJobActive } from "../active-jobs.js";
 import { setupCronServiceSuite, writeCronStoreSnapshot } from "../service.test-harness.js";
 import { loadCronStore } from "../store.js";
@@ -107,6 +108,7 @@ function loseFirstCronMutationReply(
 const { logger, makeStorePath } = setupCronServiceSuite({ prefix: "cron-recovery-settlement-" });
 
 it("publishes a committed repair once after reply loss and leaves the remaining batch for the next tick", async () => {
+  using deliveries = captureTaskDeliveryWork();
   const { storePath } = await makeStorePath();
   const nowMs = Date.now();
   const jobs = ["first", "second"].map((id, index) => {
@@ -152,6 +154,7 @@ it("publishes a committed repair once after reply loss and leaves the remaining 
     onEvent.mock.calls.flatMap(([event]) => (event.action === "finished" ? [event.jobId] : []));
   const notificationKeys = () =>
     enqueueSystemEvent.mock.calls.map(([, options]) => options.contextKey);
+  await deliveries.settle();
   const rootWorkBefore = getActiveGatewayRootWorkCount();
   const reply = loseFirstCronMutationReply();
   const pending: Promise<unknown>[] = [];
@@ -160,6 +163,7 @@ it("publishes a committed repair once after reply loss and leaves the remaining 
     stop(state);
     await Promise.allSettled(pending);
     await state.op;
+    await deliveries.settle();
   });
 
   const firstTick = onTimer(state);
@@ -193,6 +197,7 @@ it("publishes a committed repair once after reply loss and leaves the remaining 
   }
   expect(runner).not.toHaveBeenCalled();
   expect(state.activeTimerTicks).toBe(0);
+  await deliveries.settle();
   expect(getActiveGatewayRootWorkCount()).toBe(rootWorkBefore);
 });
 

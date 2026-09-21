@@ -3,9 +3,7 @@ import type { TaskRegistryControlRuntime } from "./task-registry-control.types.j
 
 export type TaskRegistryDeliveryRuntime = {
   sendMessage: (typeof import("./task-registry-delivery-runtime.js"))["sendMessage"];
-  // Optional so existing test overrides that stub only sendMessage stay valid;
-  // delivery treats a missing resolver as "no Control UI link".
-  resolveTaskControlUiSessionUrl?: (typeof import("./task-registry-delivery-runtime.js"))["resolveTaskControlUiSessionUrl"];
+  prepareTaskControlUiSessionUrl?: (typeof import("./task-registry-delivery-runtime.js"))["prepareTaskControlUiSessionUrl"];
 };
 export const TASK_REGISTRY_DELIVERY_RUNTIME_OVERRIDE_KEY = Symbol.for(
   "openclaw.taskRegistry.deliveryRuntimeOverride",

@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import * as notificationMutation from "./task-notification-mutation.async.js";
 import * as taskDeliveryAdmission from "./task-registry-delivery-admission.js";
 import { cloneTaskDeliveryState } from "./task-registry-records.js";
 import {
@@ -9,6 +10,34 @@ import {
 import { recordTaskRegistryProjectionWrite } from "./task-registry.process-state.js";
 import { getTaskRegistryStore } from "./task-registry.store.js";
 import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
+
+/** Fail after a preparation consumer has registered an owned notification write. */
+export function failTaskNotificationPreparationAfterConsume(
+  shouldFail: () => boolean,
+  failure: Error,
+): void {
+  const capture = notificationMutation.captureTaskNotificationMutationOwner;
+  let failed = false;
+  vi.spyOn(notificationMutation, "captureTaskNotificationMutationOwner").mockImplementation(
+    (assertCurrent) => {
+      const owner = capture(assertCurrent);
+      return {
+        ...owner,
+        async prepare<T>(
+          consume: Parameters<typeof owner.prepare<T>>[0],
+          subagentChildSessionKey?: string,
+        ): Promise<T> {
+          const result = await owner.prepare(consume, subagentChildSessionKey);
+          if (!failed && shouldFail()) {
+            failed = true;
+            throw failure;
+          }
+          return result;
+        },
+      };
+    },
+  );
+}
 
 /** Install a competing delivery commit for notification and projection interleaving controls. */
 export function commitTaskDeliveryFixture(state: TaskDeliveryState): void {

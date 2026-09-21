@@ -120,7 +120,7 @@ function subagentControllerFilter(controllerSessionKeys: readonly string[]) {
 
 function readSubagentRegistryRows(
   scope?: SubagentRegistryReadScope,
-  database = openOpenClawStateDatabase(),
+  database: Pick<OpenClawStateDatabase, "db"> = openOpenClawStateDatabase(),
   projection: "full" | "maintenance" = "full",
 ): SubagentRunSqliteRow[] {
   const { db } = database;
@@ -352,7 +352,7 @@ function rowToSubagentRunReadRecord(row: SubagentRunReadSqliteRow): SubagentRunR
 
 function loadScopedSubagentRuns(
   scope: SubagentRegistryReadScope,
-  database?: OpenClawStateDatabase,
+  database?: Pick<OpenClawStateDatabase, "db">,
 ): SubagentRunRecord[] {
   const normalizedScope =
     scope.kind === "runs" ? scope : { ...scope, sessionKey: scope.sessionKey.trim() };
@@ -384,7 +384,7 @@ export function loadSubagentRunsForSessionFromSqlite(sessionKey: string): Subage
 /** Loads all persisted generations for one child session through its existing index. */
 export function loadSubagentRunsForChildSessionFromSqlite(
   childSessionKey: string,
-  database?: OpenClawStateDatabase,
+  database?: Pick<OpenClawStateDatabase, "db">,
 ): SubagentRunRecord[] {
   return loadScopedSubagentRuns({ kind: "child", sessionKey: childSessionKey }, database);
 }

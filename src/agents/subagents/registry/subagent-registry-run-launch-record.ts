@@ -1,5 +1,6 @@
 import { normalizeSubagentRunState } from "./subagent-delivery-state.js";
-import type { RegisterSubagentRunParams, SubagentRunRecord } from "./subagent-registry.types.js";
+import type { RegisterSubagentRunParams } from "./subagent-registry-registration.types.js";
+import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 export function createSubagentRegistrationRecord(
   registerParams: RegisterSubagentRunParams,

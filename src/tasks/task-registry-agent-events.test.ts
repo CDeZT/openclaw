@@ -150,6 +150,10 @@ describe("task agent event persistence", () => {
           transactionError = error;
         }
         try {
+          // The event publishes its detached delivery only after leaving the accepted prefix.
+          await Promise.allSettled([
+            captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission),
+          ]);
           await deliveries.settle();
           await joinEvents();
         } finally {

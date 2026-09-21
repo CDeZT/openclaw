@@ -43,11 +43,9 @@ import {
   countPendingDescendantRuns,
   getLatestLiveSubagentRunByChildSessionKey,
 } from "./subagent-registry-read.js";
+import type { RegisterSubagentRunParams } from "./subagent-registry-registration.types.js";
 import { createSubagentRegistryRestorer } from "./subagent-registry-restore.js";
-import {
-  createSubagentRunManager,
-  type RegisterSubagentRunParams,
-} from "./subagent-registry-run-manager.js";
+import { createSubagentRunManager } from "./subagent-registry-run-manager.js";
 import { clearSubagentRunsReadCacheForTest } from "./subagent-registry-state.js";
 import { resolveSubagentTaskForRun } from "./subagent-registry-sweep-kill.js";
 import {

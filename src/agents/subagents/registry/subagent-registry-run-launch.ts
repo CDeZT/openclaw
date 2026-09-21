@@ -27,14 +27,11 @@ import { bindSwarmRunReservation } from "../swarm/swarm-scheduler.js";
 import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { registerRequiredQueuedSubagent } from "./subagent-registry-queued-registration.js";
+import type { RegisterSubagentRunParams } from "./subagent-registry-registration.types.js";
 import { createSubagentRegistrationRecord } from "./subagent-registry-run-launch-record.js";
 import { SubagentRecoveryManager } from "./subagent-registry-run-recovery.js";
 import { captureQueuedSubagentTaskOwner } from "./subagent-registry-task-owner.js";
-import type {
-  RegisterSubagentRunOptions,
-  RegisterSubagentRunParams,
-  SubagentRunRecord,
-} from "./subagent-registry.types.js";
+import type { RegisterSubagentRunOptions, SubagentRunRecord } from "./subagent-registry.types.js";
 import {
   compareSubagentRunGeneration,
   nextSubagentRunGeneration,
@@ -63,8 +60,6 @@ function resolveSwarmWaitOwnerSessionKeys(
   }
   return ownerSessionKeys;
 }
-
-export type { RegisterSubagentRunParams } from "./subagent-registry.types.js";
 
 export class SubagentLaunchManager extends SubagentRecoveryManager {
   private findRunByIdentity(runId: string): SubagentRunRecord | undefined {

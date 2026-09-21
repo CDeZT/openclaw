@@ -5,10 +5,8 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { expect, vi } from "vitest";
 import { resolveLeastPrivilegeOperatorScopesForMethod } from "../../../gateway/method-scopes.js";
 import type { SubagentLifecycleHookRunner } from "../../../plugins/hooks.js";
-import type {
-  RegisterSubagentRunOptions,
-  RegisterSubagentRunParams,
-} from "../registry/subagent-registry.types.js";
+import type { RegisterSubagentRunParams } from "../registry/subagent-registry-registration.types.js";
+import type { RegisterSubagentRunOptions } from "../registry/subagent-registry.types.js";
 
 type MockFn = (...args: unknown[]) => unknown;
 type MockImplementationTarget = {

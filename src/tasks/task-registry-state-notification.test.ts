@@ -19,6 +19,7 @@ import { resetTaskFlowRegistryForTests } from "./task-flow-registry.test-support
 import { maybeDeliverTaskStateChangeUpdate } from "./task-registry-delivery.js";
 import {
   captureTaskDeliveryWork,
+  failTaskNotificationPreparationAfterConsume,
   commitTaskDeliveryFixture,
 } from "./task-registry-delivery.test-support.js";
 import { getTaskDeliveryState } from "./task-registry-mutation.js";
@@ -104,19 +105,7 @@ function stored(taskId: string) {
 
 function failPreparationAfterQueue(failure: Error) {
   const queued = vi.spyOn(systemEvents, "enqueueSystemEvent");
-  const mutate = taskRegistryState.withTaskRegistryMutation;
-  let failed = false;
-  vi.spyOn(taskRegistryState, "withTaskRegistryMutation").mockImplementation(
-    <T>(operation: () => T, onAdmissionFailure?: (error: unknown) => T): T => {
-      const before = queued.mock.calls.length;
-      const result = mutate(operation, onAdmissionFailure);
-      if (!failed && queued.mock.calls.length > before) {
-        failed = true;
-        throw failure;
-      }
-      return result;
-    },
-  );
+  failTaskNotificationPreparationAfterConsume(() => queued.mock.calls.length > 0, failure);
   return queued;
 }
 

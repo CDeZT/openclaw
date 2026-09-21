@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import {
   createBackupScratchDirectory,
   finishBackupScratch,
@@ -10,10 +11,99 @@ import {
 } from "./backup-scratch.js";
 import * as fsSafe from "./fs-safe.js";
 import * as nodeSqlite from "./node-sqlite.js";
+import * as privateDirectory from "./sqlite-private-directory.js";
 import * as stagingToken from "./sqlite-staging-token.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
+
+it.each([false, true])(
+  "coordinates a scratch creator awaiting lifetime admission (repair=%s)",
+  async (repair) => {
+    const root = dirs.make("backup-scratch-creation-");
+    const entered = createDeferredCore<string>();
+    const resume = createDeferredCore();
+    const createDirectory = privateDirectory.createPrivateSqliteTempDirectory;
+    let paused = false;
+    vi.spyOn(privateDirectory, "createPrivateSqliteTempDirectory").mockImplementation(
+      async (...args) => {
+        const directory = await createDirectory(...args);
+        if (!paused && args[0] === root) {
+          paused = true;
+          entered.resolve(directory);
+          await resume.promise;
+        }
+        return directory;
+      },
+    );
+    const creating = createBackupScratchDirectory(root);
+    try {
+      const originalDirectory = await entered.promise;
+      const report = await maintainBackupScratch({ roots: [root], repair, log: () => {} });
+      expect(report.warnings).toEqual([]);
+      expect(repair ? report.reclaimed : report.unchecked).toEqual([originalDirectory]);
+      resume.resolve();
+      const scratch = await creating;
+      expect(scratch.directory === originalDirectory).toBe(!repair);
+      const active = await maintainBackupScratch({ roots: [root], repair: true, log: () => {} });
+      expect(active.warnings).toEqual([]);
+      expect(active.active).toEqual([scratch.directory]);
+    } finally {
+      resume.resolve();
+      await expect(finishBackupScratch(await creating, () => {})).resolves.toBeUndefined();
+    }
+  },
+);
+
+it.each([false, true])(
+  "retries a creator's native token-open failure only when its directory was reclaimed (%s)",
+  async (reclaimed) => {
+    const root = dirs.make("backup-scratch-create-open-");
+    const open = nodeSqlite.openNodeSqliteDatabase;
+    let failedDirectory: string | undefined;
+    let nativeFailure: unknown;
+    vi.spyOn(nodeSqlite, "openNodeSqliteDatabase").mockImplementation((location, options) => {
+      if (failedDirectory) {
+        return open(location, options);
+      }
+      failedDirectory = path.dirname(location);
+      if (reclaimed) {
+        fsSync.rmSync(failedDirectory, { recursive: true });
+      }
+      try {
+        return open(
+          reclaimed ? location : path.join(failedDirectory, "missing", "owner.sqlite"),
+          options,
+        );
+      } catch (error) {
+        nativeFailure = error;
+        throw error;
+      }
+    });
+    let scratch: Awaited<ReturnType<typeof createBackupScratchDirectory>> | undefined;
+    try {
+      const outcome = await createBackupScratchDirectory(root).then(
+        (value) => ({ scratch: value }),
+        (failure: unknown) => ({ failure }),
+      );
+      scratch = "scratch" in outcome ? outcome.scratch : undefined;
+      const failure = "failure" in outcome ? outcome.failure : undefined;
+      expect(nativeFailure).toBeInstanceOf(Error);
+      if (reclaimed) {
+        expect(failure).toBeUndefined();
+        expect(scratch?.directory).toBeDefined();
+        expect(scratch?.directory).not.toBe(failedDirectory);
+      } else {
+        expect(failure).toBe(nativeFailure);
+        expect(scratch).toBeUndefined();
+      }
+    } finally {
+      if (scratch) {
+        await expect(finishBackupScratch(scratch, () => {})).resolves.toBeUndefined();
+      }
+    }
+  },
+);
 
 it.each(["lstat", "boundary", "cleanup"] as const)(
   "records scratch reclaimed before %s as an intentional non-outcome",
