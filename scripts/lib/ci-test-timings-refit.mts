@@ -3,6 +3,7 @@ import { decodeNodeTestGroups } from "./ci-node-test-groups-codec.mts";
 import { usesMeasuredCiNodeTestWorkers } from "./ci-node-test-workers.mts";
 import {
   compactWorkerTimingIdentity,
+  compactWorkerTimingOwner,
   isCompactWorkerTiming,
   isRuntimePlacementTiming,
   runtimePlacementTimingIdentity,
@@ -221,6 +222,7 @@ function readCompactWorkerLog(
         : jobWorkers;
     const duration = (Date.parse(event[1]!) - started) / 1000;
     const observation = {
+      timingOwner: compactWorkerTimingOwner(group),
       runner,
       cpuCount: hostResources.logicalCpuCount,
       totalMemoryBytes: hostResources.totalMemoryBytes,

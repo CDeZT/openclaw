@@ -66,6 +66,7 @@ export function workerLog(
   resources: Parameters<typeof workerResources>[0] = {},
   group: Omit<typeof workerGroup, "env"> & {
     env: Record<string, string>;
+    timing_key?: string;
     fallbackMaxWorkers?: number;
     minTotalMemoryBytes?: number;
   } = workerGroup,
@@ -73,7 +74,7 @@ export function workerLog(
   return [
     workerResources(resources),
     `2026-08-27T23:00:00Z OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: ${encodeNodeTestGroups([group])}`,
-    compactLog(seconds, group.shard_name),
+    compactLog(seconds, group.timing_key ?? group.shard_name),
   ].join("\n");
 }
 

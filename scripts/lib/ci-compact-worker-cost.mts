@@ -1,6 +1,7 @@
 import type { NodeTestShardGroup } from "./ci-node-test-plan.mts";
 import { usesMeasuredCiNodeTestWorkers } from "./ci-node-test-workers.mts";
 import {
+  compactWorkerTimingOwner,
   isRuntimePlacementIncludePatterns,
   type CompactWorkerTiming,
 } from "./ci-test-timings-schema.mts";
@@ -22,6 +23,7 @@ export function createCompactWorkerCostResolver(workerTimings: readonly CompactW
       return cached.get(capacityKey);
     }
     const files = new Set(group.includePatterns);
+    const timingOwner = compactWorkerTimingOwner(group);
     const { OPENCLAW_VITEST_MAX_WORKERS: pin, ...env } = group.env ?? {};
     const targetClasses = workerTimings.filter(
       (observation) =>
@@ -57,10 +59,10 @@ export function createCompactWorkerCostResolver(workerTimings: readonly CompactW
     let projected: number | undefined;
     for (const observation of workerTimings) {
       if (
+        observation.timingOwner !== timingOwner ||
         observation.runner.startsWith("blacksmith-") !== runner.startsWith("blacksmith-") ||
         observation.configs.length !== group.configs.length ||
         !observation.configs.every((config, index) => config === group.configs[index]) ||
-        observation.includePatterns.length !== files.size ||
         !observation.includePatterns.every((file) => files.has(file)) ||
         Object.keys(observation.env).length !== Object.keys(env).length ||
         !Object.entries(observation.env).every(([key, value]) => env[key] === value)
@@ -68,6 +70,7 @@ export function createCompactWorkerCostResolver(workerTimings: readonly CompactW
         continue;
       }
       if (
+        observation.includePatterns.length === files.size &&
         observation.runner === runner &&
         observation.planConcurrency === capacity.planConcurrency &&
         observation.workers <= targetWorkers
@@ -81,6 +84,8 @@ export function createCompactWorkerCostResolver(workerTimings: readonly CompactW
         group.fallbackMaxWorkers === undefined
           ? 1
           : Math.max(1, observation.workers / targetWorkers);
+      // A growing child retains its contained workload's cost. Overlapping
+      // observations are floors, not additive samples of independent work.
       projected = Math.max(projected ?? 0, observation.seconds * scale);
     }
     const seconds = direct ?? projected;

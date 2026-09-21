@@ -1,3 +1,5 @@
+import { parseCompactSplitTimingKey } from "./vitest-shard-metadata.mts";
+
 export type RuntimePlacementTiming = {
   configs: string[];
   env: Record<string, string>;
@@ -7,6 +9,7 @@ export type RuntimePlacementTiming = {
 };
 
 export type CompactWorkerTiming = {
+  timingOwner: string;
   runner: string;
   cpuCount: number;
   totalMemoryBytes: number;
@@ -19,8 +22,17 @@ export type CompactWorkerTiming = {
   seconds: number;
 };
 
+export function compactWorkerTimingOwner(group: {
+  shard_name: string;
+  timing_key?: string;
+}): string {
+  const key = group.timing_key ?? group.shard_name;
+  return parseCompactSplitTimingKey(key)?.parentShardName ?? key;
+}
+
 export function compactWorkerTimingIdentity(group: Omit<CompactWorkerTiming, "seconds">): string {
   return JSON.stringify({
+    timingOwner: group.timingOwner,
     runner: group.runner,
     cpuCount: group.cpuCount,
     jobWorkers: group.jobWorkers,
@@ -137,6 +149,7 @@ export function isCompactWorkerTiming(value: unknown): value is CompactWorkerTim
   return (
     isRecord(value) &&
     hasExactKeys(value, [
+      "timingOwner",
       "runner",
       "cpuCount",
       "totalMemoryBytes",
@@ -148,6 +161,8 @@ export function isCompactWorkerTiming(value: unknown): value is CompactWorkerTim
       "includePatterns",
       "seconds",
     ]) &&
+    typeof value.timingOwner === "string" &&
+    value.timingOwner.length > 0 &&
     typeof value.runner === "string" &&
     value.runner.length > 0 &&
     [

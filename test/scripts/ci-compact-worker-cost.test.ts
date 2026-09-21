@@ -16,6 +16,7 @@ const group: NodeTestShardGroup = {
   minTotalMemoryBytes: 28 * 1024 ** 3,
 };
 const observation = (overrides: Partial<CompactWorkerTiming> = {}): CompactWorkerTiming => ({
+  timingOwner: "measured-child",
   runner: large,
   cpuCount: 8,
   totalMemoryBytes: 32 * 1024 ** 3,
@@ -87,5 +88,35 @@ describe("compact worker costs", () => {
     const cost = createCompactWorkerCostResolver([observation()]);
     expect(cost(group, { runner: small, planConcurrency: 1 })).toBe(1500);
     expect(cost(group, { runner: "ubuntu-24.04", planConcurrency: 1 })).toBeUndefined();
+  });
+
+  it("retains the largest contained workload when files are added without summing overlaps", () => {
+    const addedFile = "src/gateway/added.test.ts";
+    const cost = createCompactWorkerCostResolver([
+      observation(),
+      observation({ includePatterns: [...group.includePatterns!, addedFile], seconds: 400 }),
+    ]);
+    expect(
+      cost(
+        {
+          ...group,
+          includePatterns: [...group.includePatterns!, addedFile, "src/gateway/new.test.ts"],
+        },
+        { runner: large, planConcurrency: 1 },
+      ),
+    ).toBe(400);
+    expect(
+      cost({ ...group, includePatterns: [addedFile] }, { runner: large, planConcurrency: 1 }),
+    ).toBeUndefined();
+  });
+
+  it("does not reuse costs from an earlier timing family", () => {
+    const cost = createCompactWorkerCostResolver([observation()]);
+    expect(
+      cost(
+        { ...group, timing_key: "measured-child#file-parallel-2" },
+        { runner: large, planConcurrency: 1 },
+      ),
+    ).toBeUndefined();
   });
 });

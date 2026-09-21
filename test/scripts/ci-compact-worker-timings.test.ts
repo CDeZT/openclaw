@@ -5,6 +5,7 @@ import {
   type CiTestTimings,
   type CompactWorkerTiming,
 } from "../../scripts/lib/ci-test-timings-schema.mts";
+import { createCompactSplitTimingGeneration } from "../../scripts/lib/vitest-shard-metadata.mts";
 import {
   baseline,
   samplerJob,
@@ -18,6 +19,41 @@ import {
 
 describe("compact worker timing refit", () => {
   const runner = "blacksmith-8vcpu-ubuntu-2404";
+  it("retains timing epochs across split generations for otherwise identical workloads", () => {
+    const runs = [1, 2].map((id) =>
+      timingRun(
+        id,
+        [1, 2].map((epoch) => {
+          const generation = createCompactSplitTimingGeneration({
+            ...workerGroup,
+            parentShardName: `agentic-commands-runtime#file-parallel-${epoch}`,
+            stripes: [workerGroup.includePatterns, [`src/commands/sibling-${id}.test.ts`]],
+          });
+          return {
+            kind: "compact" as const,
+            labels: [runner],
+            text: workerLog(
+              epoch === 1 ? 480 : 120,
+              {},
+              {
+                ...workerGroup,
+                timing_key: generation.timingKeys[0]!,
+              },
+            ),
+          };
+        }),
+      ),
+    );
+    expect(
+      refitTestTimings(runs).timings.compactWorkerTimings.map(({ timingOwner, seconds }) => [
+        timingOwner,
+        seconds,
+      ]),
+    ).toEqual([
+      ["agentic-commands-runtime#file-parallel-1", 480],
+      ["agentic-commands-runtime#file-parallel-2", 120],
+    ]);
+  });
   it("keeps observed execution classes separate even when the requested runner label is identical", () => {
     const logs: CiTimingRun["logs"] = [
       { kind: "compact", labels: [runner], text: workerLog(480) },
@@ -163,6 +199,7 @@ describe("compact worker timing refit", () => {
 
 describe("compact worker timing schema", () => {
   const workerObservation: CompactWorkerTiming = {
+    timingOwner: "reader",
     runner: "blacksmith-8vcpu-ubuntu-2404",
     cpuCount: 2,
     totalMemoryBytes: 8 * 1024 ** 3,
@@ -175,6 +212,8 @@ describe("compact worker timing schema", () => {
     seconds: 80,
   };
   it.each([
+    [{ ...workerObservation, timingOwner: "" }],
+    [{ ...workerObservation, timingOwner: 1 }],
     [{ ...workerObservation, workers: 0 }],
     [{ ...workerObservation, jobWorkers: 0 }],
     [{ ...workerObservation, jobWorkers: 1.5 }],

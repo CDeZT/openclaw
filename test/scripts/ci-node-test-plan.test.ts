@@ -22,7 +22,10 @@ import {
   resolvePolicyTestTargets,
 } from "../../scripts/lib/ci-node-test-plan.mts";
 import { isCiProofTestFile } from "../../scripts/lib/ci-proof-test-inventory.mts";
-import { isRuntimePlacementIncludePatterns } from "../../scripts/lib/ci-test-timings-schema.mts";
+import {
+  compactWorkerTimingOwner,
+  isRuntimePlacementIncludePatterns,
+} from "../../scripts/lib/ci-test-timings-schema.mts";
 import * as testTimings from "../../scripts/lib/ci-test-timings.mts";
 import { isExclusiveCiTestConfig } from "../../scripts/lib/local-check-runtime.mts";
 import * as buildPrerequisites from "../../scripts/lib/vitest-build-prerequisites.mts";
@@ -1019,6 +1022,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   ])(
     "prices $owner on $profile at two workers without discounting new measurements",
     ({ profile, owner, fallback, measured }) => {
+      vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([]);
       const original = fullSuiteVitestShards.slice();
       const config = "test/vitest/vitest.auto-reply-reply.config.ts";
       fullSuiteVitestShards.splice(
@@ -2674,13 +2678,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             const observation = expectDefined(
               testTimings
                 .readCompactWorkerTimings()
-                .find(
+                .filter(
                   (entry) =>
+                    entry.timingOwner === compactWorkerTimingOwner(group) &&
                     entry.runner === shard.runner &&
                     entry.configs.join(",") === group.configs.join(",") &&
-                    entry.includePatterns.toSorted().join(",") ===
-                      group.includePatterns?.toSorted().join(","),
-                ),
+                    entry.includePatterns.every((file) => group.includePatterns?.includes(file)),
+                )
+                .toSorted((a, b) => b.seconds - a.seconds)[0],
               "measured over-budget singleton",
             );
             expect(shard.predictedSeconds).toBe(
@@ -4152,6 +4157,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     const observations = baseline
       .flatMap((job) => job.groups)
       .map((group) => ({
+        timingOwner: compactWorkerTimingOwner(group),
         runner: DEFAULT_NODE_TEST_RUNNER,
         cpuCount: 2,
         totalMemoryBytes: 8 * 1024 ** 3,
@@ -4992,6 +4998,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   it.each(["blacksmith", "github", "hybrid"])(
     "prices parallel cron from serial work until %s has direct measurements",
     (runnerBackend) => {
+      vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([]);
       const original = fullSuiteVitestShards.slice();
       try {
         const cron = "test/vitest/vitest.cron.config.ts";

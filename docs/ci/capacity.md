@@ -503,7 +503,7 @@ including contention, without subtracting setup or rewriting historical costs. R
 calibration remains a separate admission policy.
 
 Compact child observations also retain the requested runner label, observed CPU
-count, effective child workers, and admitted plan concurrency. The planner uses
+count, effective child workers, timing family, and admitted plan concurrency. The planner uses
 matching configuration, environment, and complete file membership on the
 candidate job's execution class before packing. A two-worker observation on the
 2-CPU class cannot be replaced by a faster eight-worker observation on the
@@ -512,8 +512,11 @@ they are not multiplied by a worker ratio or discounted by the hybrid profile.
 Existing admission floors remain intact when a newer observation is faster.
 Worker pins and measured-worker fallback eligibility use the runtime's existing
 owner. Multiple compatible observed allowances retain the largest measured wall
-for admission. If placement loses a larger runner, an exact workload observation
-remains a fallback floor. Only families already using the measured-worker policy
+for admission. When files are added, the largest contained observation remains a
+fallback floor without summing overlapping workloads. Timing-family changes keep
+older serial observations separate from newly parallel execution. If placement
+loses a larger runner, a matching workload observation remains a fallback floor.
+Only families already using the measured-worker policy
 project that wall to fewer workers using the observed allowance ratio; serial
 groups keep the unscaled wall, and additional workers never imply a speedup.
 Observed job allowances remain separate from each child's worker pin. Missing
