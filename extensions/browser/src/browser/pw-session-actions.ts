@@ -12,6 +12,8 @@ import {
 } from "./cdp.helpers.js";
 import { AX_REF_PATTERN, normalizeCdpWsUrl } from "./cdp.js";
 import { DEFAULT_BROWSER_ACTION_TIMEOUT_MS } from "./constants.js";
+import { resolveBrowserEngine } from "./engines/registry.js";
+import type { BrowserEngineId } from "./engines/types.js";
 import {
   withBrowserNavigationPolicy,
   assertBrowserNavigationAllowed,
@@ -255,7 +257,7 @@ export async function forceDisconnectPlaywrightForTarget(opts: {
 async function withPlaywrightSafeReadReconnect<T>(
   opts: {
     cdpUrl: string;
-    engine?: "chromium" | "lightpanda";
+    engine?: BrowserEngineId;
     ssrfPolicy?: SsrFPolicy;
     signal: AbortSignal;
   },
@@ -266,7 +268,7 @@ async function withPlaywrightSafeReadReconnect<T>(
     return await run(connected.browser);
   } catch (err) {
     if (
-      connected.engine === "lightpanda" ||
+      !resolveBrowserEngine(connected.engine).canReconnectForSafeReads ||
       !isRecoverablePlaywrightDisconnectError(err) ||
       opts.signal.aborted
     ) {
@@ -276,7 +278,7 @@ async function withPlaywrightSafeReadReconnect<T>(
     if (opts.signal.aborted) {
       throw err;
     }
-    const retry = await connectBrowser(opts.cdpUrl, opts.ssrfPolicy);
+    const retry = await connectBrowser(opts.cdpUrl, opts.ssrfPolicy, undefined, opts.engine);
     return await run(retry.browser);
   }
 }
@@ -284,7 +286,7 @@ async function withPlaywrightSafeReadReconnect<T>(
 async function readPagesViaPlaywright(
   opts: {
     cdpUrl: string;
-    engine?: "chromium" | "lightpanda";
+    engine?: BrowserEngineId;
     ssrfPolicy?: SsrFPolicy;
     requireCompleteTargetList?: boolean;
   },
@@ -471,7 +473,7 @@ type PlaywrightPageEnumeration =
 /** List pages through the persistent Playwright connection. */
 export async function listPagesViaPlaywright(opts: {
   cdpUrl: string;
-  engine?: "chromium" | "lightpanda";
+  engine?: BrowserEngineId;
   ssrfPolicy?: SsrFPolicy;
   timeoutMs?: number;
   requireCompleteTargetList?: boolean;
@@ -526,7 +528,7 @@ export async function listPagesViaPlaywright(opts: {
 export async function createPageViaPlaywright(
   opts: {
     cdpUrl: string;
-    engine?: "chromium" | "lightpanda";
+    engine?: BrowserEngineId;
     url: string;
     cdpPolicy?: SsrFPolicy;
     signal?: AbortSignal;
@@ -560,15 +562,19 @@ export async function createPageViaPlaywright(
   opts.signal?.throwIfAborted();
   ensureContextState(context);
 
-  if (engine === "lightpanda" && (await getAllPages(browser)).length > 0) {
+  const adapter = resolveBrowserEngine(engine);
+  if (
+    adapter.maxPagesPerConnection !== undefined &&
+    (await getAllPages(browser)).length >= adapter.maxPagesPerConnection
+  ) {
     throw new Error(
-      "Lightpanda supports one page per connection. Navigate the existing tab, or close it before opening another.",
+      `${adapter.descriptor.label} supports ${adapter.maxPagesPerConnection} page per connection. Navigate the existing tab, or close it before opening another.`,
     );
   }
 
   const page = await context.newPage();
   const close = async () => {
-    if (engine === "lightpanda") {
+    if (adapter.descriptor.sessionScope === "connection") {
       await closeConnectionScopedPageBrowser(opts.cdpUrl, browser);
     } else {
       await page.close();
