@@ -83,13 +83,15 @@ export function findPlaywrightChromiumExecutable(
     } catch {
       continue;
     }
-    // Shell-only installs must work, but never select a headless-only binary for a headed launch.
-    const families = headless
-      ? ([
-          ["chromium_headless_shell-", shellPaths],
-          ["chromium-", chromiumPaths],
-        ] as const)
-      : ([["chromium-", chromiumPaths]] as const);
+    // Lockless shell recovery needs the process ownership contracts on Linux/macOS.
+    // Windows keeps full Chromium until equivalent cross-runtime proof is available.
+    const families =
+      headless && platform !== "win32"
+        ? ([
+            ["chromium_headless_shell-", shellPaths],
+            ["chromium-", chromiumPaths],
+          ] as const)
+        : ([["chromium-", chromiumPaths]] as const);
     for (const [prefix, paths] of families) {
       for (const entry of entries) {
         if (!entry.startsWith(prefix)) {

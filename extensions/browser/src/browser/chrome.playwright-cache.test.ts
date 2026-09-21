@@ -47,27 +47,39 @@ it.each([
     suffix: ["chrome-headless-shell-win64", "chrome-headless-shell.exe"],
   },
 ] as const)(
-  "discovers shell-only $platform/$arch installs without replacing full Chrome attach",
+  "discovers shell-only $platform/$arch installs only where process ownership is supported",
   ({ platform, arch, suffix }) => {
     const cache = platform === "win32" ? "C:\\browsers" : "/browsers";
     const join = platform === "win32" ? path.win32.join : path.join;
     const executablePath = join(cache, "chromium_headless_shell-100", ...suffix);
+    let installedExecutable = executablePath;
     vi.spyOn(process, "arch", "get").mockReturnValue(arch);
     vi.stubEnv("PLAYWRIGHT_BROWSERS_PATH", cache);
-    vi.spyOn(fs, "readdirSync").mockReturnValue(["chromium_headless_shell-100"] as never);
+    vi.spyOn(fs, "readdirSync").mockReturnValue([
+      "chromium_headless_shell-100",
+      "chromium-100",
+    ] as never);
     vi.spyOn(fs, "statSync").mockImplementation((candidate) => {
-      if (String(candidate) !== executablePath) {
+      if (String(candidate) !== installedExecutable) {
         throw new Error("ENOENT");
       }
       return { isFile: () => true } as fs.Stats;
     });
     vi.spyOn(fs, "accessSync").mockImplementation(() => {});
-    expect(resolveBrowserExecutableForPlatform(resolveBrowserConfig({}), platform)).toEqual({
-      kind: "chromium",
-      path: executablePath,
-    });
+    expect(resolveBrowserExecutableForPlatform(resolveBrowserConfig({}), platform)).toEqual(
+      platform === "win32" ? null : { kind: "chromium", path: executablePath },
+    );
     expect(findPlaywrightChromiumExecutable(platform, false)).toBeNull();
     expect(resolveGoogleChromeExecutableForPlatform(platform)).toBeNull();
+    if (platform === "win32") {
+      installedExecutable = join(cache, "chromium-100", "chrome-win64", "chrome.exe");
+      for (const headless of [false, true]) {
+        expect(findPlaywrightChromiumExecutable(platform, headless)).toEqual({
+          kind: "chromium",
+          path: installedExecutable,
+        });
+      }
+    }
   },
 );
 

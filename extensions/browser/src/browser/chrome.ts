@@ -4,17 +4,13 @@
  * Builds launch args, starts/stops managed Chrome, probes CDP readiness, and
  * resolves WebSocket endpoints for browser control.
  */
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  getFileLockProcessStartTime,
-  isPidAlive,
-  prepareOomScoreAdjustedSpawn,
-} from "openclaw/plugin-sdk/process-runtime";
+import { isPidAlive, prepareOomScoreAdjustedSpawn } from "openclaw/plugin-sdk/process-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { sliceUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { SsrFPolicy } from "../infra/net/ssrf.js";
@@ -60,10 +56,20 @@ import {
 import {
   type BrowserExecutable,
   assertBrowserExecutableSupportsMode,
-  isChromeExecutableFamilyMatch,
   processCommandUsesHeadlessChrome,
   resolveBrowserExecutableForPlatform,
 } from "./chrome.executables.js";
+import {
+  headlessShellProfileInUseReason,
+  isHeadlessShellExecutable,
+  pidListensOnPort,
+  processCommandHasFlag,
+  readManagedProcessCommandLine,
+  readOwnedManagedChromeIdentity,
+  readPortListenerPids,
+  sameManagedChromeIdentity,
+  type ManagedChromeProcessIdentity,
+} from "./chrome.process-ownership.js";
 import {
   decorateOpenClawProfile,
   ensureProfileCleanExit,
@@ -71,6 +77,7 @@ import {
   isProfileDecorated,
   usesOpenClawMockKeychain,
 } from "./chrome.profile-decoration.js";
+import { withChromeProfileLifecycleLock } from "./chrome.profile-lifecycle-lock.js";
 import type { BrowserGraphicsDiagnostics } from "./client.types.js";
 import {
   getManagedBrowserMissingDisplayError,
@@ -105,7 +112,6 @@ const CHROME_HTTP_DISCOVERY_FAILURE_CODES = new Set([
   "http_status_failed",
   "invalid_json",
 ]);
-const TCP_LISTEN_STATE_HEX = "0A";
 
 function diagnosticShowsChromeHttpDiscovery(diagnostic: ChromeCdpDiagnostic | null): boolean {
   if (!diagnostic) {
@@ -196,216 +202,12 @@ function unverifiedSingletonLockReason(lock: ChromeSingletonLock): string | unde
   return undefined;
 }
 
-function readLinuxProcessArgv(pid: number): string[] | null {
-  let cmdline: Buffer;
-  try {
-    cmdline = fs.readFileSync(`/proc/${pid}/cmdline`);
-  } catch {
-    return null;
-  }
-  const argv = cmdline
-    .toString("utf8")
-    .split("\0")
-    .filter((arg) => arg.length > 0);
-  return argv.length > 0 ? argv : null;
-}
-
-function readPsCommandLine(pid: number): string | null {
-  try {
-    return (
-      normalizeOptionalString(
-        execFileSync("ps", ["-ww", "-p", String(pid), "-o", "command="], {
-          encoding: "utf8",
-          timeout: 1000,
-          maxBuffer: 64 * 1024,
-        }),
-      ) ?? null
-    );
-  } catch {
-    return null;
-  }
-}
-
-function readManagedProcessCommandLine(pid: number): {
-  argv: string[] | null;
-  text: string;
-  startTime: number;
-} | null {
-  if (process.platform !== "linux" && process.platform !== "darwin") {
-    return null;
-  }
-  const startTime = getFileLockProcessStartTime(pid);
-  if (startTime === null) {
-    return null;
-  }
-  const argv = process.platform === "linux" ? readLinuxProcessArgv(pid) : null;
-  const text = process.platform === "linux" ? argv?.join(" ") : readPsCommandLine(pid);
-  return text ? { argv, text, startTime } : null;
-}
-
-function processCommandHasFlag(
-  command: { argv: string[] | null; text: string },
-  name: "remote-debugging-port" | "user-data-dir",
-  value: string,
-): boolean {
-  const flag = `--${name}=`;
-  if (command.argv) {
-    const matches = command.argv.filter((arg) => arg.startsWith(flag));
-    return matches.length === 1 && matches[0] === `${flag}${value}`;
-  }
-  // macOS ps flattens argv; a sibling path or a duplicate flag is not ownership proof.
-  const matches = [...command.text.matchAll(new RegExp(`(?:^|\\s)${flag}(.*?)(?=\\s--|$)`, "g"))];
-  return matches.length === 1 && matches[0]?.[1] === value;
-}
-
-function commandLineMatchesManagedChrome(params: {
-  command: { argv: string[] | null; text: string };
-  exe: BrowserExecutable;
-  profile: ResolvedBrowserProfile;
-  userDataDir: string;
-}): boolean {
-  return (
-    isChromeExecutableFamilyMatch(params.command.text, params.exe) &&
-    processCommandHasFlag(
-      params.command,
-      "remote-debugging-port",
-      String(params.profile.cdpPort),
-    ) &&
-    processCommandHasFlag(params.command, "user-data-dir", params.userDataDir)
-  );
-}
-
-function parseLinuxTcpListenInodesForPort(table: string, port: number): Set<string> {
-  const expectedPort = port.toString(16).toUpperCase().padStart(4, "0");
-  const inodes = new Set<string>();
-  for (const line of table.split(/\r?\n/).slice(1)) {
-    const fields = line.trim().split(/\s+/);
-    const localAddress = fields[1] ?? "";
-    const state = fields[3] ?? "";
-    const inode = fields[9] ?? "";
-    const localPort = localAddress.split(":").at(-1)?.toUpperCase();
-    if (localPort === expectedPort && state === TCP_LISTEN_STATE_HEX && inode) {
-      inodes.add(inode);
-    }
-  }
-  return inodes;
-}
-
-function readLinuxTcpListenInodesForPort(port: number): Set<string> {
-  const inodes = new Set<string>();
-  for (const tablePath of ["/proc/net/tcp", "/proc/net/tcp6"]) {
-    try {
-      for (const inode of parseLinuxTcpListenInodesForPort(
-        fs.readFileSync(tablePath, "utf8"),
-        port,
-      )) {
-        inodes.add(inode);
-      }
-    } catch {
-      // Missing proc tables mean this platform cannot prove listener ownership.
-    }
-  }
-  return inodes;
-}
-
-function linuxPidOwnsAnySocketInode(pid: number, inodes: Set<string>): boolean {
-  if (inodes.size === 0) {
-    return false;
-  }
-  let descriptors: string[];
-  try {
-    descriptors = fs.readdirSync(`/proc/${pid}/fd`);
-  } catch {
-    return false;
-  }
-  for (const descriptor of descriptors) {
-    let target: string;
-    try {
-      target = fs.readlinkSync(`/proc/${pid}/fd/${descriptor}`);
-    } catch {
-      continue;
-    }
-    const match = /^socket:\[(?<inode>\d+)\]$/.exec(target);
-    if (match?.groups?.inode && inodes.has(match.groups.inode)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function linuxPidListensOnPort(pid: number, port: number): boolean {
-  return linuxPidOwnsAnySocketInode(pid, readLinuxTcpListenInodesForPort(port));
-}
-
-function lsofShowsPidListeningOnPort(pid: number, port: number): boolean {
-  try {
-    const output = execFileSync(
-      "lsof",
-      ["-nP", "-a", "-p", String(pid), `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"],
-      { encoding: "utf8", timeout: 1000, maxBuffer: 64 * 1024 },
-    );
-    return output.split(/\r?\n/).some((line) => line === `p${pid}`);
-  } catch {
-    return false;
-  }
-}
-
-function pidListensOnPort(pid: number, port: number): boolean {
-  if (process.platform === "linux") {
-    return linuxPidListensOnPort(pid, port);
-  }
-  if (process.platform === "darwin") {
-    return lsofShowsPidListeningOnPort(pid, port);
-  }
-  return false;
-}
-
-type ManagedChromeProcessIdentity = {
-  pid: number;
-  startTime: number;
-  commandLine: string;
-};
-
-function sameManagedChromeIdentity(
-  a: ManagedChromeProcessIdentity,
-  b: ManagedChromeProcessIdentity,
-): boolean {
-  return a.pid === b.pid && a.commandLine === b.commandLine && a.startTime === b.startTime;
-}
-
-function readOwnedManagedChromeIdentity(params: {
-  pid: number;
-  exe: BrowserExecutable;
-  profile: ResolvedBrowserProfile;
-  userDataDir: string;
-}): ManagedChromeProcessIdentity | null {
-  if (!isPidAlive(params.pid) || !pidListensOnPort(params.pid, params.profile.cdpPort)) {
-    return null;
-  }
-  const command = readManagedProcessCommandLine(params.pid);
-  if (
-    !command ||
-    !commandLineMatchesManagedChrome({
-      command,
-      exe: params.exe,
-      profile: params.profile,
-      userDataDir: params.userDataDir,
-    })
-  ) {
-    return null;
-  }
-  return {
-    pid: params.pid,
-    startTime: command.startTime,
-    commandLine: command.text,
-  };
-}
-
 function resolveOwnedManagedChromeIdentity(params: {
   resolved: ResolvedBrowserConfig;
   profile: ResolvedBrowserProfile;
   userDataDir: string;
   pid: number;
+  headlessShellOnly?: boolean;
 }): { exe: BrowserExecutable; identity: ManagedChromeProcessIdentity } | null {
   // One-shot launches can differ from persisted mode. Discovery is not authority:
   // either candidate must pass the same live PID, port, command, and profile proof.
@@ -419,6 +221,37 @@ function resolveOwnedManagedChromeIdentity(params: {
   return null;
 }
 
+function resolveOwnedManagedChromeListener(params: {
+  resolved: ResolvedBrowserConfig;
+  profile: ResolvedBrowserProfile;
+  userDataDir: string;
+  lock: ChromeSingletonLock;
+}): ReturnType<typeof resolveOwnedManagedChromeIdentity> {
+  if (params.lock.status === "owner") {
+    if (params.lock.hostname !== os.hostname()) {
+      return null;
+    }
+    if (isPidAlive(params.lock.pid)) {
+      return resolveOwnedManagedChromeIdentity({ ...params, pid: params.lock.pid });
+    }
+  } else if (params.lock.status !== "missing") {
+    return null;
+  }
+  // Headless shell never creates SingletonLock. Discover its listener, then use
+  // the same live PID, start time, exact port, and profile proof as locked Chrome.
+  // A dead local lock can remain from an earlier full Chromium launch.
+  // Full Chrome without its lock must not gain this alternate ownership path.
+  const pids = readPortListenerPids(params.profile.cdpPort);
+  if (pids.length !== 1) {
+    return null;
+  }
+  return resolveOwnedManagedChromeIdentity({
+    ...params,
+    pid: pids[0],
+    headlessShellOnly: true,
+  });
+}
+
 function isPortInUseError(err: unknown): boolean {
   const errno = (err as NodeJS.ErrnoException | undefined)?.code;
   const name = err instanceof Error ? err.name : "";
@@ -428,14 +261,6 @@ function isPortInUseError(err: unknown): boolean {
     name === "PortInUseError" ||
     /\bEADDRINUSE\b|already in use/i.test(message)
   );
-}
-
-function readCurrentHostSingletonPid(userDataDir: string, hostname = os.hostname()): number | null {
-  const lock = readSingletonLockTarget(userDataDir);
-  if (lock.status !== "owner" || lock.hostname !== hostname || !isPidAlive(lock.pid)) {
-    return null;
-  }
-  return lock.pid;
 }
 
 function clearChromeSingletonArtifacts(userDataDir: string) {
@@ -569,17 +394,14 @@ function clearRecoveredChromeSingletonArtifacts(
   pid: number,
   hostname = os.hostname(),
 ): boolean {
-  const lock = readSingletonLockTarget(userDataDir);
-  if (
-    lock.status !== "owner" ||
-    lock.hostname !== hostname ||
-    lock.pid !== pid ||
-    isPidAlive(pid)
-  ) {
+  if (isPidAlive(pid)) {
     return false;
   }
-  clearChromeSingletonArtifacts(userDataDir);
-  return true;
+  // The stopped shell may have inherited a dead local full-Chromium lock.
+  return (
+    readSingletonLockTarget(userDataDir).status === "missing" ||
+    clearStaleChromeSingletonLocks(userDataDir, hostname)
+  );
 }
 
 async function recoverOwnedStaleManagedChromeCdpListener(params: {
@@ -592,8 +414,8 @@ async function recoverOwnedStaleManagedChromeCdpListener(params: {
   if (!params.profile.cdpIsLoopback) {
     return false;
   }
-  const pid = readCurrentHostSingletonPid(params.userDataDir);
-  if (pid == null) {
+  const lock = readSingletonLockTarget(params.userDataDir);
+  if (unverifiedSingletonLockReason(lock)) {
     return false;
   }
   let diagnostic: ChromeCdpDiagnostic;
@@ -612,11 +434,12 @@ async function recoverOwnedStaleManagedChromeCdpListener(params: {
   if (diagnostic.ok || diagnostic.code !== "websocket_health_command_timeout") {
     return false;
   }
-  const owner = resolveOwnedManagedChromeIdentity({ ...params, pid });
+  const owner = resolveOwnedManagedChromeListener({ ...params, lock });
   if (!owner) {
     return false;
   }
   const { exe, identity } = owner;
+  const { pid } = identity;
   params.signal?.throwIfAborted();
   if (
     !(await terminateOwnedStaleChromeProcess({
@@ -637,26 +460,29 @@ async function recoverOwnedStaleManagedChromeCdpListener(params: {
   return true;
 }
 
+async function probeManagedChromePorts(
+  profile: ResolvedBrowserProfile,
+  signal?: AbortSignal,
+): Promise<void> {
+  const configuredHost = new URL(profile.cdpUrl).hostname.replace(/^\[|\]$/g, "");
+  const probeHosts =
+    configuredHost === "127.0.0.1" ? [configuredHost] : ["127.0.0.1", configuredHost];
+  // Chromium tries IPv4 loopback first, while OpenClaw polls the configured endpoint.
+  // Probe both so neither Chrome's bind nor the later readiness check can be captured.
+  for (const host of probeHosts) {
+    signal?.throwIfAborted();
+    await ensurePortAvailable(profile.cdpPort, host);
+  }
+}
+
 async function ensureManagedChromePortAvailable(
   resolved: ResolvedBrowserConfig,
   profile: ResolvedBrowserProfile,
   userDataDir: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  const configuredHost = new URL(profile.cdpUrl).hostname.replace(/^\[|\]$/g, "");
-  const probeHosts =
-    configuredHost === "127.0.0.1" ? [configuredHost] : ["127.0.0.1", configuredHost];
-  const ensureProbeHostsAvailable = async () => {
-    for (const host of probeHosts) {
-      signal?.throwIfAborted();
-      await ensurePortAvailable(profile.cdpPort, host);
-    }
-  };
-
-  // Chromium tries IPv4 loopback first, while OpenClaw polls the configured endpoint.
-  // Probe both so neither Chrome's bind nor the later readiness check can be captured.
   try {
-    await ensureProbeHostsAvailable();
+    await probeManagedChromePorts(profile, signal);
     return;
   } catch (err) {
     signal?.throwIfAborted();
@@ -667,7 +493,7 @@ async function ensureManagedChromePortAvailable(
       throw err;
     }
   }
-  await ensureProbeHostsAvailable();
+  await probeManagedChromePorts(profile, signal);
 }
 
 function chromeLaunchHints(params: {
@@ -968,11 +794,22 @@ export async function launchOpenClawChrome(
   profile: ResolvedBrowserProfile,
   launchOptions: ManagedBrowserLaunchOptions = {},
 ): Promise<RunningChrome> {
-  const { signal, ...headlessOptions } = launchOptions;
-  signal?.throwIfAborted();
+  launchOptions.signal?.throwIfAborted();
   if (!profile.cdpIsLoopback) {
     throw new Error(`Profile "${profile.name}" is remote; cannot launch local Chrome.`);
   }
+  return await withChromeProfileLifecycleLock(profile.name, async () =>
+    launchOpenClawChromeLocked(resolved, profile, launchOptions),
+  );
+}
+
+async function launchOpenClawChromeLocked(
+  resolved: ResolvedBrowserConfig,
+  profile: ResolvedBrowserProfile,
+  launchOptions: ManagedBrowserLaunchOptions,
+): Promise<RunningChrome> {
+  const { signal, ...headlessOptions } = launchOptions;
+  signal?.throwIfAborted();
   const headlessMode = resolveManagedBrowserHeadlessMode(resolved, profile, headlessOptions);
   const missingDisplayError = getManagedBrowserMissingDisplayError(
     resolved,
@@ -1011,7 +848,8 @@ export async function launchOpenClawChrome(
   signal?.throwIfAborted();
 
   const lock = readSingletonLockTarget(userDataDir);
-  const lockReason = unverifiedSingletonLockReason(lock);
+  const lockReason =
+    unverifiedSingletonLockReason(lock) ?? headlessShellProfileInUseReason(userDataDir);
   if (lockReason || (lock.status === "owner" && isPidAlive(lock.pid))) {
     throw new BrowserProfileUnavailableError(
       `Cannot start browser profile "${profile.name}": ${lockReason ?? "Chromium still holds its profile lock"}. ` +
@@ -1027,6 +865,15 @@ export async function launchOpenClawChrome(
   }
 
   assertBrowserExecutableSupportsMode(exe, headlessMode.headless);
+  if (
+    process.platform !== "linux" &&
+    process.platform !== "darwin" &&
+    isHeadlessShellExecutable(exe.path)
+  ) {
+    throw new BrowserProfileUnavailableError(
+      "Managed headless shell is unsupported on this platform; use full Chromium or attach to an externally managed browser.",
+    );
+  }
   fs.mkdirSync(userDataDir, { recursive: true });
   await ensureOutputDirectory(DEFAULT_DOWNLOAD_DIR);
 
@@ -1503,6 +1350,30 @@ type ManagedChromeStopResult =
   | { status: "stopped" | "not-running" }
   | { status: "unverified"; reason: string };
 
+async function managedChromeProfileReleaseReason(
+  profile: ResolvedBrowserProfile,
+  userDataDir: string,
+): Promise<string | undefined> {
+  try {
+    await probeManagedChromePorts(profile);
+  } catch {
+    return "The Chromium CDP port is still occupied or could not be verified free";
+  }
+  // A changed profile port or a closing listener does not release shell data:
+  // unlike full Chrome there is no singleton lock to expose its live writer.
+  const shellReason = headlessShellProfileInUseReason(userDataDir);
+  if (shellReason) {
+    return shellReason;
+  }
+  const lock = readSingletonLockTarget(userDataDir);
+  return (
+    unverifiedSingletonLockReason(lock) ??
+    (lock.status === "owner" && isPidAlive(lock.pid)
+      ? "Chromium still holds the profile lock"
+      : undefined)
+  );
+}
+
 /** Stop only the exact managed Chrome owned by this profile across runtimes. */
 export async function stopOwnedOpenClawChrome(
   resolved: ResolvedBrowserConfig,
@@ -1512,30 +1383,54 @@ export async function stopOwnedOpenClawChrome(
   if (!profile.cdpIsLoopback || profile.attachOnly || profile.driver !== "openclaw") {
     return { status: "not-running" };
   }
+  return await withChromeProfileLifecycleLock(profile.name, async () =>
+    stopOwnedOpenClawChromeLocked(resolved, profile, timeoutMs),
+  );
+}
 
+async function stopOwnedOpenClawChromeLocked(
+  resolved: ResolvedBrowserConfig,
+  profile: ResolvedBrowserProfile,
+  timeoutMs: number,
+): Promise<ManagedChromeStopResult> {
   const userDataDir = resolveOpenClawUserDataDir(profile.name);
   const lock = readSingletonLockTarget(userDataDir);
   const lockReason = unverifiedSingletonLockReason(lock);
   if (lockReason) {
     return { status: "unverified", reason: lockReason };
   }
-  if (lock.status !== "owner" || !isPidAlive(lock.pid)) {
-    return { status: "not-running" };
-  }
-  const pid = lock.pid;
   let owner: ReturnType<typeof resolveOwnedManagedChromeIdentity>;
   try {
-    owner = resolveOwnedManagedChromeIdentity({ resolved, profile, userDataDir, pid });
+    if (
+      process.platform !== "linux" &&
+      process.platform !== "darwin" &&
+      [false, true].some((headless) => {
+        const exe = resolveBrowserExecutable(resolved, profile, headless);
+        return exe && isHeadlessShellExecutable(exe.path);
+      })
+    ) {
+      return {
+        status: "unverified",
+        reason:
+          "Cross-runtime headless shell cleanup is unsupported on this platform; use full Chromium for managed profiles",
+      };
+    }
+    owner = resolveOwnedManagedChromeListener({ resolved, profile, userDataDir, lock });
   } catch {
     return { status: "unverified", reason: "Managed browser executable could not be resolved" };
   }
   if (!owner) {
+    if (lock.status !== "owner" || !isPidAlive(lock.pid)) {
+      const reason = await managedChromeProfileReleaseReason(profile, userDataDir);
+      return reason ? { status: "unverified", reason } : { status: "not-running" };
+    }
     return {
       status: "unverified",
       reason: "The active Chromium profile owner could not be verified",
     };
   }
   const { exe, identity } = owner;
+  const { pid } = identity;
 
   // Browser runtimes do not share child handles; revalidate the exact process
   // before either CDP close or signal-based cleanup can affect a replacement.
@@ -1556,14 +1451,10 @@ export async function stopOwnedOpenClawChrome(
   ) {
     return { status: "unverified", reason: "The Chromium profile owner changed or did not stop" };
   }
-  clearRecoveredChromeSingletonArtifacts(userDataDir, pid, lock.hostname);
-  const remaining = readSingletonLockTarget(userDataDir);
-  const remainingReason = unverifiedSingletonLockReason(remaining);
+  clearRecoveredChromeSingletonArtifacts(userDataDir, pid);
+  const remainingReason = await managedChromeProfileReleaseReason(profile, userDataDir);
   if (remainingReason) {
     return { status: "unverified", reason: remainingReason };
-  }
-  if (remaining.status === "owner" && isPidAlive(remaining.pid)) {
-    return { status: "unverified", reason: "Chromium still holds the profile lock" };
   }
   return { status: "stopped" };
 }

@@ -242,10 +242,18 @@ main model can read the screenshot directly.
   a temporary browser solely to create preference files. Existing profile preferences
   and cookie encryption settings are preserved.
 - When no installed Chromium-family browser is found, OpenClaw searches the
-  Playwright cache. Headless launches prefer an installed Chromium headless shell;
-  headed launches require full Chromium. Set `executablePath` to pin either binary.
+  Playwright cache. On Linux and macOS, headless launches prefer an installed
+  Chromium headless shell; headed launches and Windows discovery require full
+  Chromium. Set `executablePath` to pin a binary.
   Discovery does not load Playwright or download browsers. The shell is a Chromium
   engine with its own third-party license obligations, not an MIT-only binary.
+- Headless shell does not create Chromium's profile lock. On Linux and macOS,
+  cross-runtime stop and reset verify the live process, CDP listener, and exact
+  profile directory; reset preserves data if a shell still uses it on another
+  port or ownership cannot be proved. Launch and reset share a cross-runtime
+  profile lock. Managed shell launch and cross-runtime cleanup are unsupported
+  on Windows and fail closed; use full Chromium or attach to an externally
+  managed browser instead.
 - `OPENCLAW_BROWSER_HEADLESS=1` forces local managed launches headless for the
   current process. `OPENCLAW_BROWSER_HEADLESS=0` forces headed mode for ordinary
   starts and returns an actionable error on Linux hosts without a display server;

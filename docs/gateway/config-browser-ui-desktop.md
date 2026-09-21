@@ -116,7 +116,8 @@ For the full key index and the other top-level config domains, see [Configuratio
 - Managed browsers are headless by default. Explicit global or per-profile
   `headless: false` keeps headed mode; externally owned browsers are unchanged.
 - Auto-detect order: default browser if Chromium-based → Chrome → Brave → Edge → Chromium → Chrome Canary → installed Playwright browser cache.
-  Headless-only cache installs are used only for headless launches.
+  Headless-only cache installs are used only for headless launches on Linux and
+  macOS; Windows discovery requires full Chromium.
 - `browser.executablePath` and `browser.profiles.<name>.executablePath` both
   accept `~` and `~/...` for your OS home directory before Chromium launch.
   Per-profile `userDataDir` on `existing-session` profiles is also tilde-expanded.
