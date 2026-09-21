@@ -59,6 +59,9 @@ import {
 } from "./chrome.diagnostics.js";
 import {
   type BrowserExecutable,
+  assertBrowserExecutableSupportsMode,
+  isChromeExecutableFamilyMatch,
+  processCommandUsesHeadlessChrome,
   resolveBrowserExecutableForPlatform,
 } from "./chrome.executables.js";
 import {
@@ -240,31 +243,6 @@ function readManagedProcessCommandLine(pid: number): {
   return text ? { argv, text, startTime } : null;
 }
 
-function isChromeExecutableFamilyMatch(commandText: string, exe: BrowserExecutable): boolean {
-  const normalizedCommand = commandText.toLowerCase();
-  const configuredPath = exe.path.toLowerCase();
-  const configuredBase = path.basename(exe.path).toLowerCase();
-  if (
-    normalizedCommand.includes(configuredPath) ||
-    (configuredBase.length > 0 && normalizedCommand.includes(configuredBase))
-  ) {
-    return true;
-  }
-  if (exe.kind === "chrome" || exe.kind === "canary") {
-    return /\b(google chrome|google-chrome|chrome|chromium)\b/i.test(commandText);
-  }
-  if (exe.kind === "chromium") {
-    return /\b(chromium|chromium-browser)\b/i.test(commandText);
-  }
-  if (exe.kind === "brave") {
-    return /\b(brave browser|brave-browser|brave)\b/i.test(commandText);
-  }
-  if (exe.kind === "edge") {
-    return /\b(microsoft edge|microsoft-edge|msedge)\b/i.test(commandText);
-  }
-  return false;
-}
-
 function processCommandHasFlag(
   command: { argv: string[] | null; text: string },
   name: "remote-debugging-port" | "user-data-dir",
@@ -421,6 +399,24 @@ function readOwnedManagedChromeIdentity(params: {
     startTime: command.startTime,
     commandLine: command.text,
   };
+}
+
+function resolveOwnedManagedChromeIdentity(params: {
+  resolved: ResolvedBrowserConfig;
+  profile: ResolvedBrowserProfile;
+  userDataDir: string;
+  pid: number;
+}): { exe: BrowserExecutable; identity: ManagedChromeProcessIdentity } | null {
+  // One-shot launches can differ from persisted mode. Discovery is not authority:
+  // either candidate must pass the same live PID, port, command, and profile proof.
+  for (const headless of [false, true]) {
+    const exe = resolveBrowserExecutable(params.resolved, params.profile, headless);
+    const identity = exe && readOwnedManagedChromeIdentity({ ...params, exe });
+    if (exe && identity) {
+      return { exe, identity };
+    }
+  }
+  return null;
 }
 
 function isPortInUseError(err: unknown): boolean {
@@ -587,7 +583,7 @@ function clearRecoveredChromeSingletonArtifacts(
 }
 
 async function recoverOwnedStaleManagedChromeCdpListener(params: {
-  exe: BrowserExecutable;
+  resolved: ResolvedBrowserConfig;
   profile: ResolvedBrowserProfile;
   userDataDir: string;
   signal?: AbortSignal;
@@ -616,20 +612,16 @@ async function recoverOwnedStaleManagedChromeCdpListener(params: {
   if (diagnostic.ok || diagnostic.code !== "websocket_health_command_timeout") {
     return false;
   }
-  const identity = readOwnedManagedChromeIdentity({
-    pid,
-    exe: params.exe,
-    profile: params.profile,
-    userDataDir: params.userDataDir,
-  });
-  if (!identity) {
+  const owner = resolveOwnedManagedChromeIdentity({ ...params, pid });
+  if (!owner) {
     return false;
   }
+  const { exe, identity } = owner;
   params.signal?.throwIfAborted();
   if (
     !(await terminateOwnedStaleChromeProcess({
       identity,
-      exe: params.exe,
+      exe,
       profile: params.profile,
       userDataDir: params.userDataDir,
     }))
@@ -668,11 +660,10 @@ async function ensureManagedChromePortAvailable(
     return;
   } catch (err) {
     signal?.throwIfAborted();
-    const exe = resolveBrowserExecutable(resolved, profile);
-    if (!isPortInUseError(err) || !exe) {
-      throw err;
-    }
-    if (!(await recoverOwnedStaleManagedChromeCdpListener({ exe, profile, userDataDir, signal }))) {
+    if (
+      !isPortInUseError(err) ||
+      !(await recoverOwnedStaleManagedChromeCdpListener({ resolved, profile, userDataDir, signal }))
+    ) {
       throw err;
     }
   }
@@ -744,9 +735,10 @@ export class ManagedChromeCleanupError extends Error {
 function resolveBrowserExecutable(
   resolved: ResolvedBrowserConfig,
   profile: ResolvedBrowserProfile,
+  headless = resolveManagedBrowserHeadlessMode(resolved, profile).headless,
 ): BrowserExecutable | null {
   return resolveBrowserExecutableForPlatform(
-    { ...resolved, executablePath: profile.executablePath ?? resolved.executablePath },
+    { ...resolved, headless, executablePath: profile.executablePath ?? resolved.executablePath },
     process.platform,
   );
 }
@@ -754,10 +746,6 @@ function resolveBrowserExecutable(
 /** Resolve the user-data-dir path for a managed OpenClaw Chrome profile. */
 export function resolveOpenClawUserDataDir(profileName = DEFAULT_OPENCLAW_BROWSER_PROFILE_NAME) {
   return path.join(CONFIG_DIR, "browser", profileName, "user-data");
-}
-
-function cdpUrlForPort(cdpPort: number) {
-  return `http://127.0.0.1:${cdpPort}`;
 }
 
 /** Build Chrome launch arguments for the managed OpenClaw browser. */
@@ -1031,20 +1019,22 @@ export async function launchOpenClawChrome(
     );
   }
 
-  const exe = resolveBrowserExecutable(resolved, profile);
+  const exe = resolveBrowserExecutable(resolved, profile, headlessMode.headless);
   if (!exe) {
     throw new Error(
       "No supported browser found (Chrome/Brave/Edge/Chromium on macOS, Linux, or Windows).",
     );
   }
 
+  assertBrowserExecutableSupportsMode(exe, headlessMode.headless);
   fs.mkdirSync(userDataDir, { recursive: true });
   await ensureOutputDirectory(DEFAULT_DOWNLOAD_DIR);
 
   const localStatePath = path.join(userDataDir, "Local State");
   const preferencesPath = path.join(userDataDir, "Default", "Preferences");
   const profileIsNew = !fs.existsSync(localStatePath);
-  const needsBootstrap = profileIsNew || !fs.existsSync(preferencesPath);
+  const needsBootstrap =
+    !headlessMode.headless && (profileIsNew || !fs.existsSync(preferencesPath));
   // Never change the encryption key source for an established profile: doing
   // so would make its existing cookies unreadable. New headless profiles opt in.
   const useMockKeychain =
@@ -1058,7 +1048,7 @@ export async function launchOpenClawChrome(
     DEFAULT_DOWNLOAD_DIR,
   );
 
-  // First launch to create preference files if missing, then decorate and relaunch.
+  // Headless profiles are seeded directly; headed profiles retain Chrome's first-run bootstrap.
   const spawnOnce = async (onStderr?: (chunk: Buffer | string) => void) => {
     signal?.throwIfAborted();
     const args = buildOpenClawChromeLaunchArgs({
@@ -1144,8 +1134,6 @@ export async function launchOpenClawChrome(
     headlessSource: headlessMode.source,
   });
 
-  // If the profile doesn't exist yet, bootstrap it once so Chrome creates defaults.
-  // Then decorate (if needed) before the "real" run.
   if (needsBootstrap) {
     const { pid: bootstrapPid, proc: bootstrap, releaseAbort } = await spawnOnce();
     let bootstrapError: Error | undefined;
@@ -1368,17 +1356,6 @@ function cdpBrowserProcessId(result: unknown): number | null {
   return browser?.id ?? null;
 }
 
-function processCommandUsesHeadlessChrome(command: {
-  argv: string[] | null;
-  text: string;
-}): boolean {
-  const args = command.argv ?? command.text.split(/\s+/);
-  return (
-    args.some((arg) => /^['"]?--headless(?:=.*)?['"]?$/i.test(arg)) ||
-    /(?:^|[\\/])(?:chrome-headless-shell|headless_shell)(?=\s|$|["'])/i.test(command.text)
-  );
-}
-
 /** Read the mode of a browser process proven to own this host's loopback CDP port. */
 export async function inspectLocalChromeHeadlessMode(params: {
   profile: ResolvedBrowserProfile;
@@ -1484,7 +1461,7 @@ async function requestGracefulChromeClose(
   let commandSent = false;
   try {
     const endpoint = await getChromeWebSocketEndpoint(
-      cdpUrlForPort(running.cdpPort),
+      `http://127.0.0.1:${running.cdpPort}`,
       Math.min(commandTimeoutMs, CHROME_STOP_PROBE_TIMEOUT_MS),
       ssrfPolicy,
     );
@@ -1546,22 +1523,19 @@ export async function stopOwnedOpenClawChrome(
     return { status: "not-running" };
   }
   const pid = lock.pid;
-  let exe: BrowserExecutable | null;
+  let owner: ReturnType<typeof resolveOwnedManagedChromeIdentity>;
   try {
-    exe = resolveBrowserExecutable(resolved, profile);
+    owner = resolveOwnedManagedChromeIdentity({ resolved, profile, userDataDir, pid });
   } catch {
     return { status: "unverified", reason: "Managed browser executable could not be resolved" };
   }
-  if (!exe) {
-    return { status: "unverified", reason: "Managed browser executable is unavailable" };
-  }
-  const identity = readOwnedManagedChromeIdentity({ pid, exe, profile, userDataDir });
-  if (!identity) {
+  if (!owner) {
     return {
       status: "unverified",
       reason: "The active Chromium profile owner could not be verified",
     };
   }
+  const { exe, identity } = owner;
 
   // Browser runtimes do not share child handles; revalidate the exact process
   // before either CDP close or signal-based cleanup can affect a replacement.
