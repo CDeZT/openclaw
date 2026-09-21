@@ -111,7 +111,7 @@ describe("readGatewayServiceState absence", () => {
         return readdir(...args);
       });
       vi.spyOn(fs, "readFile").mockImplementation(async (file) => {
-        if (String(file) === "/etc/systemd/system/custom-gateway.service") {
+        if (file === "/etc/systemd/system/custom-gateway.service") {
           throw denied();
         }
         throw missing();
@@ -333,7 +333,7 @@ describe("readGatewayServiceState absence", () => {
         return readdir(...args);
       });
       vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
-        if (String(args[0]) !== `${systemDir}/custom-gateway.service`) {
+        if (args[0] !== `${systemDir}/custom-gateway.service`) {
           throw missing();
         }
         if (condition.startsWith("definition ")) {
@@ -544,7 +544,7 @@ describe("readGatewayServiceState absence", () => {
           return readdir(...args);
         });
         vi.mocked(fs.readFile).mockImplementation(async (file) => {
-          if (String(file) === "/etc/systemd/system/custom-gateway.service") {
+          if (file === "/etc/systemd/system/custom-gateway.service") {
             throw Object.assign(new Error("unreadable"), { code: condition.split(" ")[1] });
           }
           throw missing();
