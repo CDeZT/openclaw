@@ -6,6 +6,7 @@ import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 import {
   ServiceDefinitionInspectionError,
   ServiceInspectionError,
+  ServiceOwnershipRefusalError,
 } from "./service-inspection-error.js";
 import { readGatewayServiceState, resolveGatewayService, type GatewayService } from "./service.js";
 import { createMockGatewayService, mockSystemAccountHome } from "./service.test-helpers.js";
@@ -614,6 +615,12 @@ describe("readGatewayServiceState absence", () => {
       });
       if (condition === "user-unavailable") {
         await expect(result).rejects.toThrow();
+      } else if (
+        condition === "system-loaded" ||
+        condition === "system-definition" ||
+        condition === "system-unavailable"
+      ) {
+        await expect(result).rejects.toBeInstanceOf(ServiceOwnershipRefusalError);
       } else if (condition === "absent") {
         await expect(result).resolves.toMatchObject({
           installed: false,

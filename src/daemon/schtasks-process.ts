@@ -431,12 +431,12 @@ export async function describeUnverifiedPortListeners(
   return ` Remaining listener(s): ${described.join(", ")}. If gateway.cmd redirects output, quote the entire redirection target, including environment variables.${hint}`;
 }
 
-/** Bounded diagnostics use exact persisted argv, not unbounded listener enrichment. */
-export async function resolveBoundedScheduledTaskRuntime(
+/** A completed native snapshot distinguishes no match from unavailable inspection. */
+export async function readBoundedScheduledTaskProcess(
   env: GatewayServiceEnv,
   deadlineMs: number,
   installedCommand?: GatewayServiceCommandConfig | null,
-): Promise<Pick<GatewayServiceRuntime, "status" | "pid" | "detail"> | null> {
+): Promise<{ port: number; pid: number | null } | null> {
   const remaining = () => {
     const value = deadlineMs - performance.now();
     if (!Number.isFinite(value) || value <= 0) {
@@ -471,18 +471,27 @@ export async function resolveBoundedScheduledTaskRuntime(
   }
   const snapshot = readWindowsProcessSnapshot(remaining());
   remaining();
-  if (!snapshot) {
+  if (!snapshot || !snapshot.some((entry) => getSnapshotProcessId(entry) !== null)) {
     return null;
   }
   const pid = shouldManageGatewayListenerPort(env)
     ? findInstalledGatewayChildPid(snapshot, port, command.programArguments)
     : findInstalledProcessPid(snapshot, port, command.programArguments, isNodeHostArgv);
   remaining();
-  return pid
+  return { port, pid };
+}
+
+/** Scheduler state remains authoritative unless an exact running process is observed. */
+async function resolveBoundedScheduledTaskRuntime(
+  env: GatewayServiceEnv,
+  deadlineMs: number,
+): Promise<Pick<GatewayServiceRuntime, "status" | "pid" | "detail"> | null> {
+  const observed = await readBoundedScheduledTaskProcess(env, deadlineMs);
+  return observed?.pid
     ? {
         status: "running",
-        pid,
-        detail: `Matching installed process detected for gateway port ${port}.`,
+        pid: observed.pid,
+        detail: `Matching installed process detected for gateway port ${observed.port}.`,
       }
     : null;
 }

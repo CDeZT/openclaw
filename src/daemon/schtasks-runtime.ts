@@ -8,6 +8,7 @@ import {
   getWindowsCmdExePath,
   getWindowsPowerShellExePath,
 } from "../infra/windows-install-roots.js";
+import { readWindowsPortUsageSync } from "../infra/windows-port-pids.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { spawnWithFallback } from "../process/spawn-utils.js";
 import { sleep } from "../utils.js";
@@ -28,7 +29,7 @@ import {
   probeProcessState,
   readWindowsProcessSnapshot,
   resolveGatewayListenerPids,
-  resolveBoundedScheduledTaskRuntime,
+  readBoundedScheduledTaskProcess,
   resolveListenerBackedScheduledTaskRuntime,
   resolveScheduledTaskCommandPort,
   shouldManageGatewayListenerPort,
@@ -257,13 +258,35 @@ export async function resolveFallbackRuntime(
   deadlineMs?: number,
 ): Promise<GatewayServiceRuntime> {
   if (deadlineMs !== undefined) {
-    return (
-      (await resolveBoundedScheduledTaskRuntime(env, deadlineMs, installedCommand)) ?? {
-        status: "unknown",
-        detail:
-          "Startup-folder login item installed; process ownership was not verified within the inspection budget.",
+    const observed = await readBoundedScheduledTaskProcess(env, deadlineMs, installedCommand);
+    if (observed && performance.now() < deadlineMs) {
+      if (observed.pid) {
+        return {
+          status: "running",
+          pid: observed.pid,
+          detail: `Matching installed process detected for gateway port ${observed.port}.`,
+        };
       }
-    );
+      // Node hosts connect to the Gateway; its listening port is not their liveness.
+      if (!shouldManageGatewayListenerPort(env)) {
+        return {
+          status: "stopped",
+          detail: `Startup-folder login item installed; no node host process detected for gateway port ${observed.port}.`,
+        };
+      }
+      const portState = readWindowsPortUsageSync(observed.port, deadlineMs - performance.now());
+      if (performance.now() < deadlineMs && portState === "free") {
+        return {
+          status: "stopped",
+          detail: `Startup-folder login item installed; no gateway process or listener detected for port ${observed.port}.`,
+        };
+      }
+    }
+    return {
+      status: "unknown",
+      detail:
+        "Startup-folder login item installed; process ownership or port availability could not be verified within the inspection budget.",
+    };
   }
   const command =
     installedCommand === undefined

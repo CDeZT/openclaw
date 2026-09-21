@@ -32,6 +32,33 @@ type ReadGatewayServiceStateArgs = GatewayServiceEnvArgs & {
   validateEnvBeforeStatusRead?: (env: GatewayServiceEnv) => void;
 };
 
+class ServiceInspectionDeadlineError extends Error {
+  constructor() {
+    super("Service inspection deadline expired.");
+  }
+}
+
+function deadlineLoadState(error: ServiceInspectionDeadlineError): GatewayServiceLoadState {
+  return { status: "unknown", detail: String(error) };
+}
+
+/** Expired observations remain diagnostic, never positive liveness or absence evidence. */
+function deadlineDiagnosticState(
+  state: GatewayServiceState,
+  error: ServiceInspectionDeadlineError,
+): GatewayServiceState {
+  const runtime =
+    state.runtime?.status === "unknown"
+      ? state.runtime
+      : createServiceRuntimeInspectionFailure(error);
+  return {
+    ...state,
+    loadState: state.loadState.status === "unknown" ? state.loadState : deadlineLoadState(error),
+    running: false,
+    runtime: runtime.missingUnit ? { ...runtime, missingUnit: false } : runtime,
+  };
+}
+
 export async function readGatewayServiceLoadState(
   service: GatewayService,
   args: GatewayServiceEnvArgs = {},
@@ -62,48 +89,65 @@ export async function readGatewayServiceState(
     input.timeoutMs === undefined ? undefined : performance.now() + input.timeoutMs;
   let args = input;
   const baseEnv = args.env ?? process.env;
-  if (service.readCommand === readSystemdServiceExecStart && !args.systemdReadTarget) {
-    const installation = await findSystemdGatewayInstallation(baseEnv);
-    if (installation.kind === "dueling" && args.requireEffective && args.requireLoadedCommand) {
-      throw new ServiceOwnershipRefusalError("systemd-competing-managers");
+  try {
+    if (service.readCommand === readSystemdServiceExecStart && !args.systemdReadTarget) {
+      const installation = await findSystemdGatewayInstallation(baseEnv);
+      if (installation.kind === "dueling" && args.requireEffective && args.requireLoadedCommand) {
+        throw new ServiceOwnershipRefusalError("systemd-competing-managers");
+      }
+      const target =
+        installation.kind === "system"
+          ? installation.system
+          : installation.kind === "user" || installation.kind === "dueling"
+            ? installation.user
+            : undefined;
+      args = { ...args, systemdInstallation: installation, systemdReadTarget: target };
     }
-    const target =
-      installation.kind === "system"
-        ? installation.system
-        : installation.kind === "user" || installation.kind === "dueling"
-          ? installation.user
-          : undefined;
-    args = { ...args, systemdInstallation: installation, systemdReadTarget: target };
-  }
-  if (inspectionDeadline !== undefined && performance.now() >= inspectionDeadline) {
-    throw new Error("Service inspection deadline expired.");
-  }
-  if (
-    service.readCommand === readSystemdServiceExecStart &&
-    args.systemdReadTarget?.scope !== "system" &&
-    args.requireEffective &&
-    args.requireLoadedCommand &&
-    !args.systemdReadBinding
-  ) {
-    const deadline = inspectionDeadline ?? performance.now() + 5000;
-    return await withSystemdServiceReadBinding(
-      baseEnv,
-      () => admitSystemdServiceReadBinding(baseEnv, deadline),
-      (binding) => {
-        const remaining = deadline - performance.now();
-        if (remaining <= 0) {
-          throw new ServiceInspectionError("systemd-inspection-deadline-exceeded");
-        }
-        return readGatewayServiceStateWithBinding(
-          service,
-          { ...args, systemdReadBinding: binding, timeoutMs: remaining },
-          deadline,
-        );
+    if (inspectionDeadline !== undefined && performance.now() >= inspectionDeadline) {
+      throw new ServiceInspectionDeadlineError();
+    }
+    if (
+      service.readCommand === readSystemdServiceExecStart &&
+      args.systemdReadTarget?.scope !== "system" &&
+      args.requireEffective &&
+      args.requireLoadedCommand &&
+      !args.systemdReadBinding
+    ) {
+      const deadline = inspectionDeadline ?? performance.now() + 5000;
+      return await withSystemdServiceReadBinding(
+        baseEnv,
+        () => admitSystemdServiceReadBinding(baseEnv, deadline),
+        (binding) => {
+          const remaining = deadline - performance.now();
+          if (remaining <= 0) {
+            throw new ServiceInspectionError("systemd-inspection-deadline-exceeded");
+          }
+          return readGatewayServiceStateWithBinding(
+            service,
+            { ...args, systemdReadBinding: binding, timeoutMs: remaining },
+            deadline,
+          );
+        },
+        deadline,
+      );
+    }
+    return await readGatewayServiceStateWithBinding(service, args, inspectionDeadline);
+  } catch (error) {
+    if (args.requireEffective || !(error instanceof ServiceInspectionDeadlineError)) {
+      throw error;
+    }
+    return deadlineDiagnosticState(
+      {
+        ...(args.systemdInstallation ? { systemdInstallation: args.systemdInstallation } : {}),
+        installed: false,
+        loadState: deadlineLoadState(error),
+        running: false,
+        env: baseEnv,
+        command: null,
       },
-      deadline,
+      error,
     );
   }
-  return await readGatewayServiceStateWithBinding(service, args, inspectionDeadline);
 }
 
 async function readGatewayServiceStateWithBinding(
@@ -119,9 +163,22 @@ async function readGatewayServiceStateWithBinding(
     }
     const remaining = deadline - performance.now();
     if (remaining <= 0) {
-      throw new Error("Service inspection deadline expired.");
+      throw new ServiceInspectionDeadlineError();
     }
     return remaining;
+  };
+  const readDiagnostic = async <T>(
+    read: () => Promise<T>,
+    onDeadline: (error: ServiceInspectionDeadlineError) => T,
+  ): Promise<T> => {
+    try {
+      return await read();
+    } catch (error) {
+      if (!args.requireEffective && error instanceof ServiceInspectionDeadlineError) {
+        return onDeadline(error);
+      }
+      throw error;
+    }
   };
   systemdReadBinding?.verify();
   let absent = await service
@@ -129,6 +186,10 @@ async function readGatewayServiceStateWithBinding(
     .catch((error: unknown) => {
       if (hasCommandProcessCleanupError(error)) {
         throw error;
+      }
+      const refusal = findServiceOwnershipRefusal(error);
+      if (refusal) {
+        throw refusal;
       }
       return false;
     });
@@ -194,6 +255,10 @@ async function readGatewayServiceStateWithBinding(
         if (hasCommandProcessCleanupError(error)) {
           throw error;
         }
+        const refusal = findServiceOwnershipRefusal(error);
+        if (refusal) {
+          throw refusal;
+        }
         return false;
       });
     systemdReadBinding?.verify();
@@ -223,6 +288,10 @@ async function readGatewayServiceStateWithBinding(
             // Strict command absence cannot erase a failed installed-definition read.
             if (args.requireEffective || hasCommandProcessCleanupError(error)) {
               throw error;
+            }
+            const refusal = findServiceOwnershipRefusal(error);
+            if (refusal) {
+              throw refusal;
             }
             return false;
           }) ?? false);
@@ -260,14 +329,18 @@ async function readGatewayServiceStateWithBinding(
             if (hasCommandProcessCleanupError(error)) {
               throw error;
             }
+            const refusal = findServiceOwnershipRefusal(error);
+            if (refusal) {
+              throw refusal;
+            }
             return { kind: "unknown", reason: "inspection-failed" } as const;
           })
       : undefined;
   const readParallel = async () => {
     const results = await Promise.allSettled([
-      readInstalled(),
-      readLoadState(),
-      readRuntime(),
+      readDiagnostic(readInstalled, () => command !== null),
+      readDiagnostic(readLoadState, deadlineLoadState),
+      readDiagnostic(readRuntime, createServiceRuntimeInspectionFailure),
       readDefinitionCapability(),
     ] as const);
     // Join every admitted read before leaving its authority scope. An unsettled
@@ -275,6 +348,14 @@ async function readGatewayServiceStateWithBinding(
     for (const result of results) {
       if (result.status === "rejected" && hasCommandProcessCleanupError(result.reason)) {
         throw result.reason;
+      }
+    }
+    for (const result of results) {
+      if (result.status === "rejected") {
+        const refusal = findServiceOwnershipRefusal(result.reason);
+        if (refusal) {
+          throw refusal;
+        }
       }
     }
     const value = <T>(result: PromiseSettledResult<T>): T => {
@@ -290,15 +371,14 @@ async function readGatewayServiceStateWithBinding(
   const [installed, loadState, runtime, definitionMutationCapability] =
     getGatewayServiceUpdateNativeCommand()
       ? ([
-          await readInstalled(),
-          await readLoadState(),
-          await readRuntime(),
+          await readDiagnostic(readInstalled, () => command !== null),
+          await readDiagnostic(readLoadState, deadlineLoadState),
+          await readDiagnostic(readRuntime, createServiceRuntimeInspectionFailure),
           await readDefinitionCapability(),
         ] as const)
       : await readParallel();
   systemdReadBinding?.verify();
-  remainingTimeoutMs();
-  return {
+  const state: GatewayServiceState = {
     inspectionReason:
       runtime?.inspectionReason ??
       (loadState.status === "unknown" ? loadState.inspectionReason : undefined),
@@ -311,4 +391,12 @@ async function readGatewayServiceStateWithBinding(
     ...(definitionMutationCapability ? { definitionMutationCapability } : {}),
     runtime,
   };
+  if (timeoutMs !== undefined && performance.now() >= deadline) {
+    const error = new ServiceInspectionDeadlineError();
+    if (args.requireEffective) {
+      throw error;
+    }
+    return deadlineDiagnosticState(state, error);
+  }
+  return state;
 }
