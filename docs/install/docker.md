@@ -146,14 +146,15 @@ For a new installation from a local source build, bake Chromium into the image:
 OPENCLAW_IMAGE=openclaw:local OPENCLAW_INSTALL_BROWSER=1 ./scripts/docker/setup.sh
 ```
 
-`OPENCLAW_INSTALL_BROWSER=1` (or `chromium`) installs full Chromium without also
-installing the headless-shell binary. For a smaller, headless-only image:
+`OPENCLAW_INSTALL_BROWSER=1` installs full Chromium and headless shell, preserving
+existing Playwright scripts that use default headless launches. Choose `chromium`
+to install only full Chromium, or `headless-shell` for a smaller, headless-only image:
 
 ```bash
 OPENCLAW_IMAGE=openclaw:local OPENCLAW_INSTALL_BROWSER=headless-shell ./scripts/docker/setup.sh
 ```
 
-Both modes use the repository-pinned Playwright installer, including its system
+All modes use the repository-pinned Playwright installer, including its system
 libraries, fonts, and FFmpeg helper. Empty or `0` omits the browser. These are
 build-time choices; setting them on an already-built container does not install
 or replace a browser. Headless shell cannot provide a headed browser window or
@@ -161,10 +162,11 @@ Chrome extensions. Keep full Chromium for those workflows and validate your site
 before switching. Neither browser distribution is MIT-only; inventory the actual
 image and preserve all third-party license notices.
 
-OpenClaw selects the installed executable. If you also run your own Playwright
-scripts in the full-Chromium image, use `channel: "chromium"` for headless launches;
-Playwright's default headless launch otherwise expects the separate shell binary.
-The bundled Diffs PNG/PDF renderer supports both image modes. After explicit and
+OpenClaw selects the installed executable. With the explicit `chromium` mode,
+your own Playwright scripts must use `channel: "chromium"` for headless launches;
+Playwright's default headless launch expects the separate shell binary. Keep `1`
+to retain both binaries without changing existing scripts.
+The bundled Diffs PNG/PDF renderer supports all image modes. After explicit and
 system-browser choices, it selects Playwright's full Chromium when installed and
 otherwise retains Playwright's default headless-shell selection.
 

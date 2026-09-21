@@ -348,9 +348,9 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
       python3 -m pip install --no-cache-dir --break-system-packages $OPENCLAW_IMAGE_PIP_PACKAGES; \
     fi
 
-# Optionally install one Chromium distribution for browser automation.
-# Legacy 1 (or chromium) keeps full Chromium; headless-shell installs only the
-# smaller headless distribution. Neither changes explicit browser configuration.
+# Optionally install Chromium distributions for browser automation.
+# Legacy 1 keeps full Chromium and headless shell; explicit chromium or
+# headless-shell installs only that distribution. Browser configuration is unchanged.
 # Must run after node_modules COPY so playwright-core is available.
 ARG OPENCLAW_INSTALL_BROWSER=""
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
@@ -359,13 +359,14 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
     set -eu; \
     case "$OPENCLAW_INSTALL_BROWSER" in \
       ""|0) exit 0 ;; \
-      1|chromium) shell_option=--no-shell ;; \
-      headless-shell) shell_option=--only-shell ;; \
+      1) set -- ;; \
+      chromium) set -- --no-shell ;; \
+      headless-shell) set -- --only-shell ;; \
       *) echo 'OPENCLAW_INSTALL_BROWSER must be empty, 0, 1, chromium, or headless-shell' >&2; exit 1 ;; \
     esac; \
     install -d -m 0755 -o node -g node "$(dirname "$PLAYWRIGHT_BROWSERS_PATH")" && \
     mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" && \
-    node /app/node_modules/playwright-core/cli.js install --with-deps "$shell_option" chromium && \
+    node /app/node_modules/playwright-core/cli.js install --with-deps "$@" chromium && \
     chown -R node:node "$PLAYWRIGHT_BROWSERS_PATH"
 
 # Optionally install Docker CLI for sandbox container management.
