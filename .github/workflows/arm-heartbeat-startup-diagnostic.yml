@@ -2,7 +2,7 @@
 name: Temporary ARM heartbeat diagnostic producer
 on:
   pull_request:
-    types: [opened]
+    types: [synchronize]
     branches: [main]
     paths: [.github/workflows/arm-heartbeat-startup-diagnostic.yml]
 permissions:
@@ -14,7 +14,9 @@ jobs:
   candidate-package:
     if: >-
       github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
-      github.event_name == 'pull_request' && github.event.action == 'opened' &&
+      github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
+      github.event.pull_request.number == 155264 &&
+      github.event.before == '38c50da3fa3b361b6d8f41dd9e0c0a66f0f48890' &&
       github.event.pull_request.state == 'open' && github.event.pull_request.draft &&
       github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
@@ -35,13 +37,15 @@ jobs:
       CANDIDATE_TREE: 9356615b6e6525373835bda8381565973cbf8022
       PRODUCT_SHA: 10725d8613c64f5efdc8ea58eae70a3b8f4276ac
       PRODUCT_TREE: 74bddc0882c455c519931e40040c260df9951ee8
+      PREVIOUS_CARRIER_SHA: 38c50da3fa3b361b6d8f41dd9e0c0a66f0f48890
+      PREVIOUS_CARRIER_TREE: 61439271ba5b590632c1f11b2292a6fecbd61da8
       CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
       WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 5
+          fetch-depth: 6
           persist-credentials: false
       - name: Bind the diagnostic derivative and sole workflow carrier
         run: |
@@ -49,7 +53,9 @@ jobs:
           [[ "$CARRIER_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
-          test "$(git show -s --format=%P HEAD)" = "$CANDIDATE_SHA"
+          test "$(git show -s --format=%P HEAD)" = "$PREVIOUS_CARRIER_SHA"
+          test "$(git show -s --format=%P "$PREVIOUS_CARRIER_SHA")" = "$CANDIDATE_SHA"
+          test "$(git rev-parse "$PREVIOUS_CARRIER_SHA^{tree}")" = "$PREVIOUS_CARRIER_TREE"
           test "$(git show -s --format=%P "$CANDIDATE_SHA")" = "$PRODUCT_SHA"
           test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
           test "$(git rev-parse "$PRODUCT_SHA^{tree}")" = "$PRODUCT_TREE"
@@ -72,7 +78,7 @@ jobs:
           assert paths==expected
           receipt=dict(product=product,productTree=os.environ['PRODUCT_TREE'],candidate=candidate,candidateTree=os.environ['CANDIDATE_TREE'],
               patchSha256=hashlib.sha256(patch).hexdigest(),paths=paths,carrier=os.environ['CARRIER_SHA'],workflow=os.environ['WORKFLOW_SHA'],
-              eventMerge=os.environ['GITHUB_SHA'],run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+              previousCarrier=os.environ['PREVIOUS_CARRIER_SHA'],eventMerge=os.environ['GITHUB_SHA'],run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],
               scope='temporary numeric startup observations only; never a shipping repair or B4 timing qualification')
           Path(os.environ['RUNNER_TEMP'],'arm-heartbeat-diagnostic-proof','source-binding.json').write_text(json.dumps(receipt,indent=2)+'\n')
           print(json.dumps(receipt))
@@ -230,49 +236,88 @@ jobs:
           set -euo pipefail
           python3 - <<'EMIT'
           import hashlib,json,os,tarfile
-          from pathlib import Path
+          from pathlib import Path,PurePosixPath
           root=Path(os.environ['RUNNER_TEMP']);proof=root/'arm-heartbeat-diagnostic-proof'
-          worker='dist/state/openclaw-state-lease-heartbeat.worker.js'
-          parent_region='src/state/openclaw-state-lease-heartbeat.ts'
-          parents=[]
+          modules=[];candidates=[];retained_bytes=0
           with tarfile.open(root/'sqlite-candidate-package/candidate.tgz','r:gz') as archive:
-              for member in archive.getmembers():
-                  if not member.isfile() or not member.name.startswith('package/dist/') or not member.name.endswith('.js'): continue
-                  data=archive.extractfile(member).read()
-                  if ('#region '+parent_region).encode() not in data: continue
-                  relative=member.name.removeprefix('package/')
-                  assert data==(root/'sqlite-candidate'/relative).read_bytes()
-                  assert b'[lease-startup-observation]' in data
-                  parents.append(dict(file=relative,bytes=len(data),sha256=hashlib.sha256(data).hexdigest()))
-                  (proof/f'parent-observation-{len(parents)}.js').write_bytes(data)
-          assert parents,'actual packaged parent observation code must exist'
-          (proof/'observation-emissions.json').write_text(json.dumps(dict(source=os.environ['CANDIDATE_SHA'],parents=parents),indent=2)+'\n')
-          print(json.dumps(dict(packagedParentObservations=parents)))
+              members=archive.getmembers();names=[member.name for member in members]
+              assert len(names)==len(set(names)),'duplicate package members'
+              for member in members:
+                  name=member.name;parts=PurePosixPath(name).parts
+                  assert not name.startswith('/') and '\\' not in name and '..' not in parts and parts[0]=='package','unsafe package member'
+                  if not name.startswith('package/dist/') or PurePosixPath(name).suffix not in {'.js','.mjs'}: continue
+                  assert member.isfile(),'runtime JavaScript must be a regular package member'
+                  data=archive.extractfile(member).read();relative=name.removeprefix('package/')
+                  marker=b'[lease-startup-observation]' in data
+                  item=dict(file=relative,bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),markerCandidate=marker,
+                      parentRegion=b'#region src/state/openclaw-state-lease-heartbeat.ts' in data)
+                  modules.append(item)
+                  if not marker: continue
+                  assert data==(root/'sqlite-candidate'/relative).read_bytes(),'packaged parent differs from the source build'
+                  retained_bytes+=len(data)
+                  assert len(candidates)<16 and len(data)<=8*1024*1024 and retained_bytes<=32*1024*1024,'parent evidence exceeds retention bound'
+                  retained=f'parent-candidate-{len(candidates)+1}.js'
+                  (proof/retained).write_bytes(data)
+                  candidates.append(dict(**item,retained=retained))
+          inventory=dict(source=os.environ['CANDIDATE_SHA'],modules=modules,candidates=candidates)
+          encoded=json.dumps(inventory,indent=2)+'\n'
+          assert len(encoded.encode())<=8*1024*1024,'module inventory exceeds retention bound'
+          (proof/'observation-module-inventory.json').write_text(encoded)
+          print(json.dumps(dict(runtimeModules=len(modules),parentCandidates=candidates)))
+          assert candidates,'no packaged JavaScript observation candidates; retained inventory records the search'
           EMIT
           node --input-type=module <<'EMIT'
           import assert from 'node:assert/strict'; import fs from 'node:fs'; import {createRequire} from 'node:module';
+          import {createHash} from 'node:crypto';
           const require=createRequire(`${process.env.RUNNER_TEMP}/sqlite-candidate/package.json`),{parse}=require('acorn');
-          const dir=`${process.env.RUNNER_TEMP}/arm-heartbeat-diagnostic-proof`;
+          const dir=`${process.env.RUNNER_TEMP}/arm-heartbeat-diagnostic-proof`,sha=b=>createHash('sha256').update(b).digest('hex');
+          const inventory=JSON.parse(fs.readFileSync(`${dir}/observation-module-inventory.json`));
+          const parentRequired=['parentConstructStart','parentConstructReturned','parentTimerArmed','parentTimerCallback','parentSettleCasStart','parentSettleCasReturned','parentFailure','parentStopRequested','parentStopJoined'];
           const roles=[
             {file:'candidate-heartbeat.worker.js',required:['workerBody','openStart','openReturned','renewStart','coordinatorStart','coordinatorOperation','busyPolicyStart','transactionStart','transactionCallback','renewalQueryStart','renewalQueryReturned','transactionCallbackReturned','transactionReturned','busyPolicyReturned','coordinatorReturned','renewalCatch','expiryReadStart','expiryReadReturned','renewReturned','readyCasStart','readyCasReturned']},
-            ...JSON.parse(fs.readFileSync(`${dir}/observation-emissions.json`)).parents.map((_,i)=>({file:`parent-observation-${i+1}.js`,required:['parentConstructStart','parentConstructReturned','parentTimerArmed','parentTimerCallback','parentSettleCasStart','parentSettleCasReturned','parentFailure','parentStopRequested','parentStopJoined']})),
+            ...inventory.candidates.map(parent=>({file:parent.retained,required:parentRequired,parent})),
           ];
-          const receipts=[];
+          const receipts=[],parents=[];
+          const member=(node,object,property)=>node?.type==='MemberExpression'&&!node.computed&&node.object?.type==='Identifier'&&node.object.name===object&&node.property?.name===property;
+          function markerInArgument(node) {
+            if(!node||typeof node!=='object')return false;
+            if(node.type==='Literal'&&typeof node.value==='string'&&node.value.includes('[lease-startup-observation]'))return true;
+            if(node.type==='TemplateElement'&&(node.value.cooked??node.value.raw).includes('[lease-startup-observation]'))return true;
+            if(node.type==='TemplateLiteral')return node.quasis.some(markerInArgument);
+            if(node.type==='BinaryExpression'&&node.operator==='+')return markerInArgument(node.left)||markerInArgument(node.right);
+            return false;
+          }
           for(const role of roles) {
-            const source=fs.readFileSync(`${dir}/${role.file}`,'utf8'),ast=parse(source,{ecmaVersion:'latest',sourceType:'module'}),seen=new Set();
+            const bytes=fs.readFileSync(`${dir}/${role.file}`),source=bytes.toString('utf8'),ast=parse(source,{ecmaVersion:'latest',sourceType:'module'}),seen=new Set();
+            let writes=0,clockCalls=0,casCalls=0;
             function visit(n) {
               if(!n||typeof n!=='object')return;
-              if(n.type==='CallExpression'&&n.callee.type==='Identifier'&&/^mark(?:\$\d+)?$/.test(n.callee.name)) {
-                const arg=n.arguments[0];if(arg?.type==='MemberExpression'&&!arg.computed)seen.add(arg.property.name);
+              if(n.type==='CallExpression') {
+                if(n.callee.type==='Identifier'&&/^mark(?:\$\d+)?$/.test(n.callee.name)) {
+                  const arg=n.arguments[0];if(arg?.type==='MemberExpression'&&!arg.computed)seen.add(arg.property.name);
+                }
+                const callee=n.callee;
+                if(callee.type==='MemberExpression'&&!callee.computed&&callee.property?.name==='write'&&member(callee.object,'process','stderr')&&n.arguments.some(markerInArgument))writes++;
+                if(callee.type==='MemberExpression'&&!callee.computed&&callee.property?.name==='bigint'&&member(callee.object,'process','hrtime'))clockCalls++;
+                if(member(callee,'Atomics','compareExchange'))casCalls++;
               }
               for(const value of Object.values(n))if(Array.isArray(value))value.forEach(visit);else if(value&&typeof value==='object')visit(value);
             }
-            visit(ast);for(const phase of role.required)assert(seen.has(phase),`${role.file}: missing actual marker call ${phase}`);
-            assert(source.includes('process.hrtime.bigint()'));assert(source.includes('Atomics.compareExchange'));
-            receipts.push({file:role.file,requiredMarkers:role.required});
+            visit(ast);
+            if(role.parent&&!writes)continue;
+            for(const phase of role.required)assert(seen.has(phase),`${role.file}: missing actual marker call ${phase}`);
+            assert(clockCalls>0,`${role.file}: missing actual monotonic clock call`);
+            assert(casCalls>0,`${role.file}: missing actual compareExchange call`);
+            if(role.parent) {
+              assert.equal(bytes.length,role.parent.bytes);assert.equal(sha(bytes),role.parent.sha256);
+              parents.push({...role.parent,observationWrites:writes});
+            }
+            receipts.push({file:role.file,requiredMarkers:role.required,clockCalls,casCalls,observationWrites:writes});
           }
+          assert(parents.length>0,'no executable packaged parent observation writes; retained candidates/inventory are diagnostic evidence');
+          fs.writeFileSync(`${dir}/observation-emissions.json`,JSON.stringify({source:process.env.CANDIDATE_SHA,parents},null,2)+'\n',{flag:'wx'});
           fs.writeFileSync(`${dir}/observation-sites.json`,JSON.stringify({source:process.env.CANDIDATE_SHA,receipts},null,2)+'\n',{flag:'wx'});
-          console.log(JSON.stringify({observationSitesPassed:true,receipts}));
+          console.log(JSON.stringify({observationSitesPassed:true,parents,receipts}));
           EMIT
       - name: Prove unchanged startup, diagnostics and real heartbeat behavior
         run: |
@@ -345,100 +390,6 @@ jobs:
         with:
           name: arm-heartbeat-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/arm-heartbeat-diagnostic-proof
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-  validator-command-cost:
-    if: >-
-      github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
-      github.event_name == 'pull_request' && github.event.action == 'opened' &&
-      github.event.pull_request.state == 'open' && github.event.pull_request.draft &&
-      github.event.pull_request.base.ref == 'main' &&
-      github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
-      github.event.pull_request.head.repo.full_name == 'openclaw/openclaw' &&
-      github.event.pull_request.head.ref == 'test/arm-heartbeat-startup-boundaries' &&
-      github.event.pull_request.user.login == 'vincentkoc'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 40
-    defaults:
-      run:
-        shell: bash
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-      CI: "true"
-      NODE_OPTIONS: --max-old-space-size=8192
-      VALIDATOR_SHA: 3cca71afbc1156df8af0fdacfa8eb1a82ca68d4c
-      VALIDATOR_TREE: bd884a2658e0189e6ee570d1df2c75ffe06708aa
-      CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
-      WORKFLOW_SHA: ${{ github.workflow_sha }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.VALIDATOR_SHA }}
-          fetch-depth: 2
-          persist-credentials: false
-      - name: Bind the unchanged validator source
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$VALIDATOR_SHA"
-          test "$(git rev-parse HEAD^{tree})" = "$VALIDATOR_TREE"
-          test "$(git show -s --format=%P HEAD)" = "09f1894d3a7b9b45d27f8cbf48e343e51be9450e e8ea99af959c5f22cbd48c13996ea4cc387c52ed"
-          test -z "$(git status --porcelain)"
-          mkdir "$RUNNER_TEMP/validator-command-cost"
-      - name: Set up the original validator runtime
-        uses: ./.github/actions/setup-node-env
-        with:
-          node-version: "24.19.0"
-          install-bun: "false"
-          install-deps: "false"
-          cache-mode: "off"
-      - name: Install the frozen validator inputs once
-        run: |
-          set -euo pipefail
-          test "$(node -p process.versions.node)" = 24.19.0
-          test "$(pnpm --version)" = 12.4.0
-          test ! -e node_modules
-          CI=true DEPENDENCY_CACHE=false DEPENDENCY_CACHE_HIT=false FROZEN_LOCKFILE=true \
-            bash .github/actions/setup-node-env/install-dependencies.sh
-          git diff --exit-code
-          git diff --cached --exit-code
-      - name: Measure the one owning-file command with one worker
-        run: |
-          set -euo pipefail
-          node --input-type=module <<'COST'
-          import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
-          import {createHash} from 'node:crypto';import {spawnSync} from 'node:child_process';
-          const dir=`${process.env.RUNNER_TEMP}/validator-command-cost`,file='src/cli/update-cli/update-command-fresh-doctor.test.ts';
-          const report=`${dir}/fresh-doctor-tests.json`,args=['test',file,'--maxWorkers=1','--reporter=default','--reporter=json',`--outputFile.json=${report}`];
-          const sha=b=>createHash('sha256').update(b).digest('hex');
-          assert(!fs.lstatSync('node_modules').isSymbolicLink());
-          const receipt={source:process.env.VALIDATOR_SHA,tree:process.env.VALIDATOR_TREE,carrier:process.env.CARRIER_SHA,workflow:process.env.WORKFLOW_SHA,run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT,
-            command:['pnpm','test',file,'--maxWorkers=1','--reporter=default','--reporter=json','--outputFile.json=<proof>/fresh-doctor-tests.json'],
-            node:process.versions.node,platform:process.platform,arch:process.arch,cpus:os.cpus().length,memory:os.totalmem(),
-            inputs:Object.fromEntries(['package.json','pnpm-lock.yaml','pnpm-workspace.yaml',file,'src/cli/update-cli/update-command-fresh-doctor-diagnostics.test-support.ts'].map(p=>[p,sha(fs.readFileSync(p))])),
-            complete:false,scope:'one owning-file command after ordinary frozen install; includes canonical prerequisite preparation; not a cold-start benchmark'};
-          fs.writeFileSync(`${dir}/command.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
-          const start=process.hrtime.bigint(),child=spawnSync('pnpm',args,{stdio:'inherit'}),end=process.hrtime.bigint();
-          Object.assign(receipt,{commandWallMs:Number(end-start)/1e6,exitCode:child.status,signal:child.signal??null,spawnErrorCode:child.error?.code??null});
-          fs.writeFileSync(`${dir}/command.json`,JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));
-          if(child.error||child.signal||child.status!==0)process.exit(child.status&&child.status>0?child.status:1);
-          const bytes=fs.readFileSync(report),r=JSON.parse(bytes);
-          assert.equal(r.success,true);assert.equal(r.numTotalTests,64);assert.equal(r.numPassedTests,64);
-          for(const key of ['numFailedTests','numPendingTests','numTodoTests','numFailedTestSuites'])assert.equal(r[key],0);
-          assert.equal(r.testResults.length,1);assert.equal(path.relative(process.cwd(),r.testResults[0].name),file);
-          const cases=r.testResults[0].assertionResults;assert.equal(cases.length,64);assert(cases.every(c=>c.status==='passed'));
-          Object.assign(receipt,{complete:true,passed:64,skipped:0,nativeReportSha256:sha(bytes),reportedFileDurationMs:r.testResults[0].endTime-r.testResults[0].startTime,
-            assertions:cases.map(c=>({title:c.fullName,status:c.status,durationMs:c.duration??null}))});
-          fs.writeFileSync(`${dir}/command.json`,JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));
-          COST
-          git diff --exit-code
-          git diff --cached --exit-code
-      - name: Retain the exact validator command receipt
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: validator-command-cost-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/validator-command-cost
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
