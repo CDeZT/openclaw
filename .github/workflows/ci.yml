@@ -5623,6 +5623,7 @@ jobs:
         env:
           IOS_GUEST_POLICY_SIMULATOR: ${{ steps.ios_voice_cleanup_tests.outputs.simulator_id }}
           IOS_GUEST_POLICY_CHECKOUT_SHA: ${{ needs.preflight.outputs.checkout_revision }}
+          IOS_GUEST_POLICY_BASE_SHA: ${{ needs.preflight.outputs.diff_base_revision }}
           IOS_GUEST_POLICY_PUBLIC_HEAD: ${{ github.event.pull_request.head.sha }}
           IOS_GUEST_POLICY_PHASE: ${{ matrix.phase }}
         run: node scripts/temporary-pr-154839-ios-proof.mjs

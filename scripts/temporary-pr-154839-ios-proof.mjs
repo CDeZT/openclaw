@@ -92,6 +92,7 @@ for (const sha of [pullRequest.head.sha, pullRequest.base.sha, pullRequest.merge
 }
 assert.equal(process.env.IOS_GUEST_POLICY_PUBLIC_HEAD, pullRequest.head.sha);
 assert.equal(process.env.GITHUB_SHA, pullRequest.merge_commit_sha);
+assert.match(process.env.IOS_GUEST_POLICY_BASE_SHA ?? "", /^[a-f0-9]{40}$/u);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const simulator = process.env.IOS_GUEST_POLICY_SIMULATOR;
 assert.match(simulator ?? "", /^[A-Fa-f0-9-]{36}$/u);
@@ -104,6 +105,7 @@ const baselineRoot = path.join(temporary, "baseline");
 const receipt = {
   baseline: BASELINE,
   publicHead: pullRequest.head.sha,
+  eventBase: pullRequest.base.sha,
   workflowSha: process.env.GITHUB_WORKFLOW_SHA,
   runId: process.env.GITHUB_RUN_ID,
   runAttempt: process.env.GITHUB_RUN_ATTEMPT,
@@ -536,7 +538,8 @@ try {
   // Raw headers retain both parents even when the checkout is shallow.
   const headers = commit.split("\n\n", 1)[0].split("\n");
   const parents = headers.filter((line) => line.startsWith("parent ")).map((line) => line.slice(7));
-  assert.deepEqual(parents, [pullRequest.base.sha, pullRequest.head.sha]);
+  // Preflight resolves the pinned merge's base; a PR event may retain an older base.
+  assert.deepEqual(parents, [process.env.IOS_GUEST_POLICY_BASE_SHA, pullRequest.head.sha]);
   assert.match(headers[0], /^tree [a-f0-9]{40}$/u);
   receipt.candidateTree = headers[0].slice(5);
   receipt.integratedMerge = {
