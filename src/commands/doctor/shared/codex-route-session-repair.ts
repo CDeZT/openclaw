@@ -50,13 +50,13 @@ import {
 } from "./codex-route-model-ref.js";
 import type {
   CodexSessionRouteRepairSummary,
-  SessionModelRetirement,
   SessionRouteRepairResult,
 } from "./codex-route-types.js";
 import {
   migrateLegacyRuntimeModelRef,
   resolveLegacyRuntimeModelProviderAlias,
 } from "./legacy-runtime-model-providers.js";
+import type { SessionModelRetirement } from "./retired-model-ref-repair.js";
 import { createRetiredModelRefRepairResolver } from "./retired-model-ref-repair.js";
 import { repairRetiredSessionModelRef } from "./retired-session-model-repair.js";
 

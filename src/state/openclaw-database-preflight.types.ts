@@ -2,10 +2,15 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SqliteSchemaIssue } from "../infra/sqlite-schema-contract.js";
 import type { PreparedAgentDatabaseMigrationDiscovery } from "../infra/state-migrations.media-persistence-targets.js";
 import type { AgentDatabaseAdmissionRefusal } from "./agent-database-admission.js";
-import type { AgentDatabasePreflightStats } from "./openclaw-database-preflight-agent-scheduler.js";
 import type { OpenClawSchemaVersions } from "./openclaw-schema-versions.js";
 import type { OpenClawStateSchemaReadAdmission } from "./openclaw-state-db-contract.js";
 import type { OpenClawExternalStateOwnership } from "./openclaw-state-ownership.js";
+
+export type AgentDatabasePreflightStats = {
+  schemaProcessCount: number;
+  schemaInspectionCount: number;
+  schemaSnapshotCount: number;
+};
 
 export type IncompatibleOpenClawDatabase = {
   kind: "agent" | "state";

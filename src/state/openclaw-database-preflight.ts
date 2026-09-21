@@ -37,16 +37,14 @@ import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import { isPersistentOpenClawAgentDatabasePath } from "./openclaw-agent-db-registry.js";
 import { readAgentDatabasePreflightTargets } from "./openclaw-agent-db-registry.read.js";
 import type { AgentSchemaInspection } from "./openclaw-agent-schema-inspection.js";
-import {
-  preflightAgentDatabasesBounded,
-  type AgentDatabasePreflightStats,
-} from "./openclaw-database-preflight-agent-scheduler.js";
+import { preflightAgentDatabasesBounded } from "./openclaw-database-preflight-agent-scheduler.js";
 import {
   describeDeferredStateSchemaPublication,
   formatIndeterminateDatabaseReadiness,
   OpenClawDatabaseSchemaPreflightError,
 } from "./openclaw-database-preflight.messages.js";
 import type {
+  AgentDatabasePreflightStats,
   DeferredStateSchemaPublication,
   OpenClawDatabaseSchemaPreflight,
   OpenClawDatabasePreflightOptions,
@@ -517,6 +515,8 @@ export async function preflightOpenClawDatabaseSchemas(
   // An occupied custom-store candidate can have a newer, unreadable owner.
   // Check its version without promoting it into an owned migration target.
   const candidates: Array<{ agentId?: string; path: string }> = [
+    // Migration deduplication must not discard configured ownership claims.
+    ...configuredTargets,
     ...agentTargets,
     // Migration discovery intentionally declines ownership of foreign registry
     // paths. Preflight remains read-only, so preserve their downgrade guard.
