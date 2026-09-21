@@ -306,16 +306,16 @@ describe("diagnostic Gateway readiness", () => {
       const missing = () =>
         Object.assign(new Error("Missing fixture definition"), { code: "ENOENT" });
       vi.spyOn(fs, "readFile").mockImplementation(async (filename) => {
-        if (String(filename) !== script) {
+        if (filename !== script) {
           throw new Error("Unexpected fixture file read");
         }
         throw missing();
       });
       const stat = vi.spyOn(fs, "lstat").mockImplementation(async (filename) => {
-        if (String(filename) === script) {
+        if (filename === script) {
           throw missing();
         }
-        if (!startupPaths.includes(String(filename))) {
+        if (typeof filename !== "string" || !startupPaths.includes(filename)) {
           throw new Error("Unexpected fixture definition lookup");
         }
         throw Object.assign(new Error("Unreadable fixture Startup entry"), { code });

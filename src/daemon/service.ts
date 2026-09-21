@@ -35,21 +35,18 @@ import {
 } from "./schtasks.js";
 import { withGatewayServiceOperationLock } from "./service-operation-lock.js";
 import { captureGatewayServiceRebind } from "./service-rebind.js";
-import type { GatewayServiceRuntime } from "./service-runtime.js";
 import { collectGatewayServiceStartRepairIssues } from "./service-start-repair.js";
 import { readGatewayServiceState } from "./service-state.js";
 import type {
-  GatewayServiceCommandConfig,
+  GatewayService,
   GatewayServiceControlArgs,
   GatewayServiceEnv,
   GatewayServiceEnvArgs,
   GatewayServiceInstallArgs,
   GatewayServiceManageArgs,
-  GatewayServiceReadOptions,
   GatewayServiceRestartResult,
   GatewayServiceStartRepairIssue,
   GatewayServiceStartResult,
-  GatewayServiceStageArgs,
   GatewayServiceState,
 } from "./service-types.js";
 import {
@@ -73,6 +70,7 @@ import {
 export { formatGatewayServiceStartRepairIssues } from "./service-start-repair.js";
 export { readGatewayServiceLoadState, readGatewayServiceState } from "./service-state.js";
 export type {
+  GatewayService,
   GatewayServiceCommandConfig,
   GatewayServiceInstallArgs,
   GatewayServiceStartRepairIssue,
@@ -87,38 +85,6 @@ function ignoreServiceWriteResult<TArgs extends GatewayServiceInstallArgs>(
     await write(args);
   };
 }
-
-export type GatewayService = {
-  label: string;
-  loadedText: string;
-  notLoadedText: string;
-  stage: (args: GatewayServiceStageArgs) => Promise<void>;
-  install: (args: GatewayServiceInstallArgs) => Promise<void>;
-  uninstall: (args: GatewayServiceManageArgs) => Promise<void>;
-  start: (args: GatewayServiceControlArgs) => Promise<void>;
-  stop: (args: GatewayServiceControlArgs) => Promise<void>;
-  restart: (args: GatewayServiceControlArgs) => Promise<GatewayServiceRestartResult>;
-  isLoaded: (args: GatewayServiceEnvArgs) => Promise<boolean>;
-  isEnabled?: (args: GatewayServiceEnvArgs) => Promise<boolean>;
-  hasInstalledDefinition?: (args: GatewayServiceEnvArgs) => Promise<boolean>;
-  isAbsent?: (args: GatewayServiceEnvArgs & { strictCommandAbsent?: true }) => Promise<boolean>;
-  readDefinitionMutationCapability?: (
-    args: GatewayServiceEnvArgs & {
-      environment?: GatewayServiceEnv;
-      requireLoaded?: boolean;
-      systemdReadBinding?: GatewayServiceReadOptions["systemdReadBinding"];
-      systemdReadTarget?: GatewayServiceReadOptions["systemdReadTarget"];
-    },
-  ) => ReturnType<typeof readSystemdDefinitionMutationCapability>;
-  readCommand: (
-    env: GatewayServiceEnv,
-    opts?: GatewayServiceReadOptions,
-  ) => Promise<GatewayServiceCommandConfig | null>;
-  readRuntime: (
-    env: GatewayServiceEnv,
-    opts?: GatewayServiceReadOptions,
-  ) => Promise<GatewayServiceRuntime>;
-};
 
 /** Reads the installed service and reports definition drift that must be repaired before launch. */
 export async function inspectGatewayServiceStartRepair(

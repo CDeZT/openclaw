@@ -567,9 +567,9 @@ export async function waitForGatewayHealthyRestart(
       }
       // Diagnostic absence needs a successful post-probe owner read. Unknown
       // ownership also blocks the ordinary stopped/free grace exit below.
-      snapshot = {
-        ...snapshot,
-        runtime: { status: "unknown", detail: "Gateway owner could not be inspected." },
+      snapshot.runtime = {
+        status: "unknown",
+        detail: "Gateway owner could not be inspected.",
       };
       stoppedFree = false;
     }

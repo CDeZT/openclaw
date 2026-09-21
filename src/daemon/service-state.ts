@@ -9,6 +9,7 @@ import {
 import { withSystemdServiceReadBinding } from "./service-operation-lock.js";
 import { createServiceRuntimeInspectionFailure } from "./service-runtime.js";
 import type {
+  GatewayService,
   GatewayServiceCommandInspection,
   GatewayServiceEnv,
   GatewayServiceEnvArgs,
@@ -17,7 +18,6 @@ import type {
   GatewayServiceState,
 } from "./service-types.js";
 import { getGatewayServiceUpdateNativeCommand } from "./service-update-authority.js";
-import type { GatewayService } from "./service.js";
 import { admitSystemdServiceReadBinding } from "./systemd-peer.js";
 import { findSystemdGatewayInstallation } from "./systemd-scope.js";
 import { readSystemdServiceExecStart } from "./systemd.js";
