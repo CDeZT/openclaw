@@ -617,6 +617,60 @@ describe("restart health", () => {
     });
   });
 
+  it.each(["active", "unreadable"])(
+    "preserves pre-owner startup grace when migration is %s",
+    async (migration) => {
+      const absentRuntime = { status: "stopped", missingUnit: true };
+      const service = makeGatewayService({ status: "stopped" });
+      vi.mocked(service.readRuntime).mockImplementation(async () =>
+        monotonicClock.nowMs < 1_000 ? absentRuntime : { status: "running", pid: 8000 },
+      );
+      inspectPortUsage.mockImplementation(async (port) => ({
+        port,
+        status: monotonicClock.nowMs < 1_000 ? "free" : "busy",
+        listeners: monotonicClock.nowMs < 1_000 ? [] : [{ pid: 8000 }],
+        hints: [],
+      }));
+      const isStartupMigrationActive = vi.fn(() => {
+        if (migration === "unreadable") {
+          throw new Error("Migration ownership unavailable");
+        }
+        return monotonicClock.nowMs === 0;
+      });
+      const snapshot = await waitForGatewayHealthyRestart({
+        service,
+        port: 18789,
+        timeoutMs: 2_000,
+        isServiceAbsent: (runtime) => runtime === absentRuntime,
+        isStartupMigrationActive,
+      });
+      expect(snapshot).toMatchObject({ healthy: true, waitOutcome: "healthy", elapsedMs: 1_000 });
+      expect(isStartupMigrationActive).toHaveBeenCalled();
+      expect(sleep).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([undefined, 1_000])(
+    "charges the absence migration read to the existing budget %s",
+    async (timeoutMs) => {
+      const absentRuntime = { status: "stopped", missingUnit: true };
+      const service = makeGatewayService({ status: "stopped" });
+      vi.mocked(service.readRuntime).mockResolvedValue(absentRuntime);
+      const snapshot = await waitForGatewayHealthyRestart({
+        service,
+        port: 18789,
+        timeoutMs,
+        isServiceAbsent: (runtime) => runtime === absentRuntime,
+        isStartupMigrationActive: () => {
+          monotonicClock.nowMs += 90_000;
+          return false;
+        },
+      });
+      expect(snapshot).toMatchObject({ healthy: false, waitOutcome: "timeout", elapsedMs: 90_000 });
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not reuse a strict absence fact for a later missing-unit runtime", async () => {
     const provenRuntime = { status: "stopped", missingUnit: true };
     const service = makeGatewayService({ status: "stopped" });
