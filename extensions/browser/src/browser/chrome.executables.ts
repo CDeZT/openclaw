@@ -6,11 +6,12 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
-import type { BrowserExecutable } from "./chrome.executable-types.js";
-export type { BrowserExecutable } from "./chrome.executable-types.js";
 import { execBrowserProbe, WINDOWS_VERSION_DIR_RE } from "./chrome.executable-probe.js";
+import type { BrowserExecutable } from "./chrome.executable-types.js";
 import { findPlaywrightChromiumExecutable } from "./chrome.playwright-cache.js";
 import type { ResolvedBrowserConfig } from "./config.js";
+
+export type { BrowserExecutable } from "./chrome.executable-types.js";
 
 const DEFAULT_WINDOWS_PROGRAM_FILES = "C:\\Program Files";
 const DEFAULT_WINDOWS_PROGRAM_FILES_X86 = "C:\\Program Files (x86)";

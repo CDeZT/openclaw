@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test-support.js";
 
@@ -429,8 +430,8 @@ it.each(["launch", "reset"] as const)(
   async (operation) => {
     const { resolved, profile, userDataDir } = setupOwnedBrowser("cache", true, false, "linux");
     fixture.alive = false;
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
+    const entered = createDeferred<void>();
+    const release = createDeferred<void>();
     fixture.portProbe.mockImplementationOnce(async () => {
       entered.resolve();
       await release.promise;
@@ -473,8 +474,8 @@ it.each(["launch", "reset"] as const)(
 it("holds cross-runtime exclusion through reset's trash operation, with nested stop ownership", async () => {
   const { resolved, profile, userDataDir } = setupOwnedBrowser("cache", true, false, "linux");
   fixture.alive = false;
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
+  const entered = createDeferred<void>();
+  const release = createDeferred<void>();
   fixture.trash.mockImplementationOnce(async (target: string) => {
     expect(target).toBe(userDataDir);
     entered.resolve();

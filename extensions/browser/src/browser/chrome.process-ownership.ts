@@ -63,8 +63,8 @@ function processCommandFlagValues(
   if (command.argv) {
     return command.argv.filter((arg) => arg.startsWith(flag)).map((arg) => arg.slice(flag.length));
   }
-  return [...command.text.matchAll(new RegExp(`(?:^|\\s)${flag}(.*?)(?=\\s--|$)`, "g"))].map(
-    (match) => match[1],
+  return [...command.text.matchAll(new RegExp(`(?:^|\\s)${flag}(.*?)(?=\\s--|$)`, "g"))].flatMap(
+    (match) => (match[1] === undefined ? [] : [match[1]]),
   );
 }
 
@@ -249,7 +249,7 @@ function readHeadlessShellProfilePids(userDataDir: string): number[] | null {
       });
       for (const line of output.split(/\r?\n/)) {
         const match = /^\s*(\d+)\s+(.+)$/.exec(line);
-        if (match) {
+        if (match?.[1] && match[2] !== undefined) {
           addProfileOwner(Number(match[1]), { argv: null, text: match[2] });
         }
       }

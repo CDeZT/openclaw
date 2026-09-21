@@ -242,12 +242,13 @@ function resolveOwnedManagedChromeListener(params: {
   // A dead local lock can remain from an earlier full Chromium launch.
   // Full Chrome without its lock must not gain this alternate ownership path.
   const pids = readPortListenerPids(params.profile.cdpPort);
-  if (pids.length !== 1) {
+  const [pid] = pids;
+  if (pids.length !== 1 || pid === undefined) {
     return null;
   }
   return resolveOwnedManagedChromeIdentity({
     ...params,
-    pid: pids[0],
+    pid,
     headlessShellOnly: true,
   });
 }
