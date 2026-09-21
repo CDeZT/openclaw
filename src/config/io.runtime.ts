@@ -41,6 +41,7 @@ import type {
 import { ConfigRuntimeRefreshError, configWritePostCommitRollback } from "./io.types.js";
 import { logConfigWarningsOnce } from "./io.warnings.js";
 import { ConfigWritePostCommitError, type ConfigWriteRollbackStatus } from "./io.write-errors.js";
+import { assertBaseSnapshotStillCurrent } from "./io.write-safety.js";
 import { formatConfigIssueSummary } from "./issue-format.js";
 import { ConfigMutationConflictError } from "./mutation-conflict.js";
 import type { CapturedRuntimeConfigRead } from "./runtime-config-capture-state.js";
@@ -534,7 +535,6 @@ export async function writeConfigFile(
         nextCfg,
         writeResult,
         baseSnapshot,
-        hadRuntimeSnapshot,
         hadBothSnapshots,
         deferRuntimeActivation,
         runtimePreflightResult,
@@ -553,7 +553,6 @@ async function finalizeCommittedConfigWrite(params: {
   nextCfg: OpenClawConfig;
   writeResult: Awaited<ReturnType<ReturnType<typeof createConfigIO>["writeConfigFile"]>>;
   baseSnapshot: ConfigFileSnapshot;
-  hadRuntimeSnapshot: boolean;
   hadBothSnapshots: boolean;
   deferRuntimeActivation: boolean;
   runtimePreflightResult: unknown;
@@ -571,6 +570,7 @@ async function finalizeCommittedConfigWrite(params: {
   let canonicalSourceConfig = params.nextCfg;
   let canonicalRuntimeConfig = params.nextCfg;
   let canonicalPersistedHash = writeResult.persistedHash;
+  let canonicalRead: ReadConfigFileSnapshotForWriteResult | undefined;
   let envBeforeCanonicalRead = snapshotEnv(io.env);
   let envAfterCanonicalRead: Record<string, string | undefined>;
   let canonicalReadFailure: ConfigRuntimeRefreshError | null = null;
@@ -587,7 +587,8 @@ async function finalizeCommittedConfigWrite(params: {
         );
         envBeforeCanonicalRead = snapshotEnv(io.env);
       }
-      const freshSnapshot = await io.readConfigFileSnapshot();
+      canonicalRead = await io.readConfigFileSnapshotForWrite();
+      const freshSnapshot = canonicalRead.snapshot;
       if (freshSnapshot.exists && freshSnapshot.valid) {
         canonicalSourceConfig = freshSnapshot.sourceConfig;
         canonicalRuntimeConfig = freshSnapshot.config;
@@ -665,12 +666,19 @@ async function finalizeCommittedConfigWrite(params: {
     }
     options.assertConfigPathForWrite?.();
     await finalizeRuntimeSnapshotWrite({
-      assertCurrent: params.assertPostCommitCurrent,
+      assertCurrent: () => {
+        params.assertPostCommitCurrent?.();
+        const read = expectDefined(canonicalRead, "canonical config reread");
+        read.writeOptions.assertConfigPathForWrite?.();
+        assertBaseSnapshotStillCurrent(read.snapshot, io.configPath, fs, {
+          hashes: read.writeOptions.includeFileHashesForWrite ?? {},
+          targets: read.writeOptions.includeFileTargetsForWrite ?? {},
+        });
+      },
       nextSourceConfig: canonicalSourceConfig,
       refreshOptions: options.runtimeRefresh,
-      hadRuntimeSnapshot: params.hadRuntimeSnapshot,
       hadBothSnapshots: params.hadBothSnapshots,
-      loadFreshConfig: () => io.loadConfig(),
+      freshConfig: (assertCurrent) => io.loadConfigAsync({ assertCurrent }),
       notifyCommittedWrite,
       formatRefreshError: (error) => formatErrorMessage(error),
       preflightResult: params.runtimePreflightResult,

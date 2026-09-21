@@ -1,17 +1,25 @@
 import fs from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { clearBundledDiscoveryModeMemo } from "../plugins/bundled-discovery-state.js";
 import { createPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.js";
 import { readConfigHealthStateFromStore } from "./io.health-state.js";
-import { captureRuntimeConfigAsyncReader } from "./io.runtime.js";
+import {
+  captureRuntimeConfigAsyncReader,
+  registerConfigWriteListener,
+  writeConfigFile,
+} from "./io.runtime.js";
 import {
   getRuntimeConfigSnapshot,
+  getRuntimeConfigSourceSnapshot,
   resetConfigRuntimeState,
   setRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshotRefreshHandler,
 } from "./runtime-snapshot.js";
 
 const dirs = useAutoCleanupTempDirTracker((cleanup) =>
@@ -19,6 +27,7 @@ const dirs = useAutoCleanupTempDirTracker((cleanup) =>
     vi.restoreAllMocks();
     await closeOpenClawStateDatabaseAsync();
     resetConfigRuntimeState();
+    setRuntimeConfigSnapshotRefreshHandler(null);
     clearBundledDiscoveryModeMemo();
     vi.unstubAllEnvs();
     cleanup();
@@ -144,3 +153,116 @@ it("keeps a pinned runtime readable when the captured launch directory is unavai
   expect(process.env.CONFIG_ASYNC_GLOBAL).toBeUndefined();
   expect(process.env.CONFIG_ASYNC_WORKSPACE).toBeUndefined();
 });
+
+it("publishes a config write's fallback reload without main-thread health SQL", async () => {
+  const { configPath } = fixture();
+  const initial = { gateway: { mode: "local" as const, port: 18789 } };
+  setRuntimeConfigSnapshot(initial, initial);
+  const listener = vi.fn();
+  const unsubscribe = registerConfigWriteListener(listener);
+  const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+  try {
+    await withPluginCache(createPluginCache(), () =>
+      writeConfigFile({ gateway: { mode: "local", port: 19001 } }),
+    );
+    expect(getRuntimeConfigSnapshot()?.gateway?.port).toBe(19001);
+    expect(getRuntimeConfigSourceSnapshot()?.gateway?.port).toBe(19001);
+    expect(JSON.parse(fs.readFileSync(configPath, "utf8")).gateway.port).toBe(19001);
+    expect(listener).toHaveBeenCalledOnce();
+    expect(
+      prepare.mock.calls.filter(
+        ([sql]) =>
+          /^(select|insert|update|delete)\b/i.test(sql) && sql.includes("config_health_entries"),
+      ),
+    ).toEqual([]);
+  } finally {
+    unsubscribe();
+    prepare.mockRestore();
+  }
+});
+
+it.each(["replacement", "disk-only", "cancellation"] as const)(
+  "preserves a newer owner's state when fallback reload encounters %s",
+  async (change) => {
+    const { home, configPath } = fixture();
+    const initial = { gateway: { mode: "local" as const, port: 18789 } };
+    const candidate = { gateway: { mode: "local" as const, port: 19001 } };
+    const replacement = { gateway: { mode: "local" as const, port: 19002 } };
+    setRuntimeConfigSnapshot(initial, initial);
+    const loading = createDeferredCore();
+    const release = createDeferredCore();
+    let fallback = false;
+    setRuntimeConfigSnapshotRefreshHandler({
+      refresh: async () => {
+        fallback = true;
+        return false;
+      },
+    });
+    const readFile = fs.promises.readFile.bind(fs.promises);
+    vi.spyOn(fs.promises, "readFile").mockImplementation((...args) => {
+      const read = readFile(...args);
+      if (fallback && args[0] === configPath) {
+        fallback = false;
+        return read.then(async (raw) => {
+          loading.resolve();
+          await release.promise;
+          return raw;
+        });
+      }
+      return read;
+    });
+    const listener = vi.fn();
+    const unsubscribe = registerConfigWriteListener(listener);
+    let current = true;
+    const pending = withPluginCache(createPluginCache(), () =>
+      writeConfigFile(candidate, {
+        assertCurrent: () => {
+          if (!current) {
+            throw new Error("Synthetic config writer retired");
+          }
+        },
+      }),
+    );
+    const settled = pending.then(
+      () => {
+        throw new Error("Config write settled before its asynchronous fallback read");
+      },
+      (error: unknown) => {
+        throw error;
+      },
+    );
+    try {
+      await Promise.race([loading.promise, settled]);
+      expect(getRuntimeConfigSnapshot()).toBe(initial);
+      expect(listener).not.toHaveBeenCalled();
+      const healthDeps = { env: process.env, homedir: () => home, logger: console };
+      const healthBefore = readConfigHealthStateFromStore(healthDeps);
+      if (change !== "disk-only") {
+        setRuntimeConfigSnapshot(replacement, replacement);
+      }
+      if (change !== "cancellation") {
+        // An external editor can replace the committed bytes while the writer holds its lock.
+        fs.writeFileSync(configPath, JSON.stringify(replacement));
+      } else {
+        current = false;
+      }
+      const rejected = expect(pending).rejects.toMatchObject({
+        name: "ConfigWritePostCommitError",
+        rollbackStatus: change !== "cancellation" ? "not-restored" : "unknown",
+      });
+      release.resolve();
+      await rejected;
+      expect(getRuntimeConfigSnapshot()).toBe(change === "disk-only" ? initial : replacement);
+      expect(getRuntimeConfigSourceSnapshot()).toBe(change === "disk-only" ? initial : replacement);
+      expect(JSON.parse(fs.readFileSync(configPath, "utf8")).gateway.port).toBe(
+        change !== "cancellation" ? 19002 : 19001,
+      );
+      expect(listener).not.toHaveBeenCalled();
+      expect(readConfigHealthStateFromStore(healthDeps)).toEqual(healthBefore);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([pending, settled]);
+      unsubscribe();
+    }
+  },
+);
