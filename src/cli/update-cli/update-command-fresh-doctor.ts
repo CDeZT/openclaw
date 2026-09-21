@@ -377,6 +377,304 @@ async function validatePostPluginConfigInFreshProcess(params: {
     return { status: "valid" };
   } catch (error) {
     const result = isRecord(error) ? error : {};
+    // Temporary FreeBSD diagnostic relay. Reconstruct one closed record; never
+    // forward arbitrary child stderr or change the original validation outcome.
+    try {
+      const marker = "OPENCLAW_FREEBSD_TEMP_DIAGNOSTIC_V1 ";
+      if (process.platform === "freebsd" && typeof result.stderr === "string") {
+        const start = result.stderr.indexOf(marker);
+        const end = result.stderr.indexOf("\n", start);
+        if (start >= 0 && (start === 0 || result.stderr[start - 1] === "\n") && end >= 0) {
+          const line = result.stderr.slice(start, end + 1);
+          if (Buffer.byteLength(line) > 8192)
+            throw new Error("Diagnostic record exceeds its bound");
+          const object = (value: unknown, keys: string[]): Record<string, unknown> => {
+            if (
+              !isRecord(value) ||
+              Object.keys(value).length !== keys.length ||
+              keys.some((key) => !Object.hasOwn(value, key))
+            )
+              throw new Error("Invalid diagnostic fields");
+            return value;
+          };
+          const choice = (value: unknown, values: readonly string[]): string => {
+            if (typeof value !== "string" || !values.includes(value))
+              throw new Error("Invalid diagnostic label");
+            return value;
+          };
+          const boolean = (value: unknown): boolean => {
+            if (typeof value !== "boolean") throw new Error("Invalid diagnostic boolean");
+            return value;
+          };
+          const integer = (value: unknown, signed = false): number | null => {
+            if (value === null) return null;
+            if (
+              typeof value !== "number" ||
+              !Number.isSafeInteger(value) ||
+              value < (signed ? -0x80000000 : 0) ||
+              value > (signed ? 0x7fffffff : 0xffffffff)
+            )
+              throw new Error("Invalid diagnostic integer");
+            return value;
+          };
+          const decimal = (
+            value: unknown,
+            min = -0x8000000000000000n,
+            max = 0x7fffffffffffffffn,
+          ): string | null => {
+            if (value === null) return null;
+            if (
+              typeof value !== "string" ||
+              !/^(?:0|-?[1-9][0-9]{0,18})$/u.test(value) ||
+              BigInt(value) < min ||
+              BigInt(value) > max
+            )
+              throw new Error("Invalid diagnostic metadata");
+            return value;
+          };
+          const array = (value: unknown, max: number): unknown[] => {
+            if (!Array.isArray(value) || value.length > max)
+              throw new Error("Invalid diagnostic array");
+            return value;
+          };
+          const roleValues = [
+            "logging-preferred",
+            "logging-fallback",
+            "sqlite-cache-preferred",
+            "sqlite-cache-fallback",
+          ];
+          const roles = (value: unknown) => {
+            const selected = array(value, 4).map((role) => choice(role, roleValues));
+            if (new Set(selected).size !== selected.length)
+              throw new Error("Duplicate diagnostic role");
+            return selected;
+          };
+          const codes = [
+            "EACCES",
+            "EPERM",
+            "ENOENT",
+            "EEXIST",
+            "ENOTDIR",
+            "EISDIR",
+            "ELOOP",
+            "EMLINK",
+            "EINVAL",
+            "EBADF",
+            "EIO",
+            "EROFS",
+            "ENOSPC",
+            "EDQUOT",
+            "EMFILE",
+            "ENFILE",
+            "ENAMETOOLONG",
+            "ENOSYS",
+            "ENOTSUP",
+            "ECANCELED",
+            "EFTYPE",
+            "EOPNOTSUPP",
+            "ESTALE",
+            "ENXIO",
+            "ENODEV",
+            "EFAULT",
+            "EINTR",
+            "EOVERFLOW",
+            "ERANGE",
+            "UNKNOWN",
+          ];
+          const syscalls = [
+            "lstat",
+            "stat",
+            "open",
+            "fstat",
+            "fchmod",
+            "close",
+            "access",
+            "mkdir",
+            "UNKNOWN",
+          ];
+          const fields = (value: Record<string, unknown>) => ({
+            code: value.code === null ? null : choice(value.code, codes),
+            syscall: value.syscall === null ? null : choice(value.syscall, syscalls),
+            errno: integer(value.errno, true),
+          });
+          const input = object(JSON.parse(line.slice(marker.length)), [
+            "v",
+            "origin",
+            "timing",
+            "pid",
+            "ppid",
+            "uid",
+            "euid",
+            "selection",
+            "selectedRoles",
+            "causes",
+            "causeTruncated",
+            "causeCycle",
+            "paths",
+          ]);
+          if (
+            input.v !== 1 ||
+            input.origin !== "config-snapshot" ||
+            input.timing !== "post-failure"
+          )
+            throw new Error("Invalid diagnostic origin");
+          const selectedRoles = roles(input.selectedRoles);
+          const selection = choice(input.selection, ["exact", "ambiguous", "unknown"]);
+          if (
+            selection !==
+              (selectedRoles.length === 0
+                ? "unknown"
+                : selectedRoles.length === 1
+                  ? "exact"
+                  : "ambiguous") ||
+            selectedRoles.some((role) => !role.endsWith("-fallback"))
+          )
+            throw new Error("Invalid diagnostic selection");
+          const causes = array(input.causes, 8).map((value, id) => {
+            const cause = object(value, [
+              "id",
+              "parent",
+              "via",
+              "kind",
+              "operation",
+              "code",
+              "syscall",
+              "errno",
+            ]);
+            const parent = integer(cause.parent);
+            const via = choice(cause.via, ["root", "cause", "aggregate"]);
+            if (
+              cause.id !== id ||
+              (id === 0
+                ? parent !== null || via !== "root"
+                : parent === null || parent >= id || via === "root")
+            )
+              throw new Error("Invalid diagnostic cause graph");
+            return {
+              id,
+              parent,
+              via,
+              kind: choice(cause.kind, ["Error", "AggregateError", "other"]),
+              operation: choice(cause.operation, [
+                "fallback-admission",
+                "descriptor-unavailable",
+                "identity-owner-type",
+                "identity-changed",
+                "descriptor-invalid",
+                "permissions-unsafe",
+                "chmod-verification",
+                "repair-close",
+                "native-syscall",
+                "unknown",
+              ]),
+              ...fields(cause),
+            };
+          });
+          if (causes.length === 0 || causes[0]!.operation !== "fallback-admission")
+            throw new Error("Missing diagnostic failure");
+          const pathRoles = new Set<string>();
+          const paths = array(input.paths, 4).map((value) => {
+            const observation = object(value, ["roles", "lstat", "access"]);
+            const aliases = roles(observation.roles);
+            if (
+              aliases.length === 0 ||
+              aliases.some(
+                (role) =>
+                  pathRoles.has(role) ||
+                  !selectedRoles.some(
+                    (selected) =>
+                      selected.replace(/-fallback$/u, "") ===
+                      role.replace(/-(?:preferred|fallback)$/u, ""),
+                  ),
+              )
+            )
+              throw new Error("Invalid diagnostic path roles");
+            for (const role of aliases) pathRoles.add(role);
+            const stat = object(observation.lstat, [
+              "status",
+              "uid",
+              "mode",
+              "dev",
+              "ino",
+              "metadataUnknown",
+              "isDirectory",
+              "isSymbolicLink",
+              "code",
+              "syscall",
+              "errno",
+            ]);
+            const status = choice(stat.status, ["ok", "error"]);
+            const metadata = {
+              uid: decimal(stat.uid, 0n, 0xffffffffn),
+              mode: decimal(stat.mode, 0n, 0xffffffffn),
+              dev: decimal(stat.dev),
+              ino: decimal(stat.ino),
+            };
+            const metadataUnknown = boolean(stat.metadataUnknown);
+            if (metadataUnknown !== Object.values(metadata).some((item) => item === null))
+              throw new Error("Invalid diagnostic metadata status");
+            const isDirectory = stat.isDirectory === null ? null : boolean(stat.isDirectory);
+            const isSymbolicLink =
+              stat.isSymbolicLink === null ? null : boolean(stat.isSymbolicLink);
+            const statFields = fields(stat);
+            if (
+              status === "ok"
+                ? isDirectory === null ||
+                  isSymbolicLink === null ||
+                  Object.values(statFields).some((item) => item !== null)
+                : Object.values(metadata).some((item) => item !== null) ||
+                  isDirectory !== null ||
+                  isSymbolicLink !== null
+            )
+              throw new Error("Invalid diagnostic stat result");
+            const accessInput = object(observation.access, ["status", "code", "syscall", "errno"]);
+            const accessStatus = choice(accessInput.status, ["ok", "error", "not-run"]);
+            const accessFields = fields(accessInput);
+            if (
+              accessStatus !== "error" &&
+              Object.values(accessFields).some((item) => item !== null)
+            )
+              throw new Error("Invalid diagnostic access result");
+            if ((status !== "ok" || !isDirectory || isSymbolicLink) && accessStatus !== "not-run")
+              throw new Error("Invalid diagnostic access admission");
+            return {
+              roles: aliases,
+              lstat: {
+                status,
+                ...metadata,
+                metadataUnknown,
+                isDirectory,
+                isSymbolicLink,
+                ...statFields,
+              },
+              access: { status: accessStatus, ...accessFields },
+            };
+          });
+          if (selection === "unknown" && paths.length !== 0)
+            throw new Error("Unknown diagnostic path observation");
+          const record = {
+            v: 1,
+            origin: "config-validator-relay",
+            timing: "post-failure",
+            pid: integer(input.pid),
+            ppid: integer(input.ppid),
+            uid: integer(input.uid),
+            euid: integer(input.euid),
+            selection,
+            selectedRoles,
+            causes,
+            causeTruncated: boolean(input.causeTruncated),
+            causeCycle: boolean(input.causeCycle),
+            paths,
+          };
+          const output = `${marker}${JSON.stringify(record)}\n`;
+          if (Buffer.byteLength(output) <= 8192)
+            process.getBuiltinModule("node:fs").writeSync(2, output);
+        }
+      }
+    } catch {
+      /* Missing, truncated or invalid diagnostics cannot alter failure precedence. */
+    }
     const cleanupUncertain = result.cleanup === "uncertain" || hasCommandProcessCleanupError(error);
     // The CLI also emits valid:false for runtime exceptions. Only an ordinary
     // completed failure with actual issues establishes invalid authored config.

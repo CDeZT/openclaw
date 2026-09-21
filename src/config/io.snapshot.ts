@@ -454,6 +454,276 @@ async function readConfigSnapshotWithPreparation(
     if (findStartupMaintenanceRequiredError(error)) {
       throw error;
     }
+    // Temporary FreeBSD diagnostic: observe only after authority checks, never repair
+    // or retry the refused root. These post-failure stats are not atomic failure facts.
+    try {
+      const label = "Unsafe fallback OpenClaw temp dir: ";
+      if (
+        process.platform === "freebsd" &&
+        error instanceof Error &&
+        error.message.startsWith(label)
+      ) {
+        const fs = process.getBuiltinModule("node:fs");
+        const os = process.getBuiltinModule("node:os");
+        const path = process.getBuiltinModule("node:path");
+        const { resolveRequiredOsHomeDir } = await import("../infra/home-dir.js");
+        const roles = [
+          "logging-preferred",
+          "logging-fallback",
+          "sqlite-cache-preferred",
+          "sqlite-cache-fallback",
+        ] as const;
+        const codes = new Set([
+          "EACCES",
+          "EPERM",
+          "ENOENT",
+          "EEXIST",
+          "ENOTDIR",
+          "EISDIR",
+          "ELOOP",
+          "EMLINK",
+          "EINVAL",
+          "EBADF",
+          "EIO",
+          "EROFS",
+          "ENOSPC",
+          "EDQUOT",
+          "EMFILE",
+          "ENFILE",
+          "ENAMETOOLONG",
+          "ENOSYS",
+          "ENOTSUP",
+          "ECANCELED",
+          "EFTYPE",
+          "EOPNOTSUPP",
+          "ESTALE",
+          "ENXIO",
+          "ENODEV",
+          "EFAULT",
+          "EINTR",
+          "EOVERFLOW",
+          "ERANGE",
+        ]);
+        const syscalls = new Set([
+          "lstat",
+          "stat",
+          "open",
+          "fstat",
+          "fchmod",
+          "close",
+          "access",
+          "mkdir",
+        ]);
+        const integer = (value: unknown, signed = false): number | null =>
+          typeof value === "number" &&
+          Number.isSafeInteger(value) &&
+          value >= (signed ? -0x80000000 : 0) &&
+          value <= (signed ? 0x7fffffff : 0xffffffff)
+            ? value
+            : null;
+        const fields = (value: unknown) => {
+          const native: Partial<NodeJS.ErrnoException> = value instanceof Error ? value : {};
+          return {
+            code:
+              native.code === undefined ? null : codes.has(native.code) ? native.code : "UNKNOWN",
+            syscall:
+              native.syscall === undefined
+                ? null
+                : syscalls.has(native.syscall)
+                  ? native.syscall
+                  : "UNKNOWN",
+            errno: integer(native.errno, true),
+          };
+        };
+        const uid = integer(process.getuid?.());
+        const candidates: Array<{ role: (typeof roles)[number]; directory: string }> = [];
+        if (uid !== null) {
+          const xdg = process.env.XDG_CACHE_HOME?.trim();
+          const cache =
+            xdg && path.isAbsolute(xdg)
+              ? xdg
+              : path.join(resolveRequiredOsHomeDir(process.env), ".cache");
+          const suffix = `openclaw-${uid}`;
+          candidates.push(
+            { role: roles[0], directory: "/tmp/openclaw" },
+            { role: roles[1], directory: path.join(os.tmpdir(), suffix) },
+            { role: roles[2], directory: path.join(cache, "openclaw") },
+            { role: roles[3], directory: path.join(cache, suffix) },
+          );
+        }
+        const selectedRoles = candidates
+          .filter(
+            ({ role, directory }) =>
+              role.endsWith("fallback") && error.message === `${label}${directory}`,
+          )
+          .map(({ role }) => role);
+        const messages = new Map([
+          ["Secure temp descriptor finalization is unavailable.", "descriptor-unavailable"],
+          [
+            "Secure temp directory identity, owner, or type could not be verified.",
+            "identity-owner-type",
+          ],
+          ["Secure temp directory changed during repair.", "identity-changed"],
+          ["Secure temp directory descriptor is invalid.", "descriptor-invalid"],
+          ["Secure temp directory permissions remain unsafe.", "permissions-unsafe"],
+          ["Secure temp directory chmod and verification failed.", "chmod-verification"],
+          ["Secure temp directory repair and close failed.", "repair-close"],
+        ]);
+        const queue: Array<{
+          value: unknown;
+          parent: number | null;
+          via: "root" | "cause" | "aggregate";
+        }> = [];
+        const seen = new Map<object, number>();
+        let causeTruncated = false;
+        let causeCycle = false;
+        const enqueue = (
+          value: unknown,
+          parent: number | null,
+          via: "root" | "cause" | "aggregate",
+        ) => {
+          if (value !== null && typeof value === "object" && seen.has(value)) {
+            const previous = seen.get(value)!;
+            let ancestor = parent;
+            while (ancestor !== null && ancestor !== previous) ancestor = queue[ancestor]!.parent;
+            if (ancestor === previous) causeCycle = true;
+            else causeTruncated = true;
+            return;
+          }
+          if (queue.length === 8) {
+            causeTruncated = true;
+            return;
+          }
+          if (value !== null && typeof value === "object") seen.set(value, queue.length);
+          queue.push({ value, parent, via });
+        };
+        enqueue(error, null, "root");
+        const causes = [];
+        for (let id = 0; id < queue.length; id += 1) {
+          const { value, parent, via } = queue[id]!;
+          const native = fields(value);
+          const operation =
+            value === error
+              ? "fallback-admission"
+              : value instanceof Error && messages.has(value.message)
+                ? messages.get(value.message)!
+                : native.syscall && native.syscall !== "UNKNOWN"
+                  ? "native-syscall"
+                  : "unknown";
+          causes.push({
+            id,
+            parent,
+            via,
+            kind:
+              value instanceof AggregateError
+                ? "AggregateError"
+                : value instanceof Error
+                  ? "Error"
+                  : "other",
+            operation,
+            ...native,
+          });
+          if (value instanceof Error && value.cause !== undefined)
+            enqueue(value.cause, id, "cause");
+          if (value instanceof AggregateError) {
+            if (value.errors.length > 8) causeTruncated = true;
+            for (const child of value.errors.slice(0, 8)) enqueue(child, id, "aggregate");
+          }
+        }
+        const observed = new Map<string, Array<(typeof roles)[number]>>();
+        for (const { role, directory } of candidates) {
+          if (
+            !selectedRoles.some(
+              (selected) =>
+                selected.split("-fallback")[0] === role.replace(/-(?:preferred|fallback)$/u, ""),
+            )
+          )
+            continue;
+          const aliases = observed.get(directory) ?? [];
+          aliases.push(role);
+          observed.set(directory, aliases);
+        }
+        const decimal = (
+          value: bigint,
+          min = -0x8000000000000000n,
+          max = 0x7fffffffffffffffn,
+        ): string | null => (value >= min && value <= max ? value.toString() : null);
+        const paths = [];
+        for (const [directory, aliases] of observed) {
+          let lstat;
+          let access = { status: "not-run", code: null, syscall: null, errno: null } as {
+            status: string;
+            code: string | null;
+            syscall: string | null;
+            errno: number | null;
+          };
+          try {
+            const stat = fs.lstatSync(directory, { bigint: true });
+            const metadata = {
+              uid: decimal(stat.uid, 0n, 0xffffffffn),
+              mode: decimal(stat.mode, 0n, 0xffffffffn),
+              dev: decimal(stat.dev),
+              ino: decimal(stat.ino),
+            };
+            lstat = {
+              status: "ok",
+              ...metadata,
+              metadataUnknown: Object.values(metadata).some((value) => value === null),
+              isDirectory: stat.isDirectory(),
+              isSymbolicLink: stat.isSymbolicLink(),
+              code: null,
+              syscall: null,
+              errno: null,
+            };
+            if (stat.isDirectory() && !stat.isSymbolicLink()) {
+              try {
+                fs.accessSync(directory, fs.constants.W_OK | fs.constants.X_OK);
+                access = { status: "ok", code: null, syscall: null, errno: null };
+              } catch (accessError) {
+                access = { status: "error", ...fields(accessError) };
+              }
+            }
+          } catch (statError) {
+            lstat = {
+              status: "error",
+              uid: null,
+              mode: null,
+              dev: null,
+              ino: null,
+              metadataUnknown: true,
+              isDirectory: null,
+              isSymbolicLink: null,
+              ...fields(statError),
+            };
+          }
+          paths.push({ roles: aliases, lstat, access });
+        }
+        const record = {
+          v: 1,
+          origin: "config-snapshot",
+          timing: "post-failure",
+          pid: integer(process.pid),
+          ppid: integer(process.ppid),
+          uid,
+          euid: integer(process.geteuid?.()),
+          selection:
+            selectedRoles.length === 0
+              ? "unknown"
+              : selectedRoles.length === 1
+                ? "exact"
+                : "ambiguous",
+          selectedRoles,
+          causes,
+          causeTruncated,
+          causeCycle,
+          paths,
+        };
+        const line = `OPENCLAW_FREEBSD_TEMP_DIAGNOSTIC_V1 ${JSON.stringify(record)}\n`;
+        if (Buffer.byteLength(line) <= 8192) fs.writeSync(2, line);
+      }
+    } catch {
+      /* Observation must never replace the original refused operation. */
+    }
     const nodeError = error as NodeJS.ErrnoException;
     let message: string;
     if (nodeError?.code === "EACCES") {
