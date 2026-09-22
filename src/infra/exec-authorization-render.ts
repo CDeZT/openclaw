@@ -1,3 +1,4 @@
+import { hasUnquotedShellExpansionSource } from "./command-analysis/risks.js";
 import type { SourceSpan } from "./command-explainer/types.js";
 import type { ExecSegmentSatisfiedBy } from "./exec-approvals-allowlist.js";
 import { resolvePlannedSegmentArgv } from "./exec-approvals-analysis.js";
@@ -35,55 +36,7 @@ function renderSourcePreservingArgv(argv: readonly string[]): string {
   return argv.map((token) => renderBareShellToken(token)).join(" ");
 }
 
-function hasUnquotedShellExpansionSource(value: string): boolean {
-  let quote: "single" | "double" | null = null;
-  let escaped = false;
-  let atWordStart = true;
-  for (const char of value) {
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (quote !== "single" && char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (quote === "single") {
-      if (char === "'") {
-        quote = null;
-      }
-      continue;
-    }
-    if (quote === "double") {
-      if (char === '"') {
-        quote = null;
-      }
-      continue;
-    }
-    if (char === "'") {
-      quote = "single";
-      continue;
-    }
-    if (char === '"') {
-      quote = "double";
-      continue;
-    }
-    if (/\s/u.test(char)) {
-      atWordStart = true;
-      continue;
-    }
-    if (char === "~" && atWordStart) {
-      return true;
-    }
-    if (char === "{" || char === "*" || char === "?" || char === "[") {
-      return true;
-    }
-    atWordStart = false;
-  }
-  return false;
-}
-
-export function hasArgumentShellExpansionSource(candidate: ExecAuthorizationCandidate): boolean {
+function hasArgumentShellExpansionSource(candidate: ExecAuthorizationCandidate): boolean {
   const executableEnd = Math.max(
     0,
     candidate.sourceStep.executableSpan.endIndex - candidate.sourceStep.span.startIndex,

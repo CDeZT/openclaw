@@ -11,7 +11,6 @@ import { createDedupeCache } from "../infra/dedupe.js";
 import {
   analyzeArgvCommand,
   commitExecAuthorizationLocked,
-  commandRequiresSecurityAuditSuppressionApproval,
   createExecApprovalPolicySnapshot,
   hasDurableExecApproval,
   isExecApprovalPolicySnapshotCurrent,
@@ -81,6 +80,7 @@ import {
 import {
   applyOutputTruncation,
   evaluateSystemRunAllowlist,
+  requiresSystemRunSuppressionApproval,
   resolvePlannedAllowlistArgv,
   resolveSystemRunExecArgv,
 } from "./invoke-system-run-allowlist.js";
@@ -640,11 +640,10 @@ async function evaluateSystemRunPolicyPhase(
     shellWrapperInvocation: parsed.shellPayload !== null,
   });
   const requiresSecurityAuditSuppressionApproval =
-    commandRequiresSecurityAuditSuppressionApproval({
-      command: parsed.commandPreview ?? parsed.commandText,
-      env: parsed.env,
-      ...allowlistEvaluation,
-      segments: [{ argv: parsed.argv }, ...segments],
+    requiresSystemRunSuppressionApproval({
+      ...parsed,
+      trustedSafeBinDirs,
+      analysis: allowlistEvaluation,
     }) && !(baseSecurity === "full" && baseAsk === "off" && !fallbackRequest);
   if (forwardedAutoReview && requiresSecurityAuditSuppressionApproval) {
     await sendSystemRunDenied(opts, parsed.execution, {

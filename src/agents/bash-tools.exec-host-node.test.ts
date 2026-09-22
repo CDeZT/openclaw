@@ -10,9 +10,6 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_SAFE_TIMEOUT_DELAY_MS } from "../../packages/gateway-client/src/timeouts.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { ExecAllowlistEntry } from "../infra/exec-approvals.types.js";
-import type { ExecAuthorizationPlan } from "../infra/exec-authorization-plan.js";
-import type { ExecCommandSegment } from "../infra/exec-command-analysis-types.js";
-import { registerNodeSuppressionTests } from "./bash-tools.exec-host-node.suppressions.test-support.js";
 import type { ExecuteNodeHostCommandParams } from "./bash-tools.exec-host-node.types.js";
 
 type ExecAutoReviewer = typeof import("../infra/exec-auto-review.js").defaultExecAutoReviewer;
@@ -29,17 +26,16 @@ type MockExecApprovalUnavailableDecision =
   import("../infra/exec-approvals.js").ExecApprovalUnavailableDecision;
 type MockAllowlistSegment = {
   raw?: string;
-  resolution: ExecCommandSegment["resolution"];
+  resolution: null;
   argv: string[];
 };
-export type MockAllowlistResult = {
+type MockAllowlistResult = {
   allowlistMatches: unknown[];
   analysisOk: boolean;
   allowlistSatisfied: boolean;
   segments: MockAllowlistSegment[];
   segmentAllowlistEntries: unknown[];
   segmentSatisfiedBy?: unknown[];
-  authorizationPlan?: ExecAuthorizationPlan;
 };
 type MockExecAllowlistEntry = {
   pattern: string;
@@ -115,11 +111,7 @@ const exactCommandMarker = (commandText: string): string =>
 const callGatewayToolMock = vi.hoisted(() => vi.fn());
 const listNodesMock = vi.hoisted(() => vi.fn());
 const parsePreparedSystemRunPayloadMock = vi.hoisted(() => vi.fn());
-const commandRequiresSecurityAuditSuppressionApprovalMock = vi.hoisted(() =>
-  vi.fn<
-    typeof import("../infra/exec-approvals-policy.js").commandRequiresSecurityAuditSuppressionApproval
-  >(() => false),
-);
+const commandRequiresSecurityAuditSuppressionApprovalMock = vi.hoisted(() => vi.fn(() => false));
 const evaluateShellAllowlistMock = vi.hoisted(() =>
   vi.fn((_raw?: ShellAllowlistMockParams): MockAllowlistResult => ({
     allowlistMatches: [],
@@ -696,19 +688,6 @@ function captureProcessUnhandledRejections() {
   });
   return { reasons, restore: () => processEmit.mockRestore() };
 }
-
-export type NodeSuppressionTestHarness = {
-  parsePreparedSystemRunPayloadMock: typeof parsePreparedSystemRunPayloadMock;
-  evaluateShellAllowlistMock: typeof evaluateShellAllowlistMock;
-  commandRequiresSecurityAuditSuppressionApprovalMock: typeof commandRequiresSecurityAuditSuppressionApprovalMock;
-  requiresExecApprovalMock: typeof requiresExecApprovalMock;
-  resolveExecHostApprovalContextMock: typeof resolveExecHostApprovalContextMock;
-  createAndRegisterDefaultExecApprovalRequestMock: typeof createAndRegisterDefaultExecApprovalRequestMock;
-  executeNodeHostCommand: typeof executeNodeHostCommand;
-  createNodeHostRequest: typeof createNodeHostRequest;
-  expectSystemRunInvoke: typeof expectSystemRunInvoke;
-  createAllowlistOnMissContext: typeof createAllowlistOnMissContext;
-};
 
 describe("executeNodeHostCommand", () => {
   beforeAll(async () => {
@@ -2576,17 +2555,59 @@ describe("executeNodeHostCommand", () => {
     expect(createAndRegisterDefaultExecApprovalRequestMock).toHaveBeenCalled();
   });
 
-  registerNodeSuppressionTests({
-    parsePreparedSystemRunPayloadMock,
-    evaluateShellAllowlistMock,
-    commandRequiresSecurityAuditSuppressionApprovalMock,
-    requiresExecApprovalMock,
-    resolveExecHostApprovalContextMock,
-    createAndRegisterDefaultExecApprovalRequestMock,
-    executeNodeHostCommand: (...args) => executeNodeHostCommand(...args),
-    createNodeHostRequest,
-    expectSystemRunInvoke,
-    createAllowlistOnMissContext,
+  it("does not treat read-only suppression inspections as wrapper writes", async () => {
+    const wrapperPlan = {
+      argv: ["/bin/sh", "-lc", "openclaw config get security.audit.suppressions"],
+      cwd: "/tmp/work",
+      commandText: `/bin/sh -lc "openclaw config get security.audit.suppressions"`,
+      commandPreview: "openclaw config get security.audit.suppressions",
+      agentId: "prepared-agent",
+      sessionKey: "prepared-session",
+    };
+    parsePreparedSystemRunPayloadMock.mockReturnValue({
+      plan: wrapperPlan,
+      execPolicy: { security: "full", ask: "off" },
+    });
+    evaluateShellAllowlistMock.mockImplementation((params?: { command?: string }) => {
+      const command = params?.command ?? "";
+      return {
+        allowlistMatches: [],
+        analysisOk: true,
+        allowlistSatisfied: true,
+        segments: [
+          command.startsWith("/bin/sh")
+            ? {
+                resolution: null,
+                argv: ["/bin/sh", "-lc", "openclaw config get security.audit.suppressions"],
+                raw: `/bin/sh -lc "openclaw config get security.audit.suppressions"`,
+              }
+            : {
+                resolution: null,
+                argv: ["openclaw", "config", "get", "security.audit.suppressions"],
+                raw: "openclaw config get security.audit.suppressions",
+              },
+        ],
+        segmentAllowlistEntries: [],
+      };
+    });
+    commandRequiresSecurityAuditSuppressionApprovalMock.mockImplementation(
+      (params?: { command?: string }) => params?.command?.startsWith("/bin/sh") === true,
+    );
+    requiresExecApprovalMock.mockReturnValue(false);
+    resolveExecHostApprovalContextMock.mockReturnValue(createAllowlistOnMissContext());
+
+    const result = await executeNodeHostCommand(
+      createNodeHostRequest({
+        command: "openclaw config get security.audit.suppressions",
+        security: "allowlist",
+        ask: "on-miss",
+        autoReview: true,
+      }),
+    );
+
+    expect(result.details?.status).toBe("completed");
+    expect(createAndRegisterDefaultExecApprovalRequestMock).not.toHaveBeenCalled();
+    expectSystemRunInvoke({ invokeDeadlineMs: 35_000, invokeWaitMs: 40_000, runTimeoutMs: 30_000 });
   });
 
   it("requests human approval when node auto-review asks on an approval miss", async () => {

@@ -2,6 +2,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 /** Resolves system.run allowlist matches, argv plans, and truncated command output. */
 import {
   analyzeArgvCommand,
+  commandRequiresSecurityAuditSuppressionApproval,
   evaluateExecAllowlist,
   evaluateShellAllowlistWithAuthorization,
   resolvePlannedSegmentArgv,
@@ -17,6 +18,7 @@ import {
   type ExecAuthorizationPlan,
 } from "../infra/exec-authorization-plan.js";
 import { buildAuthorizedShellCommandFromPlan } from "../infra/exec-authorization-render.js";
+import { resolveCommandResolutionFromArgv } from "../infra/exec-command-resolution.js";
 import { resolveExecSafeBinRuntimePolicy } from "../infra/exec-safe-bin-runtime-policy.js";
 import {
   normalizeExecutableToken,
@@ -123,6 +125,29 @@ export async function evaluateSystemRunAllowlist(params: {
     segmentAllowlistEntries: allowlistEval.segmentAllowlistEntries,
     segmentSatisfiedBy: allowlistEval.segmentSatisfiedBy,
   };
+}
+
+/** The node owns actual reader and shell-transport identity, not Gateway preflight. */
+export function requiresSystemRunSuppressionApproval(params: {
+  argv: string[];
+  commandText: string;
+  commandPreview: string | null;
+  cwd?: string;
+  env?: Record<string, string>;
+  trustedSafeBinDirs: ReadonlySet<string>;
+  analysis: SystemRunAllowlistAnalysis;
+}): boolean {
+  return commandRequiresSecurityAuditSuppressionApproval({
+    ...params.analysis,
+    command: params.commandPreview ?? params.commandText,
+    env: params.env,
+    trustedSafeBinDirs: params.trustedSafeBinDirs,
+    segments: [{ argv: params.argv }, ...params.analysis.segments],
+    transportExecutable:
+      params.commandPreview === null
+        ? undefined
+        : resolveCommandResolutionFromArgv(params.argv, params.cwd, params.env)?.execution,
+  });
 }
 
 /** Resolve the single planned argv that can replace the caller argv after allowlist approval. */

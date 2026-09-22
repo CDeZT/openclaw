@@ -551,6 +551,7 @@ export async function analyzeNodeApprovalRequirement(params: {
         env: analysisEnv,
         segments: entry.allowlistEval.segments,
         authorizationPlan: entry.allowlistEval.authorizationPlan,
+        deferReaderTrustToNode: true,
       }),
     ) && !(params.hostSecurity === "full" && params.hostAsk === "off");
   if (

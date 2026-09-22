@@ -15,20 +15,23 @@ describe("agent harness exec auto-review input", () => {
     },
   );
 
-  it("keeps suppression searches reviewable without admitting suppression edits", async () => {
-    await expect(
-      buildExecAutoReviewInputForShellCommand({
-        command: "rg security.audit.suppressions src",
-        host: "gateway",
-      }),
-    ).resolves.toMatchObject({ command: "rg security.audit.suppressions src" });
-    await expect(
-      buildExecAutoReviewInputForShellCommand({
-        command: "openclaw config set security.audit.suppressions '[]'",
-        host: "gateway",
-      }),
-    ).resolves.toBeUndefined();
-  });
+  it.runIf(process.platform !== "win32")(
+    "keeps trusted suppression searches reviewable without admitting suppression edits",
+    async () => {
+      await expect(
+        buildExecAutoReviewInputForShellCommand({
+          command: "grep security.audit.suppressions src",
+          host: "gateway",
+        }),
+      ).resolves.toMatchObject({ command: "grep security.audit.suppressions src" });
+      await expect(
+        buildExecAutoReviewInputForShellCommand({
+          command: "openclaw config set security.audit.suppressions '[]'",
+          host: "gateway",
+        }),
+      ).resolves.toBeUndefined();
+    },
+  );
 
   it("preserves ordinary single-command auto-review input", async () => {
     await expect(

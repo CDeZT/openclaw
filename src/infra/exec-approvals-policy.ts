@@ -1,3 +1,4 @@
+import { hasUnquotedShellExpansionSource } from "./command-analysis/risks.js";
 import type { AllowAlwaysPersistenceDecision } from "./exec-approvals-contracts.js";
 // Resolves exec approval requirements and approval-decision availability.
 import {
@@ -8,8 +9,8 @@ import {
   type ExecSecurity,
 } from "./exec-approvals-core.js";
 import type { ExecAuthorizationPlan } from "./exec-authorization-plan.js";
-import { hasArgumentShellExpansionSource } from "./exec-authorization-render.js";
-import { parseExecArgvToken } from "./exec-command-resolution.js";
+import { parseExecArgvToken, type ExecutableResolution } from "./exec-command-resolution.js";
+import { getTrustedSafeBinDirs, isTrustedSafeBinPath } from "./exec-safe-bin-trust.js";
 import { resolveEnvironmentValue } from "./process-env.js";
 
 export function requiresExecApproval(params: {
@@ -81,27 +82,11 @@ function isReadOnlySecurityAuditSuppressionInspection(argv: string[]): boolean {
 // These are inspection semantics, not an exec allowlist. Unknown options stay
 // approval-gated; in particular rg can launch programs via --pre/--hostname-bin
 // or decompression. Do not infer read-only behavior from an executable grant.
-const INSPECTION_OPTIONS: Readonly<Record<string, { boolean: string; value: string }>> = {
-  rg: {
-    boolean:
-      "-n -N -l -L -i -s -S -F -w -x -v -c -q -o -H -I -a -U -u -uu -uuu --hidden --files --no-ignore --no-ignore-vcs --fixed-strings --line-number --files-with-matches --files-without-match --count --only-matching --no-heading --heading --json --no-config --no-messages --follow",
-    value:
-      "-e -f -g -t -T -m -A -B -C --regexp --file --glob --iglob --type --type-not --max-count --after-context --before-context --context --max-depth --encoding --color --sort --sortr",
-  },
-  grep: {
-    boolean:
-      "-E -F -G -P -i -v -w -x -z -c -l -L -n -h -H -o -q -s -r -R -a -I --extended-regexp --fixed-strings --ignore-case --invert-match --word-regexp --line-regexp --count --files-with-matches --files-without-match --line-number --no-filename --with-filename --only-matching --quiet --silent --no-messages --recursive --dereference-recursive",
-    value:
-      "-e -f -m -A -B -C --regexp --file --max-count --after-context --before-context --context --include --exclude --exclude-dir --binary-files --color --colour",
-  },
-  cat: {
-    boolean:
-      "-A -b -e -E -n -s -t -T -u -v --show-all --number-nonblank --show-ends --number --squeeze-blank --show-tabs --show-nonprinting",
-    value: "",
-  },
-  head: { boolean: "-q -v --quiet --silent --verbose", value: "-n -c --lines --bytes" },
-  tail: { boolean: "-q -v --quiet --silent --verbose", value: "-n -c --lines --bytes" },
-  wc: { boolean: "-c -m -l -w -L --bytes --chars --lines --words --max-line-length", value: "" },
+const RIPGREP_INSPECTION_OPTIONS = {
+  boolean:
+    "-n -N -l -L -i -s -S -F -w -x -v -c -q -o -H -I -a -U -u -uu -uuu --hidden --files --no-ignore --no-ignore-vcs --fixed-strings --line-number --files-with-matches --files-without-match --count --only-matching --no-heading --heading --json --no-config --no-messages --follow",
+  value:
+    "-e -f -g -t -T -m -A -B -C --regexp --file --glob --iglob --type --type-not --max-count --after-context --before-context --context --max-depth --encoding --color --sort --sortr",
 };
 
 function isInspectionArgv(argv: string[], env?: NodeJS.ProcessEnv): boolean {
@@ -118,14 +103,14 @@ function isInspectionArgv(argv: string[], env?: NodeJS.ProcessEnv): boolean {
       argv.slice(3).every((arg) => !arg.startsWith("-"))
     );
   }
-  const options = Object.hasOwn(INSPECTION_OPTIONS, command)
-    ? INSPECTION_OPTIONS[command]
-    : undefined;
-  if (!options) {
+  if (["cat", "grep", "head", "tail", "wc"].includes(command)) {
+    return true;
+  }
+  if (command !== "rg") {
     return false;
   }
-  const booleanFlags = new Set(options.boolean.split(" "));
-  const valueFlags = new Set(options.value.split(" "));
+  const booleanFlags = new Set(RIPGREP_INSPECTION_OPTIONS.boolean.split(" "));
+  const valueFlags = new Set(RIPGREP_INSPECTION_OPTIONS.value.split(" "));
   let noRipgrepConfig = false;
   for (let i = 1; i < argv.length; i += 1) {
     const token = parseExecArgvToken(argv[i] ?? "");
@@ -160,7 +145,6 @@ function isInspectionArgv(argv: string[], env?: NodeJS.ProcessEnv): boolean {
     }
   }
   return (
-    command !== "rg" ||
     noRipgrepConfig ||
     !(
       resolveEnvironmentValue(env, "RIPGREP_CONFIG_PATH") ??
@@ -169,31 +153,14 @@ function isInspectionArgv(argv: string[], env?: NodeJS.ProcessEnv): boolean {
   );
 }
 
-function isInspectionPlan(params: {
-  command: string;
-  env?: NodeJS.ProcessEnv;
-  authorizationPlan?: ExecAuthorizationPlan;
-}): boolean {
-  const plan = params.authorizationPlan;
-  if (!plan?.ok || plan.originalCommand !== params.command || plan.groups.length === 0) {
-    return false;
-  }
-  return plan.groups.every(
-    (group) =>
-      group.candidates.length > 0 &&
-      group.candidates.every(
-        (candidate) =>
-          candidate.trustMode === "executable" &&
-          // A print-only sed script is inline eval, but not a suppression edit.
-          // The caller still enforces its independent strict-inline-eval policy.
-          candidate.reasons.every((reason) => reason === "inline-eval") &&
-          ((plan.dialect === "argv" && candidate.transport.kind === "direct") ||
-            !hasArgumentShellExpansionSource(candidate)) &&
-          isInspectionArgv(
-            candidate.sourceSegment.sourceArgv ?? candidate.sourceSegment.argv,
-            params.env,
-          ),
-      ),
+function isTrustedInspectionExecutable(
+  executable: ExecutableResolution | undefined,
+  trustedDirs?: ReadonlySet<string>,
+): boolean {
+  const dirs =
+    trustedDirs ?? getTrustedSafeBinDirs({ safeBins: [executable?.executableName ?? ""] });
+  return [executable?.resolvedPath, executable?.resolvedRealPath].every(
+    (resolvedPath) => resolvedPath && isTrustedSafeBinPath({ resolvedPath, trustedDirs: dirs }),
   );
 }
 
@@ -203,16 +170,57 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
   env?: NodeJS.ProcessEnv;
   segments: Array<{ argv: string[]; raw?: string }>;
   authorizationPlan?: ExecAuthorizationPlan;
+  trustedSafeBinDirs?: ReadonlySet<string>;
+  transportExecutable?: ExecutableResolution;
+  /** Remote preflight cannot resolve node executables; the node checks trust at dispatch. */
+  deferReaderTrustToNode?: boolean;
 }): boolean {
-  const mentionsSuppressions =
-    textMentionsSecurityAuditSuppressions(params.command) ||
-    params.segments.some((segment) =>
-      textMentionsSecurityAuditSuppressions(`${segment.raw ?? ""} ${segment.argv.join(" ")}`),
-    );
-  // Diagnostic segments can be partial, and a read may feed a write in another
-  // segment. Only the complete, command-bound authorization plan can exempt an
-  // inspection. Failed/opaque plans retain the conservative explicit-review gate.
-  return mentionsSuppressions && !isInspectionPlan(params);
+  if (
+    !textMentionsSecurityAuditSuppressions(params.command) &&
+    !params.segments.some((segment) =>
+      textMentionsSecurityAuditSuppressions(segment.argv.join(" ")),
+    )
+  ) {
+    return false;
+  }
+  const plan = params.authorizationPlan;
+  if (!plan?.ok || plan.originalCommand !== params.command || plan.groups.length === 0) {
+    return true;
+  }
+  if (
+    params.transportExecutable &&
+    !params.deferReaderTrustToNode &&
+    !isTrustedInspectionExecutable(params.transportExecutable, params.trustedSafeBinDirs)
+  ) {
+    return true;
+  }
+  // A parsed prefix or a reader feeding a writer cannot exempt the whole command.
+  return !plan.groups.every(
+    (group) =>
+      group.candidates.length > 0 &&
+      group.candidates.every((candidate) => {
+        const argv = candidate.sourceSegment.sourceArgv ?? candidate.sourceSegment.argv;
+        const execution = candidate.sourceSegment.resolution?.execution;
+        const transport =
+          candidate.transport.kind === "shell-wrapper"
+            ? candidate.transport.wrapperSegment.resolution?.execution
+            : undefined;
+        return (
+          candidate.trustMode === "executable" &&
+          candidate.reasons.every((reason) => reason === "inline-eval") &&
+          ((plan.dialect === "argv" && candidate.transport.kind === "direct") ||
+            !hasUnquotedShellExpansionSource(candidate.sourceStep.text)) &&
+          isInspectionArgv(argv, params.env) &&
+          (params.deferReaderTrustToNode ||
+            !transport ||
+            isTrustedInspectionExecutable(transport, params.trustedSafeBinDirs)) &&
+          (isReadOnlySecurityAuditSuppressionInspection(argv) ||
+            params.deferReaderTrustToNode ||
+            (isTrustedInspectionExecutable(execution, params.trustedSafeBinDirs) &&
+              normalizeCommandName(argv[0]) === normalizeCommandName(execution?.resolvedRealPath)))
+        );
+      }),
+  );
 }
 
 export function minSecurity(a: ExecSecurity, b: ExecSecurity): ExecSecurity {

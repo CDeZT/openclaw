@@ -29,6 +29,7 @@ import {
   resetDiagnosticEventsForTest,
   type DiagnosticSecurityEvent,
 } from "../infra/diagnostic-events.js";
+import { evaluateShellAllowlistWithAuthorization as evaluateRealShellAllowlist } from "../infra/exec-approvals-allowlist.js";
 import type {
   ExecAllowlistEntry,
   ExecApprovalDecision,
@@ -66,7 +67,6 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { resetProcessRegistryForTests } from "./bash-process-registry.test-support.js";
-import { registerGatewaySuppressionTests } from "./bash-tools.exec-host-gateway.suppressions.test-support.js";
 import type {
   ExecApprovalFollowupFactory,
   ExecApprovalFollowupOutcome,
@@ -161,9 +161,7 @@ const evaluateShellAllowlistWithAuthorizationMock = vi.hoisted(() =>
 );
 const hasDurableExecApprovalMock = vi.hoisted(() => vi.fn(() => true));
 const hasExactCommandDurableExecApprovalMock = vi.hoisted(() => vi.fn(() => false));
-const requiresExecApprovalMock = vi.hoisted(() =>
-  vi.fn<typeof import("../infra/exec-approvals-policy.js").requiresExecApproval>(() => false),
-);
+const requiresExecApprovalMock = vi.hoisted(() => vi.fn(() => false));
 const resolveExecApprovalAllowedDecisionsMock = vi.hoisted(() =>
   vi.fn(
     (params?: {
@@ -529,18 +527,6 @@ function captureSecurityEvents(): {
   });
   return { events, stop };
 }
-
-export type GatewaySuppressionTestHarness = {
-  evaluateShellAllowlistWithAuthorizationMock: typeof evaluateShellAllowlistWithAuthorizationMock;
-  requiresExecApprovalMock: typeof requiresExecApprovalMock;
-  resolveExecHostApprovalContextMock: typeof resolveExecHostApprovalContextMock;
-  hasDurableExecApprovalMock: typeof hasDurableExecApprovalMock;
-  createAndRegisterDefaultExecApprovalRequestMock: typeof createAndRegisterDefaultExecApprovalRequestMock;
-  defaultExecAutoReviewerMock: typeof defaultExecAutoReviewerMock;
-  runGatewayAllowlist: (
-    overrides: Partial<GatewayAllowlistParams> & Pick<GatewayAllowlistParams, "command">,
-  ) => ReturnType<typeof processGatewayAllowlist>;
-};
 
 describe("processGatewayAllowlist", () => {
   beforeAll(async () => {
@@ -2488,14 +2474,203 @@ Command: ${command}`;
     );
   });
 
-  registerGatewaySuppressionTests({
-    evaluateShellAllowlistWithAuthorizationMock,
-    requiresExecApprovalMock,
-    resolveExecHostApprovalContextMock,
-    hasDurableExecApprovalMock,
-    createAndRegisterDefaultExecApprovalRequestMock,
-    defaultExecAutoReviewerMock,
-    runGatewayAllowlist,
+  it("requires approval for security audit suppression edits unless yolo mode is active", async () => {
+    resolveExecHostApprovalContextMock.mockReturnValue({
+      approvals: { allowlist: [], file: { version: 1, agents: {} } },
+      hostSecurity: "full",
+      hostAsk: "on-miss",
+      askFallback: "deny",
+    });
+
+    const result = await runGatewayAllowlist({
+      command: "openclaw config set security.audit.suppressions '[]'",
+      security: "full",
+      ask: "on-miss",
+    });
+
+    expect(createAndRegisterDefaultExecApprovalRequestMock).toHaveBeenCalledTimes(1);
+    expect(result.deniedResult?.details.status).toBe("failed");
+  });
+
+  it("keeps security audit suppression edits off the auto-review path", async () => {
+    const warnings: string[] = [];
+    resolveExecHostApprovalContextMock.mockReturnValue({
+      approvals: { allowlist: [], file: { version: 1, agents: {} } },
+      hostSecurity: "full",
+      hostAsk: "on-miss",
+      askFallback: "deny",
+    });
+
+    const result = await runGatewayAllowlist({
+      command: "openclaw config set security.audit.suppressions '[]'",
+      security: "full",
+      ask: "on-miss",
+      autoReview: true,
+      warnings,
+    });
+
+    expect(defaultExecAutoReviewerMock).not.toHaveBeenCalled();
+    expect(createAndRegisterDefaultExecApprovalRequestMock).toHaveBeenCalledTimes(1);
+    expect(warnings[0]).toContain("explicit approval");
+    expect(result.deniedResult?.details.status).toBe("failed");
+  });
+
+  it("does not require approval for security audit suppression edits in yolo mode", async () => {
+    resolveExecHostApprovalContextMock.mockReturnValue({
+      approvals: { allowlist: [], file: { version: 1, agents: {} } },
+      hostSecurity: "full",
+      hostAsk: "off",
+      askFallback: "deny",
+    });
+
+    await runGatewayAllowlist({
+      command: "openclaw config set security.audit.suppressions '[]'",
+      security: "full",
+      ask: "off",
+    });
+
+    expect(createAndRegisterDefaultExecApprovalRequestMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["openclaw config get security.audit.suppressions", false],
+    ["openclaw --profile rescue config get security.audit.suppressions", false],
+    ...(process.platform === "win32"
+      ? []
+      : ([
+          ["grep security.audit.suppressions src | head -n 10", false],
+          ["grep security.audit.suppressions src | tee openclaw.json", true],
+          ["grep security.audit.suppressions src > openclaw.json", true],
+        ] as const)),
+  ] as const)(
+    "handles suppression inspection through Gateway policy: %s",
+    async (command, blocked) => {
+      evaluateShellAllowlistWithAuthorizationMock.mockReturnValue(
+        await evaluateRealShellAllowlist({
+          command,
+          allowlist: [],
+          safeBins: new Set(),
+          platform: "linux",
+        }),
+      );
+      resolveExecHostApprovalContextMock.mockReturnValue({
+        approvals: { allowlist: [], file: { version: 1, agents: {} } },
+        hostSecurity: "full",
+        hostAsk: "on-miss",
+        askFallback: "deny",
+      });
+      const result = await runGatewayAllowlist({
+        command,
+        security: "full",
+        ask: "on-miss",
+        autoReview: true,
+      });
+      expect(defaultExecAutoReviewerMock).not.toHaveBeenCalled();
+      expect(result.deniedResult?.details.status, JSON.stringify(result.deniedResult)).toBe(
+        blocked ? "failed" : undefined,
+      );
+      if (!blocked) {
+        expect(createAndRegisterDefaultExecApprovalRequestMock).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("requires suppression edit approval when a mutating segment follows read-only inspection", async () => {
+    evaluateShellAllowlistWithAuthorizationMock.mockReturnValue({
+      allowlistMatches: [],
+      analysisOk: true,
+      allowlistSatisfied: true,
+      segments: [
+        { resolution: null, argv: ["openclaw", "config", "get", "security.audit.suppressions"] },
+        {
+          resolution: null,
+          argv: ["openclaw", "config", "set", "security.audit.suppressions", "[]"],
+        },
+      ],
+      segmentAllowlistEntries: [],
+    });
+    resolveExecHostApprovalContextMock.mockReturnValue({
+      approvals: { allowlist: [], file: { version: 1, agents: {} } },
+      hostSecurity: "full",
+      hostAsk: "on-miss",
+      askFallback: "deny",
+    });
+
+    const result = await runGatewayAllowlist({
+      command:
+        "openclaw config get security.audit.suppressions; openclaw config set security.audit.suppressions '[]'",
+      security: "full",
+      ask: "on-miss",
+    });
+
+    expect(createAndRegisterDefaultExecApprovalRequestMock).toHaveBeenCalledTimes(1);
+    expect(result.deniedResult?.details.status).toBe("failed");
+  });
+
+  it("requires suppression edit approval when allowlist analysis only returns a read-only prefix", async () => {
+    evaluateShellAllowlistWithAuthorizationMock.mockReturnValue({
+      allowlistMatches: [],
+      analysisOk: true,
+      allowlistSatisfied: false,
+      segments: [
+        { resolution: null, argv: ["openclaw", "config", "get", "security.audit.suppressions"] },
+      ],
+      segmentAllowlistEntries: [],
+    });
+    resolveExecHostApprovalContextMock.mockReturnValue({
+      approvals: { allowlist: [], file: { version: 1, agents: {} } },
+      hostSecurity: "full",
+      hostAsk: "on-miss",
+      askFallback: "deny",
+    });
+
+    const result = await runGatewayAllowlist({
+      command:
+        "openclaw config get security.audit.suppressions; openclaw config set security.audit.suppressions '[]'",
+      security: "full",
+      ask: "on-miss",
+    });
+
+    expect(createAndRegisterDefaultExecApprovalRequestMock).toHaveBeenCalledTimes(1);
+    expect(result.deniedResult?.details.status).toBe("failed");
+  });
+
+  it("requires suppression edit approval when a heredoc patch follows read-only inspection", async () => {
+    evaluateShellAllowlistWithAuthorizationMock.mockReturnValue({
+      allowlistMatches: [],
+      analysisOk: true,
+      allowlistSatisfied: false,
+      segments: [
+        {
+          raw: "openclaw config get security.audit.suppressions",
+          resolution: null,
+          argv: ["openclaw", "config", "get", "security.audit.suppressions"],
+        },
+        {
+          raw: "openclaw config patch --stdin <<'EOF'",
+          resolution: null,
+          argv: ["openclaw", "config", "patch", "--stdin"],
+        },
+      ],
+      segmentAllowlistEntries: [],
+    });
+    resolveExecHostApprovalContextMock.mockReturnValue({
+      approvals: { allowlist: [], file: { version: 1, agents: {} } },
+      hostSecurity: "full",
+      hostAsk: "on-miss",
+      askFallback: "deny",
+    });
+
+    const result = await runGatewayAllowlist({
+      command: `openclaw config get security.audit.suppressions; openclaw config patch --stdin <<'EOF'
+{"security":{"audit":{"suppressions":[]}}}
+EOF`,
+      security: "full",
+      ask: "on-miss",
+    });
+
+    expect(createAndRegisterDefaultExecApprovalRequestMock).toHaveBeenCalledTimes(1);
+    expect(result.deniedResult?.details.status).toBe("failed");
   });
 
   it("allows durable exact-command trust to bypass the synchronous allowlist miss", async () => {
