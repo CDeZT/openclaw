@@ -182,6 +182,7 @@ export type SessionRowFactsWorkerInput = {
   database: { agentId: string; path: string };
   env: NodeJS.ProcessEnv;
   sessionKeys: readonly string[];
+  continuation?: CanonicalSessionReaderContinuation;
 };
 
 export type SessionRowFactsWorkerResult = {

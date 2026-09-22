@@ -311,7 +311,11 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
         if (input.sessionKeys.length > MAX_SESSION_ROW_FACTS_KEYS) {
           throw new Error(`Session row facts support at most ${MAX_SESSION_ROW_FACTS_KEYS} keys`);
         }
-        const captured = { env: { ...input.env }, sessionKeys: [...input.sessionKeys] };
+        const captured = {
+          env: { ...input.env },
+          sessionKeys: [...input.sessionKeys],
+          continuation: input.continuation ? { ...input.continuation } : undefined,
+        };
         return await runRequest(
           () => ({ kind: "session-row-facts", ...captured }),
           JSON.stringify(captured).length * 2,

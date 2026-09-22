@@ -10,7 +10,10 @@ import { readExactSessionEntryCandidatesInDatabase } from "./session-accessor.sq
 import { readTranscriptHeaderFromDatabase } from "./session-accessor.sqlite-read.js";
 import { readSessionTranscriptWatermarkInDatabase } from "./session-accessor.sqlite-transcript-watermark.js";
 import { readSessionBackingFactsInDatabase } from "./session-backing-facts.js";
-import { assertCanonicalSqliteSessionKeysCurrent } from "./session-canonical-key.js";
+import {
+  assertCanonicalSqliteSessionKeysCurrent,
+  readWithCanonicalSessionReaderContinuation,
+} from "./session-canonical-key.js";
 import { listSessionMembersInDatabase } from "./session-sharing-store.kernel.js";
 import {
   MAX_SESSION_ROW_FACTS_KEYS,
@@ -89,37 +92,39 @@ export function readSessionRowDatabaseFacts(
   }
   const result = withOpenClawAgentDatabaseReadOnly(
     (database) =>
-      withSqlitePostCommitPublications(database.db, () =>
-        runSqliteDeferredTransactionSync(database.db, () => {
-          assertCanonicalSqliteSessionKeysCurrent(database);
-          const selected = expectDefined(
-            readExactSessionEntryCandidatesInDatabase(database, [request.sessionKeys], "list")[0],
-            "session row facts read result",
-          );
-          if (!selected.ok) {
-            throw selected.error;
-          }
-          return {
-            kind: "session-row-facts" as const,
-            rows: selected.value.map(({ sessionKey, entry }) => {
-              const facts: SessionRowDatabaseFacts = {
-                sessionKey,
-                entry,
-                memberIdentityIds: listSessionMembersInDatabase(database, sessionKey).map(
-                  (member) => member.identityId,
-                ),
-                hasBoard: readBoardSessionKeys(database, sessionKey).length > 0,
-              };
-              if (readSessionActivitySummary(entry)) {
-                facts.activitySummaryWatermark = readSessionTranscriptWatermarkInDatabase(
-                  database,
-                  entry.sessionId,
-                );
-              }
-              return facts;
-            }),
-          };
-        }),
+      readWithCanonicalSessionReaderContinuation(database, request.continuation, () =>
+        withSqlitePostCommitPublications(database.db, () =>
+          runSqliteDeferredTransactionSync(database.db, () => {
+            assertCanonicalSqliteSessionKeysCurrent(database);
+            const selected = expectDefined(
+              readExactSessionEntryCandidatesInDatabase(database, [request.sessionKeys], "list")[0],
+              "session row facts read result",
+            );
+            if (!selected.ok) {
+              throw selected.error;
+            }
+            return {
+              kind: "session-row-facts" as const,
+              rows: selected.value.map(({ sessionKey, entry }) => {
+                const facts: SessionRowDatabaseFacts = {
+                  sessionKey,
+                  entry,
+                  memberIdentityIds: listSessionMembersInDatabase(database, sessionKey).map(
+                    (member) => member.identityId,
+                  ),
+                  hasBoard: readBoardSessionKeys(database, sessionKey).length > 0,
+                };
+                if (readSessionActivitySummary(entry)) {
+                  facts.activitySummaryWatermark = readSessionTranscriptWatermarkInDatabase(
+                    database,
+                    entry.sessionId,
+                  );
+                }
+                return facts;
+              }),
+            };
+          }),
+        ),
       ),
     { ...request.database, env: request.env },
   );
