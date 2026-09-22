@@ -24,6 +24,7 @@ import type {
   readSessionTranscriptModelContext,
   SessionModelContextLimits,
 } from "./session-accessor.sqlite-model-context.js";
+import type { SessionTranscriptWatermark } from "./session-accessor.sqlite-transcript-watermark-read.js";
 import type {
   SessionAccessScope,
   SessionEntryListScope,
@@ -168,6 +169,26 @@ export type SessionExactEntriesWorkerResult = {
   lifecycleTimestamps: SessionLifecycleTimestamps;
 };
 
+export const MAX_SESSION_ROW_FACTS_KEYS = 64;
+
+export type SessionRowDatabaseFacts = SessionEntrySummary & {
+  memberIdentityIds: string[];
+  hasBoard: boolean;
+  activitySummaryWatermark?: SessionTranscriptWatermark;
+};
+
+export type SessionRowFactsWorkerInput = {
+  kind: "session-row-facts";
+  database: { agentId: string; path: string };
+  env: NodeJS.ProcessEnv;
+  sessionKeys: readonly string[];
+};
+
+export type SessionRowFactsWorkerResult = {
+  kind: "session-row-facts";
+  rows: SessionRowDatabaseFacts[];
+};
+
 type SessionStoreTargetWorkerInput = {
   kind: "session-store-target";
   request: SessionStoreTargetReadRequest;
@@ -204,6 +225,7 @@ export type SessionHistoryWorkerInput =
   | SessionMembersWorkerInput
   | SessionEntryListWorkerInput
   | SessionExactEntriesWorkerInput
+  | SessionRowFactsWorkerInput
   | SessionStoreTargetWorkerInput
   | SessionTargetInventoryWorkerInput
   | SessionIdentityEvidenceWorkerInput
@@ -232,6 +254,7 @@ export type SessionTranscriptWorkerValues = {
   "session-members": SessionMember[];
   "session-entry-list": SessionEntryListWorkerResult;
   "session-exact-entries": SessionExactEntriesWorkerResult;
+  "session-row-facts": SessionRowFactsWorkerResult;
   "session-store-target": SessionStoreTargetReadResult;
   "session-target-inventory": SessionStoreTargetInventoryResult;
   "session-identity-evidence": SessionIdentityEvidenceWorkerResult;
@@ -281,6 +304,9 @@ export type SessionHistoryWorkerDatabase = {
   readExactEntries: (
     input: Omit<SessionExactEntriesWorkerInput, "kind" | "database">,
   ) => Promise<SessionExactEntriesWorkerResult>;
+  readRowFacts: (
+    input: Omit<SessionRowFactsWorkerInput, "kind" | "database">,
+  ) => Promise<SessionRowFactsWorkerResult>;
   readEntries: (
     scope: SessionEntryListWorkerInput["scope"],
   ) => Promise<SessionEntryListWorkerResult["entries"]>;
