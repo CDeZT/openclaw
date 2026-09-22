@@ -279,10 +279,14 @@ it("compares and round-trips 26,000 modified-file reconciliation records", () =>
   expect(restored.baseEntries.length + restored.appliedEntries.length).toBe(26_000);
 });
 
-it("stages, applies, and recovers modified files through a serialized journal", async () => {
+it("stages, applies, and recovers modified files across Git tree batches", async () => {
   const local = await temporaryDirectory("workspace-modification-local");
   const payload = await temporaryDirectory("workspace-modification-payload");
-  const paths = ["changed-a.txt", "changed-b.txt", "changed-c.txt"];
+  // Cross writeRawWorkspaceTree's 256-entry batches with the smallest physical fixture.
+  const paths = Array.from(
+    { length: 257 },
+    (_, index) => `changed-${index.toString().padStart(3, "0")}.txt`,
+  );
   await Promise.all(
     paths.flatMap((entryPath) => [
       fs.writeFile(path.join(local, entryPath), "base\n"),
