@@ -5,14 +5,12 @@ import net, { type Socket } from "node:net";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { desktopProofTestReport } from "../../../scripts/lib/desktop-resize-proof.mts";
-import { hashWorkerCredential } from "../../../src/gateway/worker-environments/credential.js";
 import {
   prepareWorkerSsh,
   workerSshCommandOptions,
   workerSshOptions,
   workerSshRemoteCommand,
 } from "../../../src/gateway/worker-environments/ssh.js";
-import { createWorkerEnvironmentStore } from "../../../src/gateway/worker-environments/store.js";
 import type { WorkerDesktopEndpoint, WorkerSshEndpoint } from "../../../src/plugins/types.js";
 import { runCommandWithTimeout } from "../../../src/process/exec.js";
 import type { DesktopClient } from "../components/desktop/desktop-client.ts";
@@ -137,7 +135,7 @@ export type DesktopResizeFixture = {
   controlUiRoot?: string;
 };
 
-export const resizeSources = {
+export const desktopResizeProfiles = {
   dynamic: "desktop-resize-dynamic",
   fixed: "desktop-resize-fixed",
   unmanaged: "desktop-resize-unmanaged",
@@ -400,6 +398,7 @@ export async function readDesktopResizeFixture(file: string): Promise<DesktopRes
 /** Provisioning fixture only: no RPC, RFB, registry, or tunnel implementation is replaced. */
 export async function writeDesktopResizeProvider(root: string, fixture: DesktopResizeFixture) {
   const pluginDir = path.join(root, "desktop-resize-fixture");
+  const nodeDeviceIdPath = path.resolve(root, "desktop-resize-node-device-id");
   await mkdir(pluginDir, { recursive: true });
   await writeFile(
     path.join(pluginDir, "package.json"),
@@ -420,7 +419,9 @@ export async function writeDesktopResizeProvider(root: string, fixture: DesktopR
   );
   await writeFile(
     path.join(pluginDir, "index.js"),
-    `export default {
+    `import { readFile } from "node:fs/promises";
+const destroyed = new Set();
+export default {
       id: "desktop-resize-fixture",
       register(api) {
         for (const allowsDesktopResize of [true, false]) {
@@ -428,76 +429,35 @@ export async function writeDesktopResizeProvider(root: string, fixture: DesktopR
             id: allowsDesktopResize ? "desktop-resize-fixture" : "desktop-unmanaged-fixture",
             allowsDesktopResize,
             supportedExecutionModes: ["remote-exec"],
-            resolveAllocation: async () => { throw new Error("fixture is already provisioned"); },
-            provision: async () => { throw new Error("fixture is already provisioned"); },
-            inspect: async () => ({ status: "active", sharedHost: false }),
+            resolveAllocation: async (_profile, operationId) => ({ leaseId: operationId, sharedHost: false }),
+            provision: async (profile, operationId) => ({
+              leaseId: operationId,
+              sharedHost: false,
+              desktop: profile.desktop === "fixed"
+                ? ${JSON.stringify(fixture.fixedDesktop)}
+                : ${JSON.stringify(fixture.desktop)},
+              ${
+                fixture.carrier === "node"
+                  ? `node: { deviceId: (await readFile(${JSON.stringify(nodeDeviceIdPath)}, "utf8")).trim() }`
+                  : `ssh: ${JSON.stringify(fixture.ssh)}`
+              },
+            }),
+            inspect: async ({ leaseId }) => destroyed.has(leaseId)
+              ? { status: "destroyed" }
+              : { status: "active", sharedHost: false },
             resolveSshIdentity: async () => ${
               fixture.carrier === "node"
                 ? '{ throw new Error("Node desktop fixture must not resolve SSH credentials"); }'
                 : `({ kind: "path", path: ${JSON.stringify(fixture.identityPath)} })`
             },
-            destroy: async () => {},
+            // The outer fixture owns the machine; destroying an adopted lease releases only that lease.
+            destroy: async ({ leaseId }) => { destroyed.add(leaseId); },
           });
         }
       },
     };`,
   );
-  return pluginDir;
-}
-
-export async function seedDesktopResizeSources(
-  fixture: DesktopResizeFixture,
-  nodeDeviceId?: string,
-) {
-  if (fixture.carrier === "node" && !nodeDeviceId) {
-    throw new Error("Node desktop proof requires the actually admitted node device");
-  }
-  const store = await createWorkerEnvironmentStore();
-  for (const [kind, environmentId] of Object.entries(resizeSources)) {
-    const intent = await store.createIntent({
-      environmentId,
-      providerId: kind === "unmanaged" ? "desktop-unmanaged-fixture" : "desktop-resize-fixture",
-      profileId: "resize-fixture",
-      profileSnapshot: { executionMode: "remote-exec", settings: {} },
-      provisionOperationId: `provision:${environmentId}`,
-    });
-    const provisioning = await store.transition({
-      environmentId,
-      from: intent.state,
-      to: "provisioning",
-    });
-    const desktop = kind === "fixed" ? fixture.fixedDesktop : fixture.desktop;
-    const owner = { leaseId: `lease:${environmentId}`, sharedHost: false, desktop };
-    const preparing =
-      fixture.carrier === "node"
-        ? provisioning
-        : await store.transition({
-            environmentId,
-            from: provisioning.state,
-            to: "bootstrapping",
-            patch: { ...owner, sshEndpoint: fixture.ssh },
-          });
-    await store.transition({
-      environmentId,
-      from: preparing.state,
-      to: "ready",
-      patch: {
-        ...(fixture.carrier === "node" ? { ...owner, nodeDeviceId, sshEndpoint: null } : {}),
-        // Synthetic provisioning receipt, not evidence of a cloud bootstrap.
-        bootstrapReceipt: {
-          bundleHash: "a".repeat(64),
-          openclawVersion: "2026.9.1",
-          protocolFeatures: [],
-        },
-        credential: {
-          credentialHash: hashWorkerCredential(`desktop-resize-proof:${environmentId}`),
-          sessionId: null,
-          rpcSetVersion: 1,
-          expiresAtMs: Date.now() + 3_600_000,
-        },
-      },
-    });
-  }
+  return { pluginDir, nodeDeviceIdPath };
 }
 
 export async function createDesktopResizeGuest(fixture: DesktopResizeFixture) {

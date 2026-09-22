@@ -21,6 +21,7 @@ const desktopProofTestPhases = [
   "gateway-start",
   "admin-connect",
   "node-admission",
+  "worker-provision",
   "guest-ssh",
   "browser-context",
   "browser-navigation",

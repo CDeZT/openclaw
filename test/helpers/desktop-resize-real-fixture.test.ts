@@ -5,21 +5,13 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import * as desktopFilter from "../../src/gateway/desktop/rfb-view-only-filter.js";
-import { createWorkerEnvironmentStore } from "../../src/gateway/worker-environments/store.js";
+import { capturePluginGenerationArtifact } from "../../src/plugins/plugin-generation-artifact.js";
 import type { WorkerProvider } from "../../src/plugins/types.js";
 import * as processExec from "../../src/process/exec.js";
-import {
-  closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseByPath,
-} from "../../src/state/openclaw-state-db-cache.js";
-import { openOpenClawStateDatabase } from "../../src/state/openclaw-state-db.js";
-import { withEnvAsync } from "../../src/test-utils/env.js";
 import {
   createDesktopResizeGuest,
   observeDesktopEndpointPackets,
   readDesktopResizeFixture,
-  resizeSources,
-  seedDesktopResizeSources,
   writeDesktopResizeProvider,
   type DesktopResizeFixture,
 } from "../../ui/src/e2e/desktop-resize-real.test-support.js";
@@ -118,71 +110,66 @@ describe("desktop resize fixture provenance and carrier", () => {
   });
 
   it.each(["ssh", "node"] as const)(
-    "persists a ready %s worker and synthetic receipt across reopen",
+    "adopts the actual %s fixture lease without inventing a bootstrap receipt",
     async (carrier) => {
-      const root = tempDirs.make("desktop-resize-store-");
-      await withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => {
-        const database = openOpenClawStateDatabase();
-        try {
-          expect(database.path).toBe(path.join(root, "state", "openclaw.sqlite"));
-          const value = fixture(carrier);
+      const value = fixture(carrier);
+      const { pluginDir, nodeDeviceIdPath } = await writeDesktopResizeProvider(
+        tempDirs.make("desktop-resize-provider-"),
+        value,
+      );
+      // Plugin code is captured before real node admission publishes operational state.
+      const artifact = capturePluginGenerationArtifact(pluginDir);
+      onTestFinished(() => artifact.disposeAsync());
+      const entry = artifact.resolve(path.join(pluginDir, "index.js"));
+      if (carrier === "node") {
+        await writeFile(nodeDeviceIdPath, "admitted-device");
+      }
+      const plugin = (await import(pathToFileURL(entry).href)) as {
+        default: {
+          register: (api: { registerWorkerProvider: (provider: WorkerProvider) => void }) => void;
+        };
+      };
+      const providers: WorkerProvider[] = [];
+      plugin.default.register({ registerWorkerProvider: (provider) => providers.push(provider) });
+      expect(providers.map((provider) => provider.allowsDesktopResize)).toEqual([true, false]);
+      for (const provider of providers) {
+        for (const desktop of ["dynamic", "fixed"]) {
+          const profile = { desktop };
+          const operationId = `${provider.id}:${desktop}`;
+          const expected = {
+            leaseId: operationId,
+            sharedHost: false,
+            desktop: desktop === "fixed" ? value.fixedDesktop : value.desktop,
+            ...(carrier === "node"
+              ? { node: { deviceId: "admitted-device" } }
+              : { ssh: value.ssh }),
+          };
+          await expect(provider.resolveAllocation(profile, operationId)).resolves.toEqual({
+            leaseId: operationId,
+            sharedHost: false,
+          });
+          await expect(provider.provision(profile, operationId)).resolves.toEqual(expected);
+          await expect(provider.provision(profile, operationId)).resolves.toEqual(expected);
+          const lease = { leaseId: operationId, profile };
+          await expect(provider.inspect(lease)).resolves.toEqual({
+            status: "active",
+            sharedHost: false,
+          });
           if (carrier === "node") {
-            await expect(seedDesktopResizeSources(value)).rejects.toThrow("actually admitted");
-            expect((await createWorkerEnvironmentStore()).list()).toEqual([]);
+            await expect(
+              provider.resolveSshIdentity!({ ...lease, keyRef: value.ssh.keyRef }),
+            ).rejects.toThrow("must not resolve SSH");
+          } else {
+            await expect(
+              provider.resolveSshIdentity!({ ...lease, keyRef: value.ssh.keyRef }),
+            ).resolves.toEqual({ kind: "path", path: value.identityPath });
           }
-          await seedDesktopResizeSources(value, carrier === "node" ? "admitted-device" : undefined);
-          await closeOpenClawStateDatabaseAsync();
-          closeOpenClawStateDatabaseByPath(database.path);
-          expect(database.db.isOpen).toBe(false);
-          const reopened = await createWorkerEnvironmentStore();
-          expect(reopened.list()).toHaveLength(Object.keys(resizeSources).length);
-          for (const [kind, environmentId] of Object.entries(resizeSources)) {
-            expect(reopened.get(environmentId)).toMatchObject({
-              state: "ready",
-              leaseId: `lease:${environmentId}`,
-              nodeDeviceId: carrier === "node" ? "admitted-device" : null,
-              sshEndpoint: carrier === "node" ? null : value.ssh,
-              sharedHost: false,
-              desktop: kind === "fixed" ? value.fixedDesktop : value.desktop,
-              bootstrapReceipt: {
-                bundleHash: "a".repeat(64),
-                openclawVersion: "2026.9.1",
-                protocolFeatures: [],
-              },
-            });
-          }
-        } finally {
-          // Close the exact store before restoring selectors or removing its root.
-          await closeOpenClawStateDatabaseAsync();
-          closeOpenClawStateDatabaseByPath(database.path);
+          await provider.destroy(lease);
+          await expect(provider.inspect(lease)).resolves.toEqual({ status: "destroyed" });
         }
-      });
+      }
     },
   );
-
-  it("makes an SSH identity fallback fail in the node provider", async () => {
-    const root = await writeDesktopResizeProvider(
-      tempDirs.make("desktop-resize-provider-"),
-      fixture("node"),
-    );
-    const plugin = (await import(pathToFileURL(path.join(root, "index.js")).href)) as {
-      default: {
-        register: (api: { registerWorkerProvider: (provider: WorkerProvider) => void }) => void;
-      };
-    };
-    const providers: WorkerProvider[] = [];
-    plugin.default.register({ registerWorkerProvider: (provider) => providers.push(provider) });
-    expect(providers.map((provider) => provider.allowsDesktopResize)).toEqual([true, false]);
-    for (const provider of providers) {
-      await expect(
-        provider.resolveSshIdentity!({
-          leaseId: "fixture",
-          profile: { executionMode: "remote-exec", settings: {} },
-          keyRef: fixture().ssh.keyRef,
-        }),
-      ).rejects.toThrow("must not resolve SSH");
-    }
-  });
 });
 
 async function openEndpointTap() {

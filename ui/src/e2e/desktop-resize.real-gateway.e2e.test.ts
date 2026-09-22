@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { renameSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { EnvironmentSummary, EnvironmentsListResult } from "@openclaw/gateway-protocol";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { buildControlUiFocusPath } from "@openclaw/session-url-contract";
 import type { Locator, Page } from "playwright";
@@ -15,6 +16,7 @@ import {
   readDesktopProofGatewayCloses,
   readDesktopProofNodeStreamCloses,
 } from "../../../scripts/lib/desktop-resize-proof.mts";
+import { racePromiseWithAbortSignal } from "../../../src/infra/abort-signal.ts";
 import { getFreePort } from "../../../src/test-utils/ports.ts";
 import { startSkillLibraryNodeProcess } from "../../../test/e2e/qa-lab/runtime/skill-library-node-process.ts";
 import { SkillLibraryWireClient } from "../../../test/e2e/qa-lab/runtime/skill-library-wire-fixture.ts";
@@ -30,8 +32,7 @@ import {
   observeDesktopEndpointPackets,
   observeDesktopProofRfbLifecycle,
   readDesktopResizeFixture,
-  resizeSources,
-  seedDesktopResizeSources,
+  desktopResizeProfiles,
   writeDesktopResizeProvider,
 } from "./desktop-resize-real.test-support.ts";
 
@@ -247,7 +248,10 @@ suite.define(() => {
             ...fixture,
             desktop: { ...fixture.desktop, port: packetProbe.port },
           };
-          const pluginDir = await writeDesktopResizeProvider(state.workspaceDir, fixture);
+          const { pluginDir, nodeDeviceIdPath } = await writeDesktopResizeProvider(
+            state.workspaceDir,
+            tappedFixture,
+          );
           const gatewayToken = gateway.gatewayToken;
           const trustedProxy = {
             allowLoopback: true,
@@ -270,7 +274,16 @@ suite.define(() => {
             },
             cloudWorkers: {
               desktop: true,
-              profiles: { "resize-fixture": { provider: "desktop-resize-fixture", settings: {} } },
+              profiles: Object.fromEntries(
+                Object.entries(desktopResizeProfiles).map(([kind, profileId]) => [
+                  profileId,
+                  {
+                    provider:
+                      kind === "unmanaged" ? "desktop-unmanaged-fixture" : "desktop-resize-fixture",
+                    settings: { desktop: kind },
+                  },
+                ]),
+              ),
             },
             plugins: {
               allow: ["desktop-resize-fixture"],
@@ -303,19 +316,75 @@ suite.define(() => {
             context.task.meta.desktopGatewayReadiness = [...gateway.readiness];
           }
           context.signal.throwIfAborted();
+          const endpoint = {
+            port: gatewayPort,
+            url: `ws://127.0.0.1:${gatewayPort}`,
+            gatewayToken,
+          };
+          phase("admin-connect");
+          const { client } = await SkillLibraryWireClient.connect(endpoint);
+          admin = client;
           if (fixture.carrier === "node") {
-            const endpoint = {
-              port: gatewayPort,
-              url: `ws://127.0.0.1:${gatewayPort}`,
-              gatewayToken,
-            };
-            phase("admin-connect");
-            ({ client: admin } = await SkillLibraryWireClient.connect(endpoint));
             phase("node-admission");
             node = await startSkillLibraryNodeProcess(endpoint, admin);
             nodeDeviceId = node.nodeId;
+            await writeFile(nodeDeviceIdPath, nodeDeviceId, { mode: 0o600 });
           }
-          await seedDesktopResizeSources(tappedFixture, nodeDeviceId);
+          phase("worker-provision");
+          // Gateway provisioning owns both the real bootstrap receipt and its resident inventory.
+          const createSource = async (kind: keyof typeof desktopResizeProfiles) => {
+            const started = performance.now();
+            let created: EnvironmentSummary;
+            try {
+              created = await client.request<EnvironmentSummary>("environments.create", {
+                profileId: desktopResizeProfiles[kind],
+                idempotencyKey: desktopResizeProfiles[kind],
+              });
+            } catch (error) {
+              try {
+                if (diagnosticDirectory) {
+                  context.signal.throwIfAborted();
+                  const { environments } = await racePromiseWithAbortSignal(
+                    client.request<EnvironmentsListResult>("environments.list", {}, 1_000),
+                    context.signal,
+                  );
+                  await writeFile(
+                    path.join(diagnosticDirectory, "worker-provision.json"),
+                    JSON.stringify(
+                      environments
+                        .filter((entry) => entry.worker?.profileId === desktopResizeProfiles[kind])
+                        .slice(0, 3)
+                        .map((entry) => ({
+                          id: entry.id,
+                          status: entry.status,
+                          worker: { state: entry.worker?.state, error: entry.worker?.error },
+                        })),
+                      null,
+                      2,
+                    ),
+                    { mode: 0o600, signal: context.signal },
+                  );
+                }
+              } catch {
+                // Private diagnosis cannot replace the original provisioning failure.
+              }
+              throw error;
+            }
+            console.info(
+              `[desktop-resize-provision] ${kind} ${Math.round(performance.now() - started)}ms`,
+            );
+            expect(created).toMatchObject({
+              status: "available",
+              desktop: true,
+              worker: { state: "ready" },
+            });
+            return created.id;
+          };
+          const resizeSources = {
+            dynamic: await createSource("dynamic"),
+            fixed: await createSource("fixed"),
+            unmanaged: await createSource("unmanaged"),
+          };
           phase("guest-ssh");
           guest = await createDesktopResizeGuest(fixture);
           phase("browser-context");
@@ -405,13 +474,13 @@ suite.define(() => {
           await page.goto(new URL("activity", baseUrl).href);
           phase("ui-ready");
           await waitForControlUiGatewayReady(page);
-          await page.evaluate(() => {
+          await page.evaluate((environmentId) => {
             window.dispatchEvent(
               new CustomEvent("openclaw:desktop-toggle", {
-                detail: { open: true, environmentId: "desktop-resize-dynamic" },
+                detail: { open: true, environmentId },
               }),
             );
-          });
+          }, resizeSources.dynamic);
           const panel = page.locator("openclaw-desktop-panel");
           const canvas = panel.locator(".desktop-surface canvas");
           phase("desktop-connect");
@@ -847,7 +916,7 @@ suite.define(() => {
               {
                 provenance: fixture.provenance,
                 provisioning:
-                  "fixture provider and durable worker records; production Gateway observation, worker carrier, registry, and RFB filter",
+                  "fixture provider adopts synthetic machine leases; real Gateway provisioning, bootstrap, observation, worker carrier, registry, and RFB filter",
                 instrumentation:
                   "transparent real endpoint tap: same-connection framebuffer markers bracket each forbidden packet in one WebSocket message",
                 gateway: { execution: "built-process", readiness: "readyz", minimal: false },

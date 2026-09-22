@@ -42,7 +42,7 @@ const receipt = {
   failureCode: null as string | null,
   startedAt: new Date().toISOString(),
   provisioning:
-    "Upstream Ubuntu packages and synthetic worker records; not Crabbox installer or cloud provisioning proof",
+    "Upstream Ubuntu packages and Gateway-owned fixture leases; not Crabbox installer or cloud provisioning proof",
   source: null as Awaited<ReturnType<typeof readDesktopProofSource>> | null,
   sourceStatus: null as DesktopProofSourceStatus | null,
   workflowSha: process.env.DESKTOP_PROOF_WORKFLOW_SHA ?? null,
@@ -481,6 +481,8 @@ async function main() {
     const config = path.join(privateRoot, "sshd_config");
     const pidFile = path.join(privateRoot, "sshd.pid");
     const user = userInfo().username;
+    const sshHome = path.join(privateRoot, "ssh-home");
+    await mkdir(sshHome, { mode: 0o700 });
     await writeFile(
       config,
       [
@@ -497,6 +499,9 @@ async function main() {
         "PermitEmptyPasswords no",
         "PermitRootLogin no",
         "UsePAM yes",
+        // Real worker bootstrap must stay inside this fixture, never the runner user's HOME.
+        `SetEnv ${JSON.stringify(`HOME=${sshHome}`)} ${JSON.stringify(`PATH=${path.dirname(process.execPath)}:/usr/bin:/bin`)}`,
+        "Subsystem sftp internal-sftp",
         "StrictModes no",
         "AllowTcpForwarding local",
         "GatewayPorts no",
@@ -526,6 +531,33 @@ async function main() {
     await waitFor(() => tcpReady(sshPort));
     sshd.pid = Number((await readFile(pidFile, "utf8")).trim());
     assert(Number.isSafeInteger(sshd.pid) && sshd.pid > 1);
+    const knownHosts = path.join(privateRoot, "known-hosts");
+    await writeFile(knownHosts, `[127.0.0.1]:${sshPort} ${await publicKey(hostKey)}\n`, {
+      mode: 0o600,
+    });
+    const remoteRuntime = JSON.parse(
+      (
+        await run("ssh-runtime-boundary", "ssh", [
+          "-F",
+          "/dev/null",
+          "-i",
+          identity,
+          "-p",
+          String(sshPort),
+          "-o",
+          "BatchMode=yes",
+          "-o",
+          "IdentitiesOnly=yes",
+          "-o",
+          "StrictHostKeyChecking=yes",
+          "-o",
+          `UserKnownHostsFile=${knownHosts}`,
+          `${user}@127.0.0.1`,
+          "node -p 'JSON.stringify({home: process.env.HOME, node: process.execPath})'",
+        ])
+      ).toString(),
+    );
+    assert.deepEqual(remoteRuntime, { home: sshHome, node: process.execPath });
     const fixture = {
       ssh: {
         host: "127.0.0.1",
