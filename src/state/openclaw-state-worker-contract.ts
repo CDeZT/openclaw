@@ -24,7 +24,10 @@ import type {
 } from "../gateway/managed-image-record-store.types.js";
 import type { OperatorApprovalWorkerOperations } from "../gateway/operator-approval-store.worker-contract.js";
 import type { WorkerEnvironmentWorkerOperations } from "../gateway/worker-environments/store-worker-contract.js";
-import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
+import type {
+  DeferredPluginMigration,
+  readDeferredPluginMigrationCompletions,
+} from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
 import type * as deviceAuth from "../infra/device-auth-store.kernel.js";
 import type { DeviceIdentity } from "../infra/device-identity-store.js";
@@ -250,6 +253,10 @@ export type OpenClawStateWorkerOperations = McpOAuthReadOperations &
     "plugins.deferredMigrations.read": {
       input: { artifactPreservingReadOnly: boolean };
       output: readonly DeferredPluginMigration[];
+    };
+    "plugins.deferredMigrations.completions.read": {
+      input: undefined;
+      output: ReturnType<typeof readDeferredPluginMigrationCompletions>;
     };
     "claws.install-schema-versions": {
       input: { artifactPreservingReadOnly: boolean };

@@ -17,10 +17,10 @@ import { readGatewayOwnerLease } from "../infra/gateway-owner-lease.js";
 import { acquireStateDatabaseCoordinator } from "../infra/state-database-coordinator.js";
 import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
 import { UPDATE_RUN_ID_ENV } from "../infra/update-control-plane-sentinel.js";
-import { UpdateDoctorError } from "../infra/update-doctor-result.js";
+import { DoctorMaintenanceRefusalError, UpdateDoctorError } from "../infra/update-doctor-result.js";
 import { createUpdateFailureFact, type UpdateFailureFact } from "../infra/update-failure-facts.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
-import { withCommandProcessScope } from "../process/exec-spawn.js";
+import { resolveCommandProcessSignal, withCommandProcessScope } from "../process/exec-spawn.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   createOpenClawDatabaseMaintenanceScope,
@@ -34,7 +34,10 @@ import {
 } from "./doctor-agent-lease-refusal.js";
 import { resolveDoctorUpdateAdmission } from "./doctor-maintenance-admission.js";
 import { acquireDoctorGatewayMaintenanceCoordinator } from "./doctor-maintenance-foreground.js";
-import { assertDoctorMaintenanceInspection } from "./doctor-maintenance-inspection.js";
+import {
+  assertDoctorMaintenanceInspection,
+  classifyDoctorMaintenanceRefusal,
+} from "./doctor-maintenance-inspection.js";
 import {
   assertStaleDoctorGatewayStopped,
   doctorGatewayMaintenanceError,
@@ -100,6 +103,19 @@ export async function beginDoctorMaintenance(params: {
   let parentMustStopGateway = false;
   let staleReplacement: DoctorStaleGateway | undefined;
   let assertUpdateAdmissionCurrent: (() => void) | undefined;
+  let authorityRefused = false;
+  const assertAuthority = (assertion: () => void) => {
+    try {
+      assertion();
+    } catch (error) {
+      authorityRefused = true;
+      throw error;
+    }
+  };
+  const callerAssertCurrent = params.assertCurrent;
+  const assertCallerCurrent = callerAssertCurrent
+    ? () => assertAuthority(callerAssertCurrent)
+    : undefined;
   let cleanupFailure: { error: unknown } | undefined;
   const settle = async <T>(operation: () => Promise<T>): Promise<T> => {
     if (cleanupFailure) {
@@ -120,13 +136,16 @@ export async function beginDoctorMaintenance(params: {
     if (resources) {
       return;
     }
-    params.assertCurrent?.();
-    const owner = await acquireDoctorGatewayMaintenanceCoordinator(databasePath, env, params);
+    assertCallerCurrent?.();
+    const owner = await acquireDoctorGatewayMaintenanceCoordinator(databasePath, env, {
+      ...params,
+      assertCurrent: assertCallerCurrent,
+    });
     coordinators.push(owner);
-    params.assertCurrent?.();
+    assertCallerCurrent?.();
     resources = createOpenClawDatabaseMaintenanceScope(
       owner.createSchemaFenceDelegate,
-      params.assertCurrent,
+      assertCallerCurrent,
     );
     coordinators.push(acquireStateDatabaseCoordinator({ databasePath, busyTimeoutMs: 250 }));
   };
@@ -489,7 +508,10 @@ export async function beginDoctorMaintenance(params: {
         });
         assertDoctorMaintenanceInspection(inspection, env);
         if (inspection.serviceUpdateVerdict?.kind !== "absent" && inspection.offline !== true) {
-          assertUpdateAdmissionCurrent = resolveDoctorUpdateAdmission(env);
+          assertAuthority(() => {
+            const admitted = resolveDoctorUpdateAdmission(env);
+            assertUpdateAdmissionCurrent = () => assertAuthority(admitted);
+          });
         }
         if (inspection.serviceUpdateVerdict?.kind === "owned" && inspection.serviceEnv) {
           assertDoctorServiceSelection(env, inspection.serviceEnv);
@@ -616,6 +638,10 @@ export async function beginDoctorMaintenance(params: {
     if (hasCommandProcessCleanupError(error)) {
       throw error;
     }
+    if (authorityRefused) {
+      await releaseState();
+      throw error;
+    }
     try {
       // Discovery has not run yet; restore a service parked before admission failed.
       if (stopped?.stopped) {
@@ -629,15 +655,21 @@ export async function beginDoctorMaintenance(params: {
         cause: restoreError,
       });
     }
+    resolveCommandProcessSignal()?.throwIfAborted();
     if (error instanceof DoctorUnreadableStateDatabaseError) {
       throw error;
     }
-    if (error instanceof UpdateDoctorError) {
+    if (error instanceof DoctorMaintenanceRefusalError) {
       throw error;
     }
-    const refusal = new Error(
-      `Doctor could not enter maintenance. ${String(error)}${parentMustStopGateway || hasGatewayServiceStopUnsafeError(error) ? "" : ` Stop the Gateway service and other OpenClaw processes using this state, then run ${formatCliCommand("openclaw doctor --fix", env)} from an independent shell.`}`,
-      { cause: error },
+    const message = `Doctor could not enter maintenance. ${String(error)}${parentMustStopGateway || hasGatewayServiceStopUnsafeError(error) ? "" : ` Stop the Gateway service and other OpenClaw processes using this state, then run ${formatCliCommand("openclaw doctor --fix", env)} from an independent shell.`}`;
+    const refusal = new DoctorMaintenanceRefusalError(
+      message,
+      classifyDoctorMaintenanceRefusal(error),
+      {
+        cause: error,
+        ...(error instanceof UpdateDoctorError ? { failureFacts: error.failureFacts } : {}),
+      },
     );
     const recovery = inspectingActivation
       ? await resolveUpdateDoctorGitRecovery({ root: params.root })
