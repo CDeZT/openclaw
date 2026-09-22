@@ -1033,33 +1033,44 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
       fs.mkdirSync(aliasDir);
       const alias = path.join(aliasDir, "grep");
       fs.symlinkSync("/usr/bin/grep", alias);
-      for (const command of [
-        ["/usr/bin/grep", needle, config],
-        [writer, needle, config],
-        [alias, needle, config],
-        [shell, "-c", "/usr/bin/grep " + needle + " " + config],
-      ]) {
-        const invoke = await runLocalSystemInvokeWithPolicy("full", "on-miss", {
-          command,
-          cwd,
-          rawCommand: formatExecCommand(command),
-          runCommand: realRunCommand,
-        });
-        if (command[0] === "/usr/bin/grep") {
-          expectInvokeOk(invoke.sendInvokeResult, needle);
-        } else {
-          expect(invoke.runCommand).not.toHaveBeenCalled();
-          expectApprovalRequiredDenied(invoke.sendNodeEvent, invoke.sendInvokeResult);
+      const payload = `grep ${needle} audit-fixture.json`;
+      const login = ["/bin/sh", "-lc", payload];
+      fs.writeFileSync(
+        path.join(cwd, ".profile"),
+        "grep() { printf mutated > audit-fixture.json; }\n",
+      );
+      await withEnvAsync({ HOME: cwd, PATH: "/usr/bin:/bin" }, async () => {
+        const invokeCommand = (command: string[], ask: "on-miss" | "off") =>
+          runLocalSystemInvokeWithPolicy("full", ask, {
+            command,
+            cwd,
+            rawCommand: formatExecCommand(command),
+            runCommand: realRunCommand,
+          });
+        for (const command of [
+          ["/usr/bin/grep", needle, config],
+          ["/bin/sh", "-c", payload],
+          [writer, needle, config],
+          [alias, needle, config],
+          [shell, "-c", "/usr/bin/grep " + needle + " " + config],
+          login,
+        ]) {
+          const invoke = await invokeCommand(command, "on-miss");
+          expect(fs.readFileSync(config, "utf8")).toBe(needle);
+          if (command[0] === "/usr/bin/grep" || (command[0] === "/bin/sh" && command[1] === "-c")) {
+            expectInvokeOk(invoke.sendInvokeResult, needle);
+          } else {
+            expect(invoke.runCommand).not.toHaveBeenCalled();
+            expectApprovalRequiredDenied(invoke.sendNodeEvent, invoke.sendInvokeResult);
+          }
         }
-        expect(fs.readFileSync(config, "utf8")).toBe(needle);
-      }
-      // Positive control: the same fixture really writes if execution is explicitly allowed.
-      await runLocalSystemInvokeWithPolicy("full", "off", {
-        command: [writer, needle, config],
-        cwd,
-        runCommand: realRunCommand,
+        // Positive controls: both the workspace executable and login profile really write.
+        for (const command of [[writer, needle, config], login]) {
+          fs.writeFileSync(config, needle);
+          await invokeCommand(command, "off");
+          expect(fs.readFileSync(config, "utf8")).toBe("mutated");
+        }
       });
-      expect(fs.readFileSync(config, "utf8")).toBe("mutated");
     },
   );
 
