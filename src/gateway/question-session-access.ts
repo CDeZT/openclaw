@@ -29,6 +29,7 @@ import {
   QuestionManagerErrorCodes,
   type QuestionObservation,
 } from "./question-manager.js";
+import type { QuestionSessionAccess } from "./question-session-access.types.js";
 import { readGatewayRequestMutationAuthority } from "./server-methods/session-mutation-guards.js";
 import type { GatewayClient, GatewayRequestHandlerOptions } from "./server-methods/types.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
@@ -41,15 +42,6 @@ type QuestionTarget = {
   agentId?: string;
   sessionKey?: string;
   sessionAccess?: QuestionSessionAccess;
-};
-
-/** Original source and database generation survive until the manager retires this entry. */
-export type QuestionSessionAccess = {
-  readonly agentId: string;
-  readonly sessionKey: string;
-  assertSourceCurrent: () => void;
-  assertCurrent: (read: PreparedQuestionSession) => void;
-  release: () => void;
 };
 
 export type PreparedQuestionSession = {
@@ -246,14 +238,14 @@ export async function withPreparedQuestionSessions<T>(
               }
               return sharing;
             };
-            const prepared: PreparedQuestionSession = {
+            const preparedSession: PreparedQuestionSession = {
               target,
               read,
               assertCurrent,
               canAccess: (client, access, narrow, binding = selection.binding) => {
                 try {
                   if (narrow && binding) {
-                    binding.assertCurrent(prepared);
+                    binding.assertCurrent(preparedSession);
                   } else {
                     assertCurrent();
                   }
@@ -305,7 +297,7 @@ export async function withPreparedQuestionSessions<T>(
                 }
               },
             };
-            return prepared;
+            return preparedSession;
           });
           const value = consume(prepared);
           if (isPromiseLike(value)) {
@@ -449,7 +441,7 @@ export async function withQuestionSessionAccess<T>(
   }
 }
 
-export function canAccessSessionQuestion(
+function canAccessSessionQuestion(
   observation: QuestionObservation | null,
   prepared: PreparedQuestionSession | undefined,
   client: GatewayClient | null,

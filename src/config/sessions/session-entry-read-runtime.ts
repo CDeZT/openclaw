@@ -58,7 +58,8 @@ export async function withSessionEntriesFromStoresInWorker<T>(
     try {
       const result = consume(
         reads.map((read) => ({
-          ...read,
+          result: read.result,
+          database: read.database,
           assertCurrent: () => {
             if (!active) {
               throw new Error("Session entry read consumer is no longer active");

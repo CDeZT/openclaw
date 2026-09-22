@@ -34,8 +34,8 @@ import {
   questionNotFound,
   prepareQuestionAuthorization,
   questionBroadcastOptions,
-  type QuestionSessionAccess,
 } from "../question-session-access.js";
+import type { QuestionSessionAccess } from "../question-session-access.types.js";
 import { questionShapeError } from "../question-validation.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { isGatewayAdmin } from "../session-sharing.js";

@@ -1,6 +1,6 @@
 // Gateway broadcast types are shared by websocket fanout helpers and request
 // contexts so event delivery can carry optional state-version hints.
-import type { GatewayClient } from "./server-methods/types.js";
+import type { GatewayClient } from "./server-methods/client-types.js";
 type GatewayBroadcastStateVersion = {
   presence?: number;
   health?: number;

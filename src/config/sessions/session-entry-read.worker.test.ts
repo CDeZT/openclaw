@@ -121,7 +121,7 @@ it("closes worker-prepared authority synchronously before queued consumers can r
     });
     await queued;
     const result = await readSessionEntriesFromStoreInWorker(input);
-    expect(Object.keys(result).sort()).toEqual(["entries", "kind", "lifecycleTimestamps"]);
+    expect(Object.keys(result).toSorted()).toEqual(["entries", "kind", "lifecycleTimestamps"]);
     await expect(withSessionEntriesFromStoresInWorker([input], async () => {})).rejects.toThrow(
       "consumers must remain synchronous",
     );

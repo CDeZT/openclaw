@@ -862,7 +862,7 @@ describe("question gateway methods", () => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         mockReferencedStoreSnapshot();
         const reload = createDeferred<{ warningCount: number }>();
-        const reloadStarted = createDeferred<void>();
+        const reloadStarted = createDeferred();
         reloadSecrets.mockImplementation(() => {
           reloadStarted.resolve();
           return reload.promise;
