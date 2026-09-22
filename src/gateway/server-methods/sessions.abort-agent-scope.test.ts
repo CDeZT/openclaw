@@ -906,7 +906,9 @@ describe("sessions.abort agent scope", () => {
       },
     );
 
-    expect(subscribeSessionMessageEvents).toHaveBeenCalledWith("conn-work", "agent:work:global");
+    expect(subscribeSessionMessageEvents).toHaveBeenCalledWith("conn-work", "agent:work:global", {
+      provisional: true,
+    });
     expect(respond).toHaveBeenCalledWith(true, { subscribed: true, key: "global" }, undefined);
   });
 
@@ -927,7 +929,11 @@ describe("sessions.abort agent scope", () => {
       },
     );
 
-    expect(subscribeSessionMessageEvents).toHaveBeenCalledWith("conn-default", "agent:work:global");
+    expect(subscribeSessionMessageEvents).toHaveBeenCalledWith(
+      "conn-default",
+      "agent:work:global",
+      { provisional: true },
+    );
     expect(respond).toHaveBeenCalledWith(true, { subscribed: true, key: "global" }, undefined);
   });
 
@@ -951,6 +957,7 @@ describe("sessions.abort agent scope", () => {
     expect(subscribeSessionMessageEvents).toHaveBeenCalledWith(
       "conn-work-alias",
       "agent:work:global",
+      { provisional: true },
     );
     expect(respond).toHaveBeenCalledWith(true, { subscribed: true, key: "global" }, undefined);
   });
