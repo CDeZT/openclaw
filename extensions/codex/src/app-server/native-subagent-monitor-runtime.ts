@@ -14,26 +14,13 @@ import type {
   MonitorOptions,
   NativeSubagentMonitorClient,
   NativeSubagentMonitorRuntime,
+  NativeSubagentParentHandle,
+  NativeSubagentParentRegistration,
   ParentState,
-  ParentOwner,
 } from "./native-subagent-monitor-types.js";
 
-type ParentRegistration = Pick<
-  ParentState,
-  | "parentThreadId"
-  | "requesterSessionKey"
-  | "taskRuntimeScope"
-  | "historyOwner"
-  | "agentId"
-  | "submissionStore"
-> &
-  Omit<ParentOwner, "turnId">;
-
 type NativeMonitor = {
-  registerParent(params: ParentRegistration): {
-    bindTurn: (turnId: string) => void;
-    unregister: () => Promise<void>;
-  };
+  registerParent(params: NativeSubagentParentRegistration): NativeSubagentParentHandle;
   retireParent(parentThreadId: string): void;
 };
 
@@ -56,6 +43,7 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
   function registerMonitor(params: {
     client: CodexAppServerClient;
     parentThreadId: string;
+    nativeSessionId?: string;
     requesterSessionKey?: string;
     taskRuntimeScope?: ParentState["taskRuntimeScope"];
     historyOwner?: ParentState["historyOwner"];
@@ -67,7 +55,7 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
     claimDirectChild?: (threadId: string) => (() => void) | undefined;
     rejectPendingDirectChild?: (threadId: string, reason: string) => void;
     onDirectChildAccepted?: () => void;
-  }): { bindTurn: (turnId: string) => void; unregister: () => Promise<void> } {
+  }): NativeSubagentParentHandle {
     let monitor = monitors.get(params.client);
     if (!monitor) {
       // Native start/completion can race; serialize each child so only its
@@ -122,6 +110,10 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
                 params.client,
                 threadId,
                 ownership.release,
+                undefined,
+                undefined,
+                undefined,
+                ownership.nativeSessionId,
               );
               return retained;
             } finally {
@@ -149,6 +141,7 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
     }
     return monitor.registerParent({
       parentThreadId: params.parentThreadId,
+      nativeSessionId: params.nativeSessionId,
       requesterSessionKey: params.requesterSessionKey,
       taskRuntimeScope: params.taskRuntimeScope,
       historyOwner: params.historyOwner,

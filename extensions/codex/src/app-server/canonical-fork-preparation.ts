@@ -29,6 +29,7 @@ import {
   applyCodexNativeSkillIsolation,
   resolveCodexNativeSkillIsolation,
 } from "./native-skill-isolation.js";
+import { CODEX_NATIVE_SUBAGENT_SUBMISSION_HOOK_TOOL } from "./native-subagent-submission.js";
 import { buildCodexPluginAppCacheKey } from "./plugin-app-cache-key.js";
 import {
   buildCodexPluginThreadConfig,
@@ -212,9 +213,15 @@ export async function prepareCanonicalCodexFork(params: {
     }),
     generation,
     preToolUseLoopDetection: appServer.loopDetectionPreToolUseRelay,
+    postToolUseToolNames: [CODEX_NATIVE_SUBAGENT_SUBMISSION_HOOK_TOOL],
   });
   const events = resolveCodexNativeHookRelayEvents({ appServer });
-  if (events.includes("pre_tool_use") && relay.shouldRelayEvent("pre_tool_use")) {
+  if (
+    events.some(
+      (event) =>
+        (event === "pre_tool_use" || event === "post_tool_use") && relay.shouldRelayEvent(event),
+    )
+  ) {
     await assertCodexNativeHookRelayAllowed(context.client);
     assertCurrent();
   }

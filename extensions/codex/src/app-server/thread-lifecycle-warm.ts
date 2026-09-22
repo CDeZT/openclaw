@@ -203,8 +203,31 @@ export async function tryReuseCodexLiveThread(
         binding.pluginAppsFingerprint) === binding.pluginAppsFingerprint
     ) {
       await params.buildFinalConfigPatch?.({ action: "resume", binding });
-      throwIfAborted();
-      return { kind: "ready", binding: { ...binding, lifecycle: { action: "resumed" } } };
+      const assertClient = captureCodexAppServerClientLifetime(params.client, "connection");
+      const assertCurrent = () => {
+        throwIfAborted();
+        params.params.hostCapabilities.assertActive();
+        params.assertCurrent?.();
+        assertClient();
+      };
+      assertCurrent();
+      const { thread } = await params.client.request(
+        "thread/read",
+        { threadId: binding.threadId, includeTurns: false },
+        { signal: params.signal, assertCurrent },
+      );
+      assertCurrent();
+      if (thread.id !== binding.threadId) {
+        throw new Error("Codex returned another thread during live identity read");
+      }
+      return {
+        kind: "ready",
+        binding: {
+          ...binding,
+          nativeSessionId: thread.sessionId?.trim() || undefined,
+          lifecycle: { action: "resumed" },
+        },
+      };
     }
     return { kind: "rotate" };
   }
@@ -420,6 +443,9 @@ export async function tryReuseCodexLiveThread(
             }
           : {}),
         liveThreadConfigFingerprint,
+        nativeSessionId: nativeThread
+          ? nativeThread.sessionId?.trim() || undefined
+          : retainedThread.nativeSessionId,
         liveThreadEphemeralPolicy: retainedThread.ephemeralPolicy,
         liveThreadOwnership: retainedThread,
         ...(!incognito && retainedThread.serviceTier && resumeParams.serviceTier === undefined

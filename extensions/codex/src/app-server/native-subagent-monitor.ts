@@ -1,8 +1,5 @@
 import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
-import type {
-  AgentHarnessTaskRecord,
-  AgentHarnessTaskRuntimeScope,
-} from "openclaw/plugin-sdk/agent-harness-task-runtime";
+import type { AgentHarnessTaskRecord } from "openclaw/plugin-sdk/agent-harness-task-runtime";
 import {
   normalizeOptionalString,
   readStringField as readString,
@@ -20,10 +17,7 @@ import {
   resolveCodexNativeSubagentReceiptOwner,
   restoreCodexNativeSubagentTaskReceipts,
 } from "./native-subagent-delivery-receipts.js";
-import {
-  type CodexNativeSubagentHistoryOwner,
-  readCodexNativeSubagentHistoryOwner,
-} from "./native-subagent-history-owner.js";
+import { readCodexNativeSubagentHistoryOwner } from "./native-subagent-history-owner.js";
 import {
   CodexNativeSubagentHistoryRecovery,
   isNoFinalCompletion,
@@ -43,6 +37,8 @@ import type {
   KnownChild,
   MonitorOptions,
   NativeChildAdmissionEvidence,
+  NativeSubagentParentHandle,
+  NativeSubagentParentRegistration,
   NativeSubagentMonitorClient,
   NativeSubagentMonitorRuntime,
   NativeTurnObservation,
@@ -329,17 +325,7 @@ class Monitor {
     this.childThreadIdsByAgentPath.clear();
   }
 
-  registerParent(params: {
-    parentThreadId: string;
-    requesterSessionKey?: string;
-    taskRuntimeScope?: AgentHarnessTaskRuntimeScope;
-    historyOwner?: CodexNativeSubagentHistoryOwner;
-    submissionStore?: ParentState["submissionStore"];
-    agentId?: string;
-    claimDirectChild?: (threadId: string) => (() => void) | undefined;
-    rejectPendingDirectChild?: (threadId: string, reason: string) => void;
-    onDirectChildAccepted?: () => void;
-  }): { bindTurn: (turnId: string) => void; unregister: () => Promise<void> } {
+  registerParent(params: NativeSubagentParentRegistration): NativeSubagentParentHandle {
     const parentThreadId = params.parentThreadId.trim();
     if (!parentThreadId) {
       throw new Error("Codex native subagent monitor requires a parent thread id");
@@ -394,6 +380,14 @@ class Monitor {
     });
     this.submissions.restore(registeredState);
     return {
+      observeSubmissionAcknowledgement: (receipt, assertCurrent) =>
+        this.submissions.observeHookAcknowledgement(
+          registeredState,
+          receipt,
+          registeredState.owners.get(owner),
+          params.nativeSessionId,
+          assertCurrent,
+        ),
       bindTurn: (turnIdInput) => {
         const turnId = turnIdInput.trim();
         if (!turnId || this.parentStates.get(parentThreadId) !== registeredState) {

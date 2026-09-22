@@ -54,25 +54,30 @@ export async function drainNativeHookRelayWork(params: {
   policyReady: Promise<void>;
   bridge: NativeHookRelayBridgeRegistration;
   readRenewal: () => Promise<void>;
+  readPostToolUseWork: () => Promise<void>;
 }): Promise<void> {
   let renewal: Promise<void>;
+  let postToolUseWork: Promise<void>;
   let failure: { error: unknown } | undefined;
   await params.policyReady.catch((error: unknown) => {
     failure = { error };
   });
   do {
     renewal = params.readRenewal();
-    try {
-      await renewal;
-    } catch (error) {
-      failure ??= { error };
+    postToolUseWork = params.readPostToolUseWork();
+    for (const work of [renewal, postToolUseWork]) {
+      try {
+        await work;
+      } catch (error) {
+        failure ??= { error };
+      }
     }
     try {
       await drainNativeHookRelayBridge(params.bridge);
     } catch (error) {
       failure ??= { error };
     }
-  } while (renewal !== params.readRenewal());
+  } while (renewal !== params.readRenewal() || postToolUseWork !== params.readPostToolUseWork());
   if (failure) {
     throw failure.error;
   }

@@ -347,6 +347,7 @@ export async function resumeExistingCodexThread(
       ...resumeBinding,
       threadId: response.thread.id,
       ...resumePatch,
+      nativeSessionId: response.thread.sessionId?.trim() || undefined,
       liveThreadConfigFingerprint: fingerprintCodexThreadConfig(
         {
           ...resumeParams,
@@ -694,6 +695,7 @@ export async function startFreshCodexThread(
   });
   return {
     ...startedBinding,
+    nativeSessionId: response.thread.sessionId?.trim() || undefined,
     // Stored native-auth bindings omit redundant provider attribution; this
     // turn still reports the provider selected by the native runtime.
     modelProvider:

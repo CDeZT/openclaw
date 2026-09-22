@@ -37,6 +37,7 @@ type ClientRuntime = ThreadOwnershipState & {
 
 export type CodexAppServerLiveThreadOwnership = {
   assertCurrent: () => void;
+  nativeSessionId?: string;
   configFingerprint?: string;
   /** Ephemeral configuration is creation-owned and cannot be refreshed or cold-resumed. */
   ephemeralPolicy?: string;
@@ -430,6 +431,7 @@ export async function retainCodexAppServerLiveThread(
   configFingerprint?: string,
   serviceTier?: CodexServiceTier | null,
   ephemeralPolicy?: string,
+  nativeSessionId?: string,
 ): Promise<boolean> {
   const runtime = configuredClients.get(client);
   if (!runtime || runtime.closed) {
@@ -453,6 +455,7 @@ export async function retainCodexAppServerLiveThread(
   runtime.retainedThreads.delete(threadId);
   const retained: RetainedLiveThread = {
     ownerToken,
+    nativeSessionId,
     configFingerprint,
     ephemeralPolicy,
     serviceTier,
@@ -635,6 +638,7 @@ function claimCodexAppServerThreadOwnership(
   claimedThreadReleaseTokens.set(release, claimed);
   return {
     assertCurrent,
+    nativeSessionId: retained.nativeSessionId,
     configFingerprint: retained.configFingerprint,
     ephemeralPolicy: retained.ephemeralPolicy,
     serviceTier: retained.serviceTier,

@@ -113,6 +113,14 @@ canonical tool record; OpenClaw can mirror selected events but cannot rewrite
 the native thread unless Codex exposes that through app-server or native hook
 callbacks.
 
+Native MAv1 follow-ups through Code Mode use a scoped `PostToolUse` receipt to
+associate accepted input with the existing child and parent turn. When that input
+starts a new native turn, OpenClaw records a separate task and preserves the
+previous result. Steering an active turn does not invent a new assignment.
+Receipt handling uses the native result before observational middleware, checks
+the current parent owner, and joins accepted writes during cleanup. A missing
+hook receipt does not prove that native input was never submitted.
+
 Codex app-server report-mode `PreToolUse` events defer plugin approval to the
 matching app-server approval. If an OpenClaw `before_tool_call` hook returns
 `requireApproval` while the native payload sets `openclaw_approval_mode:

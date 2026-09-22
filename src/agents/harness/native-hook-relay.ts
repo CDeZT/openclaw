@@ -6,6 +6,7 @@ import {
 } from "@openclaw/normalization-core/number-coercion";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { retainBeforeToolCallForNativeHookRelay } from "./host-private-capabilities.js";
 import { formatPermissionApprovalDescription as formatPermissionApprovalDescriptionForTestsImpl } from "./native-hook-relay-approval-presentation.js";
@@ -152,11 +153,13 @@ export function registerNativeHookRelay(
 export function registerOwnedNativeHookRelay(
   params: OwnedNativeHookRelayParams,
 ): OwnedNativeHookRelayRegistrationHandle {
-  const { retention, approvalHost, executionAdmission, ...registrationParams } = params;
+  const { retention, approvalHost, executionAdmission, postToolUse, ...registrationParams } =
+    params;
   return registerNativeHookRelayInternal(registrationParams, {
     retention,
     approvalHost,
     executionAdmission,
+    postToolUse,
   });
 }
 
@@ -166,6 +169,12 @@ function registerNativeHookRelayInternal(
 ): OwnedNativeHookRelayRegistrationHandle {
   const { retention, approvalHost } = owner ?? {};
   const executionAdmission = snapshotNativeHookRelayExecutionAdmission(owner?.executionAdmission);
+  const postToolUse = owner?.postToolUse
+    ? {
+        toolNames: [...new Set(owner.postToolUse.toolNames.map(normalizeNativeHookToolName))],
+        observe: owner.postToolUse.observe,
+      }
+    : undefined;
   pruneExpiredNativeHookRelays();
   pruneNativeHookRelayPermissionAllowAlways();
   const relayId = normalizeRelayKey(params.relayId, "id") ?? randomUUID();
@@ -231,14 +240,17 @@ function registerNativeHookRelayInternal(
       deferMcpToolApprovals = prepared;
     });
     retainNativeHookRelayOperation(relayId, policyReady);
-    setRelayLifetime(registration, {
+    const lifetime: RelayLifetime = {
       foregroundOpen: true,
       foregroundToken: Symbol("native-hook-relay-foreground"),
       policyReady,
       ...(retained ? { retained } : {}),
       ...(retention ? { retention } : {}),
       ...(executionAdmission ? { executionAdmission } : {}),
-    });
+      ...(postToolUse ? { postToolUse } : {}),
+      postToolUseWork: Promise.resolve(),
+    };
+    setRelayLifetime(registration, lifetime);
     if (params.signal) {
       const abort = () => unregisterNativeHookRelay(relayId, registration);
       params.signal.addEventListener("abort", abort, { once: true });
@@ -262,25 +274,31 @@ function registerNativeHookRelayInternal(
         relayId,
         generation,
         executionAdmissionToolNames: executionAdmission?.toolNames,
+        postToolUseToolNames: postToolUse?.toolNames,
       }),
       get deferMcpToolApprovals() {
         return deferMcpToolApprovals;
       },
       ready,
       prepareInvocation: async () => {
-        const lifetime = readRelayLifetime(registration);
-        if (!lifetime) {
+        const currentLifetime = readRelayLifetime(registration);
+        if (!currentLifetime) {
           throw new Error("native hook relay registration is inactive");
         }
-        const foregroundToken = lifetime.foregroundToken;
-        assertNativeHookRelayForegroundCurrent(registration, lifetime, foregroundToken);
+        const foregroundToken = currentLifetime.foregroundToken;
+        assertNativeHookRelayForegroundCurrent(registration, currentLifetime, foregroundToken);
         await policyReady;
         // Only direct transport failure may use the existing Gateway route.
         await bridge.ready.catch(() => undefined);
-        assertNativeHookRelayForegroundCurrent(registration, lifetime, foregroundToken);
+        assertNativeHookRelayForegroundCurrent(registration, currentLifetime, foregroundToken);
       },
       drain: () =>
-        drainNativeHookRelayWork({ policyReady, bridge, readRenewal: () => pendingRenewal }),
+        drainNativeHookRelayWork({
+          policyReady,
+          bridge,
+          readRenewal: () => pendingRenewal,
+          readPostToolUseWork: () => lifetime.postToolUseWork,
+        }),
       renew: (ttlMs) => {
         const current = relays.get(relayId);
         if (current !== registration) {
@@ -486,10 +504,20 @@ export async function invokeNativeHookRelay(
     event,
     rawPayload: params.rawPayload,
   });
+  const lifetime = readRelayLifetime(registration);
+  const postToolUse =
+    event === "post_tool_use" &&
+    lifetime?.postToolUse?.toolNames.includes(normalizeNativeHookToolName(normalized.toolName))
+      ? lifetime.postToolUse
+      : undefined;
+  // History snapshots truncate content; an owner needs the complete result captured before yielding.
+  const postToolUseInvocation = postToolUse
+    ? freezeJsonSnapshot(structuredClone(normalized))
+    : undefined;
   const { registration: effectiveRegistration, assertExecutionAdmissionCurrent } =
     await resolveNativeHookRelayInvocationBinding(
       registration,
-      readRelayLifetime(registration),
+      lifetime,
       event,
       params.rawPayload,
       signal,
@@ -498,6 +526,24 @@ export async function invokeNativeHookRelay(
     effectiveRegistration.assertActive?.();
   }
   recordNativeHookRelayInvocation(normalized);
+  if (postToolUse && postToolUseInvocation && lifetime) {
+    const observation = Promise.resolve().then(() => {
+      effectiveRegistration.assertActive?.();
+      return postToolUse.observe(postToolUseInvocation, assertExecutionAdmissionCurrent);
+    });
+    // A disconnected hook may abandon its wait after the owner has accepted a durable write.
+    lifetime.postToolUseWork = Promise.allSettled([lifetime.postToolUseWork, observation]).then(
+      (results) => {
+        for (const result of results) {
+          if (result.status === "rejected") {
+            throw result.reason;
+          }
+        }
+      },
+    );
+    retainNativeHookRelayOperation(relayId, lifetime.postToolUseWork);
+    await racePromiseWithAbortSignal(observation, signal);
+  }
   const startedAt = Date.now();
   const response = await racePromiseWithAbortSignal(
     processNativeHookRelayInvocation({

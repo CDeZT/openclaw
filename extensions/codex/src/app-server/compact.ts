@@ -23,7 +23,6 @@ import { readCodexNotificationItem } from "./attempt-notifications.js";
 import { resolveCodexBindingAppServerConnection } from "./binding-connection.js";
 import {
   consumeCodexAppServerLiveThread,
-  retainCodexAppServerLiveThread,
   type CodexAppServerLiveThreadOwnership,
 } from "./client-runtime.js";
 import {
@@ -54,6 +53,7 @@ import {
 } from "./shared-client.js";
 import {
   isSameCodexAppServerThreadOwner,
+  retainCodexAppServerBindingSubscription,
   withCodexAppServerThreadMutation,
 } from "./thread-ownership.js";
 import { assertCodexSupervisionThreadLineage } from "./thread-policy.js";
@@ -833,13 +833,10 @@ async function compactCodexNativeThread(
                   if (!isSameCodexAppServerThreadOwner(leasedBinding, binding)) {
                     return false;
                   }
-                  return await retainCodexAppServerLiveThread(
-                    client,
-                    binding.threadId,
-                    ownership.release,
-                    ownership.configFingerprint,
-                    ownership.serviceTier,
-                  );
+                  return await retainCodexAppServerBindingSubscription(client, binding.threadId, {
+                    ...ownership,
+                    ephemeralPolicy: undefined,
+                  });
                 }));
               if (!retained) {
                 await releaseThreadSubscription?.();

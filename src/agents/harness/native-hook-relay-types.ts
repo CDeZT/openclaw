@@ -220,7 +220,7 @@ export type OwnedNativeHookRelayRegistrationHandle = ActiveNativeHookRelayRegist
   ready: Promise<void>;
   /** Requires current foreground authority; direct publication may use the Gateway fallback. */
   prepareInvocation: () => Promise<void>;
-  /** Joins accepted policy, publication, renewal and cleanup without retiring retained children. */
+  /** Joins accepted policy, result observations, publication and cleanup without retiring children. */
   drain: () => Promise<void>;
 };
 
@@ -309,10 +309,21 @@ export type NativeHookRelayExecutionAdmission = Readonly<{
   admit: (invocation: NativeHookRelayInvocation, assertCurrent: () => void) => void;
 }>;
 
+/** Receives an immutable native result before observational middleware transforms it. */
+type NativeHookRelayPostToolUse = Readonly<{
+  toolNames: readonly string[];
+  /** Recheck owner authority before effects; the promise must join all accepted work. */
+  observe: (
+    invocation: Readonly<NativeHookRelayInvocation>,
+    assertCurrent: () => void,
+  ) => void | Promise<void>;
+}>;
+
 export type NativeHookRelayOwnerOptions = {
   retention?: NativeHookRelayRetention;
   approvalHost?: NativeHookRelayRegistration["approvalHost"];
   executionAdmission?: NativeHookRelayExecutionAdmission;
+  postToolUse?: NativeHookRelayPostToolUse;
 };
 
 export type OwnedNativeHookRelayParams = RegisterNativeHookRelayParams &
@@ -325,6 +336,8 @@ export type RelayLifetime = {
   retained?: ReturnType<typeof retainBeforeToolCallForNativeHookRelay>;
   retention?: NativeHookRelayRetention;
   executionAdmission?: NativeHookRelayExecutionAdmission;
+  postToolUse?: NativeHookRelayPostToolUse;
+  postToolUseWork: Promise<void>;
   removeAbortListener?: () => void;
   expiryTimer?: ReturnType<typeof setTimeout>;
 };

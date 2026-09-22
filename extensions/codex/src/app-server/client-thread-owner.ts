@@ -15,6 +15,7 @@ export type ThreadReleaseTransition = {
 
 export type RetainedLiveThread = {
   ownerToken?: ThreadOwnerToken;
+  nativeSessionId?: string;
   configFingerprint?: string;
   ephemeralPolicy?: string;
   serviceTier?: CodexServiceTier | null;

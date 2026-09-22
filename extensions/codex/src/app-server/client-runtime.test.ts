@@ -675,26 +675,38 @@ describe("Codex app-server client runtime", () => {
     ).resolves.toEqual(expect.objectContaining({ release: expect.any(Function) }));
   });
 
-  it("transfers ownership only for the exact immutable thread fingerprint", async () => {
-    const harness = createClientHarness();
-    clients.push(harness.client);
-    ensureCodexAppServerClientRuntime(harness.client, { agentDir: "/tmp/agent" });
+  it.each(["native-session", undefined])(
+    "transfers native identity %s only with the exact immutable thread fingerprint",
+    async (nativeSessionId) => {
+      const harness = createClientHarness();
+      clients.push(harness.client);
+      ensureCodexAppServerClientRuntime(harness.client, { agentDir: "/tmp/agent" });
 
-    await expect(
-      retainCodexAppServerLiveThread(harness.client, "thread-1", undefined, "config-before"),
-    ).resolves.toBe(true);
-    await expect(
-      consumeCodexAppServerLiveThread(harness.client, "thread-1", "config-after"),
-    ).resolves.toBeUndefined();
-    await expect(
-      consumeCodexAppServerLiveThread(harness.client, "thread-1", "config-before"),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        configFingerprint: "config-before",
-        release: expect.any(Function),
-      }),
-    );
-  });
+      await expect(
+        retainCodexAppServerLiveThread(
+          harness.client,
+          "thread-1",
+          undefined,
+          "config-before",
+          undefined,
+          undefined,
+          nativeSessionId,
+        ),
+      ).resolves.toBe(true);
+      await expect(
+        consumeCodexAppServerLiveThread(harness.client, "thread-1", "config-after"),
+      ).resolves.toBeUndefined();
+      await expect(
+        consumeCodexAppServerLiveThread(harness.client, "thread-1", "config-before"),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          configFingerprint: "config-before",
+          nativeSessionId,
+          release: expect.any(Function),
+        }),
+      );
+    },
+  );
 
   it("evicts only the oldest idle subscription at the per-client capacity", async () => {
     const harness = createClientHarness();

@@ -24,6 +24,11 @@ import type { CodexAppServerRuntimeOptions } from "./config.js";
 import { resolveCodexToolAbortTerminalReason } from "./dynamic-tool-execution.js";
 import { nativeHookRelayUnregisterQueue } from "./native-hook-relay-state.js";
 import type { CodexNativeProcessAuthority } from "./native-process-authority.js";
+import {
+  CODEX_NATIVE_SUBAGENT_SUBMISSION_HOOK_TOOL,
+  readCodexNativeSubagentSubmissionAcknowledgement,
+  type CodexNativeSubagentSubmissionAcknowledgement,
+} from "./native-subagent-submission.js";
 import { isJsonObject, type JsonObject, type JsonValue } from "./protocol.js";
 
 /** Codex hook events that can be registered through OpenClaw's native relay. */
@@ -210,6 +215,10 @@ export function createCodexNativeHookRelay(params: {
     client: () => CodexAppServerClient;
   };
   assertCurrent?: () => void;
+  onNativeSubagentSubmission?: (
+    receipt: CodexNativeSubagentSubmissionAcknowledgement,
+    assertCurrent: () => void,
+  ) => Promise<void>;
   onPreToolUseFailure: (failure: CodexNativePreToolUseFailure) => void | Promise<void>;
 }): CodexNativeHookRelay | undefined {
   if (params.options?.enabled === false) {
@@ -268,6 +277,16 @@ export function createCodexNativeHookRelay(params: {
     }),
     signal: params.signal,
     runBeforeToolCall: params.hostCapabilities.runBeforeToolCall,
+    postToolUse: params.onNativeSubagentSubmission
+      ? {
+          toolNames: [CODEX_NATIVE_SUBAGENT_SUBMISSION_HOOK_TOOL],
+          observe: (invocation, assertCurrent) =>
+            params.onNativeSubagentSubmission!(
+              readCodexNativeSubagentSubmissionAcknowledgement(invocation.rawPayload),
+              assertCurrent,
+            ),
+        }
+      : undefined,
     executionAdmission: params.nativeProcessAuthority
       ? {
           toolNames: ["exec"],

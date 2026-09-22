@@ -28,6 +28,8 @@ type CodexAppServerThreadLifecycle = {
 
 export type CodexAppServerThreadLifecycleBinding = CodexAppServerThreadBinding & {
   lifecycle: CodexAppServerThreadLifecycle;
+  /** Native session-tree identity from this live thread; never persisted in the binding. */
+  nativeSessionId?: string;
   liveThreadConfigFingerprint?: string;
   /** Creation-time policy for a live ephemeral thread; never persisted in the binding. */
   liveThreadEphemeralPolicy?: string;

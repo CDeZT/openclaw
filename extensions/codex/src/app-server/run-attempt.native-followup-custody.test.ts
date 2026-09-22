@@ -22,11 +22,13 @@ import {
   createParams,
   createCodexRuntimePlanFixture,
   createStartedThreadHarness,
+  extractGenerationFromThreadRequest,
   extractRelayIdFromThreadRequest,
   runCodexAppServerAttempt,
   setCodexTestModelSupportsTools,
   setupRunAttemptTestHooks,
   tempDir,
+  threadStartResult,
 } from "./run-attempt-test-harness.js";
 import { attachSqliteSessionTarget } from "./sqlite-session.test-helpers.js";
 
@@ -45,15 +47,20 @@ describe("native follow-up custody through the registered attempt", () => {
     "v2-queue-only",
     "opaque-steer",
     "wait-before-admission",
+    "code-mode-hook",
   ] as const)("preserves accepted follow-up through sessions_yield (%s)", async (scenario) => {
-    const childThreadId = `custody-${scenario}`;
+    const usesNativeHook = scenario === "code-mode-hook";
+    const childThreadId = usesNativeHook
+      ? "550e8400-e29b-41d4-a716-446655440000"
+      : `custody-${scenario}`;
     const runA = `codex-thread:${childThreadId}`;
     const turnB = `${childThreadId}-turn-b`;
     const runB = `${runA}:turn:${turnB}`;
     const accepted =
       scenario === "observed-success" ||
       scenario === "delayed-success" ||
-      scenario === "wait-before-admission";
+      scenario === "wait-before-admission" ||
+      usesNativeHook;
     const waiterThreadId = `${childThreadId}-waiter`;
     const waiterRunId = `codex-thread:${waiterThreadId}`;
     const executionEvents: Array<Parameters<Parameters<typeof onAgentEvent>[0]>[0]> = [];
@@ -66,6 +73,10 @@ describe("native follow-up custody through the registered attempt", () => {
     const turnStarted = createDeferred<void>();
     const allowTurnStart = createDeferred<void>();
     const harness = createStartedThreadHarness(async (method) => {
+      if (method === "thread/start") {
+        const response = threadStartResult();
+        return { ...response, thread: { ...response.thread, sessionId: "native-root-session" } };
+      }
       if (method === "turn/start") {
         turnStarted.resolve();
         await allowTurnStart.promise;
@@ -116,7 +127,7 @@ describe("native follow-up custody through the registered attempt", () => {
     const parentItem = (item: JsonObject, method = "item/completed") =>
       notify(method, { threadId: "thread-1", turnId: "turn-1", item });
     const run = runCodexAppServerAttempt(params, {
-      nativeHookRelay: { enabled: true, events: ["pre_tool_use"] },
+      nativeHookRelay: { enabled: true, events: ["pre_tool_use", "post_tool_use"] },
     });
     let relayId: string | undefined;
     try {
@@ -125,9 +136,8 @@ describe("native follow-up custody through the registered attempt", () => {
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
       });
-      relayId = extractRelayIdFromThreadRequest(
-        harness.requests.find((request) => request.method === "thread/start")?.params,
-      );
+      const threadRequest = harness.requests.find((request) => request.method === "thread/start");
+      relayId = extractRelayIdFromThreadRequest(threadRequest?.params);
       await notify("thread/started", {
         thread: {
           id: childThreadId,
@@ -199,7 +209,11 @@ describe("native follow-up custody through the registered attempt", () => {
         threadId: waiterThreadId,
         turn: { id: "waiter-turn", status: "inProgress", items: [], error: null },
       });
-      if (scenario === "observed-success" || scenario === "wait-before-admission") {
+      if (
+        scenario === "observed-success" ||
+        scenario === "wait-before-admission" ||
+        usesNativeHook
+      ) {
         await childStart();
       }
       if (scenario === "wait-before-admission") {
@@ -236,7 +250,39 @@ describe("native follow-up custody through the registered attempt", () => {
       );
       // Pinned V1 emits its activity item before applying result?. Only this successful
       // function result certifies submission; completed-only and failure are controls.
-      if (scenario !== "completed-only") {
+      if (usesNativeHook) {
+        await parentItem(
+          {
+            type: "custom_tool_call_output",
+            call_id: "outer-code-mode-call",
+            output: [{ type: "input_text", text: JSON.stringify({ submission_id: turnB }) }],
+          },
+          "rawResponseItem/completed",
+        );
+        expect(taskRuntime.listTaskRecords().find((task) => task.runId === runB)).toBeUndefined();
+        await invokeNativeHookRelay({
+          provider: "codex",
+          relayId,
+          generation: extractGenerationFromThreadRequest(threadRequest?.params),
+          requireGeneration: true,
+          event: "post_tool_use",
+          rawPayload: {
+            session_id: "native-root-session",
+            turn_id: "turn-1",
+            hook_event_name: "PostToolUse",
+            tool_name: "multi_agent_v1send_input",
+            tool_use_id: "submit-b",
+            tool_input: {
+              target: childThreadId.replaceAll("-", "").toUpperCase(),
+              message: "Follow-up B",
+            },
+            tool_response: JSON.stringify({ submission_id: turnB }),
+          },
+        });
+        expect(taskRuntime.listTaskRecords().find((task) => task.runId === runB)).toMatchObject({
+          status: "running",
+        });
+      } else if (scenario !== "completed-only") {
         await parentItem(
           {
             type: "function_call_output",

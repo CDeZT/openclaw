@@ -409,6 +409,7 @@ export async function materializePendingSupervisionBranch(
       ...params.binding,
       ...params.bindingPatch,
       threadId: finalThreadId,
+      nativeSessionId: startResponse.thread.sessionId?.trim() || undefined,
       pendingSupervisionBranch: undefined,
       model: nativeModel,
       modelProvider: bindingModelProvider,

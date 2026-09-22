@@ -305,6 +305,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     state.nativeSubagentMonitor = codexNativeSubagentMonitorRuntime.register({
       client: state.client,
       parentThreadId,
+      nativeSessionId: state.thread.nativeSessionId,
       requesterSessionKey: params.sessionKey,
       taskRuntimeScope: params.agentHarnessTaskRuntimeScope,
       historyOwner,
@@ -374,6 +375,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
           ? connection.mutable.pluginAppServer.serviceTier
           : thread.liveThreadOwnership?.serviceTier,
         ephemeralPolicy: thread.liveThreadEphemeralPolicy,
+        nativeSessionId: thread.nativeSessionId,
       });
     });
     if (retained) {
@@ -518,6 +520,15 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
         ? { owner: nativeProcessAuthority, client: () => state.client }
         : undefined,
       assertCurrent: connection.assertCurrent,
+      onNativeSubagentSubmission: runtime.nativeToolSurfaceEnabled
+        ? async (receipt, assertCurrent) => {
+            const monitor = state.nativeSubagentMonitor;
+            if (!monitor) {
+              throw new Error("Native submission monitor is unavailable.");
+            }
+            await monitor.observeSubmissionAcknowledgement(receipt, assertCurrent);
+          }
+        : undefined,
       onPreToolUseFailure: (failure) => {
         const projector = projectorRef.current;
         if (projector) {

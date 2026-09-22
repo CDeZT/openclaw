@@ -81,6 +81,7 @@ export async function retainCodexAppServerBindingSubscription(
     ownership?.configFingerprint,
     ownership?.serviceTier,
     ownership?.ephemeralPolicy,
+    ownership?.nativeSessionId,
   );
 }
 
