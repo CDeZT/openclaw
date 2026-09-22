@@ -126,7 +126,7 @@ export async function createSessionEntryWithTranscript<TError = string>(
     ...(withCommit ? { withCommit } : {}),
     ...(ownerAssignment
       ? {
-          afterUpsertsInTransaction: (database) => {
+          afterFreshUpsertsInTransaction: (database) => {
             if (!replaceSessionOwnerInTransaction(database, normalizedKey, ownerAssignment)) {
               throw new Error(`Session owner assignment lost its target: ${normalizedKey}`);
             }
