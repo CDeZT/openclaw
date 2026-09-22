@@ -5,13 +5,19 @@ import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import { clampText } from "../../../lib/format.ts";
 
-export function renderChatErrorNotice(
-  error: string,
-  action: TemplateResult | typeof nothing = nothing,
+export function renderChatErrorNotice({
+  error,
+  action = nothing,
   displayError = formatWebUiIconErrorText(error),
-  runId?: string,
+  runId,
   historical = false,
-) {
+}: {
+  error: string;
+  action?: TemplateResult | typeof nothing;
+  displayError?: string;
+  runId?: string;
+  historical?: boolean;
+}) {
   const lines = displayError
     .trim()
     .split(/\r?\n/u)

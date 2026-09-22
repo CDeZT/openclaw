@@ -12,7 +12,6 @@ import { toSanitizedMarkdownHtml } from "../../../components/markdown.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerChatMessageMetadataEnglish } from "../../../i18n/locales/en-chat-message-metadata.ts";
 import type { BoardProvider } from "../../../lib/board/provider.ts";
-import { redactToolDetail } from "../../../lib/browser-redact.ts";
 import type { MessageContentItem, ToolCard } from "../../../lib/chat/chat-types.ts";
 import { resolveMessageDisplayMarkdown } from "../../../lib/chat/message-display.ts";
 import "../../../components/person-reference.ts";
@@ -227,6 +226,16 @@ export function renderGroupedMessage(
   if (workspaceConflict) {
     return renderWorkspaceConflictTranscriptMessage(workspaceConflict, messageKey, opts.entryId);
   }
+  const duplicateCount = Math.max(1, Math.floor(opts.duplicateCount ?? 1));
+  const duplicateBadge =
+    duplicateCount > 1
+      ? html`<div
+          class="chat-duplicate-count"
+          aria-label=${t("chat.messages.duplicatesCollapsed", { count: String(duplicateCount) })}
+        >
+          ×${duplicateCount}
+        </div>`
+      : nothing;
   if (sourceRole === "custom" && m.customType === RUN_FAILED_BEFORE_REPLY_TRANSCRIPT_TYPE) {
     return html`<div
       class="chat-bubble"
@@ -235,13 +244,12 @@ export function renderGroupedMessage(
       data-message-text=${displayMarkdown || nothing}
       .messageActions=${opts.messageActions}
     >
-      ${renderChatErrorNotice(
-        redactToolDetail(displayMarkdown, { preservePaths: true }),
-        nothing,
-        undefined,
-        readSessionMessageIdentity(message)?.runId ?? undefined,
-        true,
-      )}
+      ${renderChatErrorNotice({
+        error: displayMarkdown,
+        runId: readSessionMessageIdentity(message)?.runId ?? undefined,
+        historical: true,
+      })}
+      ${duplicateBadge}
     </div>`;
   }
   const isToolShell = normalizedRole === "tool";
@@ -454,7 +462,6 @@ export function renderGroupedMessage(
         )}`
       : nothing;
 
-  const duplicateCount = Math.max(1, Math.floor(opts.duplicateCount ?? 1));
   const duplicateSuffix =
     duplicateCount > 1
       ? {
@@ -678,18 +685,7 @@ export function renderGroupedMessage(
               )
             : renderBody()
       }
-      ${
-        duplicateCount > 1 && (!markdown || jsonResult)
-          ? html`<div
-              class="chat-duplicate-count"
-              aria-label=${t("chat.messages.duplicatesCollapsed", {
-                count: String(duplicateCount),
-              })}
-            >
-              ×${duplicateCount}
-            </div>`
-          : nothing
-      }
+      ${!markdown || jsonResult ? duplicateBadge : nothing}
     </div>
     ${renderMessageWorkContext(message)}
   `;

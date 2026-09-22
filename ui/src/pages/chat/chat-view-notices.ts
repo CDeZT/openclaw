@@ -92,7 +92,7 @@ export function renderChatTopbarNotices(props: ChatViewNoticesProps) {
   return html`
     <div class="chat-topbar-notices">
       ${renderDiskSpaceNotice(props.diskSpace)}
-      ${props.error ? renderChatErrorNotice(props.error, dismiss) : nothing}
+      ${props.error ? renderChatErrorNotice({ error: props.error, action: dismiss }) : nothing}
       ${
         props.focusMode && props.onToggleFocusMode
           ? html`
@@ -129,7 +129,11 @@ export function renderChatComposerNotices(props: ChatComposerNoticesProps) {
     ${renderProviderPolicyNotice(props.providerPolicyNotice)}
     ${
       props.runError
-        ? renderChatErrorNotice(props.runError.summary, refresh, undefined, props.runError.runId)
+        ? renderChatErrorNotice({
+            error: props.runError.summary,
+            action: refresh,
+            runId: props.runError.runId,
+          })
         : nothing
     }
     ${renderWorkspaceConflictNotice({
@@ -207,5 +211,5 @@ function renderPlacementStartupError(
           ${t(checking ? "chat.queue.checkDelivery" : "common.retry")}
         </button>`
       : nothing;
-  return renderChatErrorNotice(error, action, displayError);
+  return renderChatErrorNotice({ error, action, displayError });
 }

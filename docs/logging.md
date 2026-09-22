@@ -59,16 +59,25 @@ You can override the path in `~/.openclaw/openclaw.json`:
 
 ### Find a failed turn by run ID
 
-When chat setup or dispatch throws, the Gateway records an error-level
-`chat.send setup failed` or `chat.send dispatch failed` log entry. Its `runId`
-matches the turn's diagnostic reference. This is a run correlation ID, separate
-from an OpenTelemetry trace ID.
+Caught chat setup and dispatch exceptions produce error-level
+`chat.send setup failed` and `chat.send dispatch failed` records. The agent
+runner also records `agent run failed` when it settles a failure through its
+normal error-reply path, including sandbox provisioning failures.
+These records carry the turn's `runId`, which matches its diagnostic reference.
+This is a run correlation ID, separate from an OpenTelemetry trace ID.
 
 The `diagnostic` field contains a redacted snapshot of the caught error,
-including its stack, causes, and aggregate errors when available. The snapshot
-is limited to 100,000 characters after redaction; `diagnosticTruncated: true`
-indicates clipping. Upstream services may already have shortened an error before
-it reaches the Gateway, so the record cannot always recover the original stack.
+including readable native stacks, causes, and aggregate errors. Graph traversal
+is bounded, and custom stack getters are skipped. Native stacks appear before
+other error metadata; the serialized snapshot is limited to 100,000 characters
+after redaction. `diagnosticTruncated: true` indicates this final text clipping,
+so a clipped snapshot is text rather than a complete JSON object. This flag does
+not describe graph limits or upstream truncation. Upstream services may already
+have shortened an error, and logging cannot recover details they discarded.
+These records cover caught setup/dispatch failures and terminal execution
+failures handled by the runner; they do not guarantee a diagnostic for every
+cancellation, retry attempt, or failure reported only as a returned string.
+
 The conversation retains up to 10,000 characters of its redacted user-facing
 explanation, preserving line breaks. **Details** expands this bounded text and
 shows the run ID; **Copy error** and **Copy run ID** copy them separately. An
