@@ -58,7 +58,15 @@ import type { OpenClawAgentDatabaseRegistryReadResult } from "./openclaw-agent-d
 import type { ConfigMachineState } from "./openclaw-state-db.generated.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 import type { OpenClawStateWorkerErrorPayload } from "./openclaw-state-worker-error.js";
-import type { ProfileDisplayRow } from "./user-profiles.types.js";
+import type {
+  UserChannelIdentity,
+  UserChannelIdentityLink,
+  UserChannelIdentityAuthorityFacts,
+  UserChannelIdentityResult,
+  CachedGitHubIdentity,
+  UserProfileDisplay,
+  ProfileDisplayRow,
+} from "./user-profiles.types.js";
 
 export type OpenClawStateReadLocation = {
   context: OpenClawStateWorkerContext;
@@ -105,6 +113,10 @@ export type OpenClawStateReadCommand =
   | { type: "workerEnvironments.pruneCandidates"; input: WorkerEnvironmentPruneReadInput }
   | { type: "onboardingRecommendations.read"; configKey: string }
   | { type: "userProfiles.reconcile"; profileId: string }
+  | { type: "userProfiles.channelIdentity.list"; profileId: string }
+  | { type: "userProfiles.channelIdentity.resolve"; identity: UserChannelIdentity }
+  | { type: "userProfiles.authority.resolve"; profileId: string }
+  | { type: "userProfiles.githubIdentity.cached"; accountId: number; email: string }
   | { type: "userProfiles.email.resolve"; email: string }
   | { type: "audit.run.inspect"; input: ExecutionIdentityInspectionQuery }
   | { type: "updateRuns.get"; runId: string }
@@ -218,6 +230,37 @@ export type OpenClawStateReadReply = (
       type: "userProfiles.reconcile";
       sourceAdmitted: true;
       profile: ProfileDisplayRow | undefined;
+    }
+  | {
+      ok: true;
+      type: "userProfiles.channelIdentity.list";
+      sourceAdmitted: true;
+      result: UserChannelIdentityResult<UserChannelIdentityLink[]>;
+    }
+  | {
+      ok: true;
+      type: "userProfiles.channelIdentity.resolve";
+      sourceAdmitted: true;
+      linked: UserChannelIdentityAuthorityFacts | undefined;
+    }
+  | {
+      ok: true;
+      type: "userProfiles.authority.resolve";
+      sourceAdmitted: true;
+      profile:
+        | {
+            profileId: string;
+            role: string | null;
+            aliases: string[];
+            display: UserProfileDisplay;
+          }
+        | undefined;
+    }
+  | {
+      ok: true;
+      type: "userProfiles.githubIdentity.cached";
+      sourceAdmitted: true;
+      identity: CachedGitHubIdentity | undefined;
     }
   | {
       ok: true;
