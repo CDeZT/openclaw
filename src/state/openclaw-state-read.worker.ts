@@ -32,7 +32,11 @@ import { inspectCurrentConversationBindingRecordInDatabase } from "../infra/outb
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
-import { readUpdateRunRecord, readUpdateRuns } from "../infra/update-run-read.kernel.js";
+import {
+  readInterruptedUpdateCandidate,
+  readUpdateRunRecord,
+  readUpdateRuns,
+} from "../infra/update-run-read.kernel.js";
 import { serveOwnedWorkerTasks } from "../infra/worker-task-server.js";
 import {
   pluginBlobLookupInDatabase,
@@ -155,6 +159,7 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
       (input.command.type === "workspace.snapshot" &&
         typeof input.command.workspaceDir === "string") ||
       (input.command.type === "updateRuns.get" && typeof input.command.runId === "string") ||
+      input.command.type === "updateRuns.interruptedCandidate" ||
       (input.command.type === "updateRuns.list" &&
         isRecord(input.command.input) &&
         (input.command.input.limit === undefined ||
@@ -346,6 +351,14 @@ serveOwnedWorkerTasks(
                     type: command.type,
                     sourceAdmitted,
                     runs: readUpdateRuns(db, command.input),
+                  };
+                }
+                if (command.type === "updateRuns.interruptedCandidate") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    run: readInterruptedUpdateCandidate(db),
                   };
                 }
                 if (command.type === "exec-approvals.read") {

@@ -47,6 +47,7 @@ export function resolveChatMetadataReadParams(
     }
   };
   if (params.sessionKey) {
+    const sessionKey = params.sessionKey;
     const requested = resolveRequestedSessionAgentId(
       cfg,
       params.sessionKey,
@@ -60,19 +61,17 @@ export function resolveChatMetadataReadParams(
     const requesterProfileId = resolveAuthenticatedProfileId(client);
     const session = retainGatewaySessionEntryReadOnly(params.sessionKey, requested.agentId);
     const isCurrent = () => isRequestCurrent() && session.isCurrent();
-    const assertReadAuthorized = () => {
+    const assertVisible = () => {
+      const visible = createSessionListEntryFilter({ client, cfg: context.getRuntimeConfig() });
       if (
         session.entry &&
-        createSessionListEntryFilter({ cfg, client })?.(session.canonicalKey, session.entry) ===
-          false
+        visible?.(session.legacyKey ?? session.canonicalKey, session.entry) === false
       ) {
-        throw new SessionMutationAuthorizationChangedError(
-          hiddenSessionNotFound(session.canonicalKey),
-        );
+        throw new SessionMutationAuthorizationChangedError(hiddenSessionNotFound(sessionKey));
       }
     };
     try {
-      assertReadAuthorized();
+      assertVisible();
       return {
         agentId: resolveSessionAgentId({
           sessionKey: params.sessionKey,
@@ -84,13 +83,13 @@ export function resolveChatMetadataReadParams(
         sessionEntry: session.entry,
         isCurrent,
         assertCurrent: () => {
+          assertVisible();
           assertRequestCurrent();
           if (!session.isCurrentAtResponse()) {
             throw new PreparedModelRuntimePublicationSupersededError(
               "Session changed while preparing its metadata. Retry the request.",
             );
           }
-          assertReadAuthorized();
         },
         release: session.release,
         requesterProfileId,

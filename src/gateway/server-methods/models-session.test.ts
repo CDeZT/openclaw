@@ -150,6 +150,41 @@ const isolated = {
 } as const;
 
 describe("direct session model catalogs", () => {
+  it.each(["missing", "foreign"] as const)(
+    "rejects a saved session with %s ownership before catalog I/O",
+    async (ownership) => {
+      await withOpenClawTestState(isolated, async (state) => {
+        const f = fixture();
+        await state.writeConfig(f.config);
+        const sessionKey = "agent:main:hidden-catalog";
+        await upsertSessionEntryCore(
+          { agentId: "main", sessionKey },
+          {
+            sessionId: "hidden-catalog-session",
+            updatedAt: 1,
+            ...(ownership === "foreign"
+              ? {
+                  createdActor: {
+                    type: "human" as const,
+                    source: "profile" as const,
+                    id: ensureProfileForEmail("hidden-catalog-owner@example.test").id,
+                  },
+                }
+              : {}),
+          },
+        );
+        const respond = await f.request({ sessionKey, view: "configured" });
+        expect(respond).toHaveBeenCalledExactlyOnceWith(false, undefined, {
+          code: "INVALID_REQUEST",
+          message: `Session "${sessionKey}" was not found.`,
+        });
+        expect(f.readPrepared).not.toHaveBeenCalled();
+        expect(f.loadDeferred).not.toHaveBeenCalled();
+        expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
+      });
+    },
+  );
+
   it("keeps a scoped models.list result across only a committed read acknowledgment", async () => {
     await withOpenClawTestState(isolated, async (state) => {
       const f = fixture();

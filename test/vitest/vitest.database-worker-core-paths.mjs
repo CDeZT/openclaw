@@ -29,6 +29,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/bash-tools.process.finished-retention.test.ts",
   "src/agents/bash-tools.test.ts",
   "src/agents/code-mode.bridge.host-denial.test.ts",
+  "src/agents/command/session-store.test.ts",
   "src/agents/core-coding-tools.exec-workdir.test.ts",
   "src/agents/sessions/agent-session-tool-result-redaction.test.ts",
   "src/agents/subagents/registry/subagent-registry-sweeper-recovery.test.ts",
