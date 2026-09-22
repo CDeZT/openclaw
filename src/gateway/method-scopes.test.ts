@@ -911,20 +911,34 @@ describe("operator scope authorization", () => {
   });
 
   it.each([
-    "question.request",
-    "question.waitAnswer",
-    "question.resolve",
-    "question.get",
-    "question.list",
-  ])("requires questions scope for %s", (method) => {
-    expect(authorizeOperatorScopesForMethod(method, ["operator.write"])).toEqual({
-      allowed: false,
-      missingScope: "operator.questions",
-    });
-    expect(authorizeOperatorScopesForMethod(method, ["operator.questions"])).toEqual({
-      allowed: true,
-    });
-  });
+    ["question.request", "operator.sessions.write"],
+    ["question.waitAnswer", "operator.sessions.read"],
+    ["question.resolve", "operator.sessions.write"],
+    ["question.get", "operator.sessions.read"],
+    ["question.list", "operator.sessions.read"],
+  ] as const)(
+    "preserves broad or session-scoped question admission for %s",
+    (method, sessionScope) => {
+      expect(authorizeOperatorScopesForMethod(method, ["operator.write"])).toEqual({
+        allowed: true,
+        sessionScope,
+      });
+      expect(authorizeOperatorScopesForMethod(method, ["operator.read"])).toEqual(
+        sessionScope === "operator.sessions.read"
+          ? { allowed: true, sessionScope }
+          : { allowed: false, missingScope: "operator.questions" },
+      );
+      for (const scope of ["operator.questions", "operator.admin"]) {
+        expect(authorizeOperatorScopesForMethod(method, [scope])).toEqual({ allowed: true });
+      }
+      for (const scopes of [[], ["operator.approvals"]]) {
+        expect(authorizeOperatorScopesForMethod(method, scopes)).toEqual({
+          allowed: false,
+          missingScope: "operator.questions",
+        });
+      }
+    },
+  );
 
   it.each([
     "users.setRole",
