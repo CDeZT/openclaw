@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Question, QuestionAnswers } from "../../packages/gateway-protocol/src/index.js";
+import {
+  getActiveGatewayRootWorkCount,
+  resetGatewayWorkAdmission,
+  tryBeginGatewayRootWorkAdmission,
+  tryBeginGatewaySuspendAdmission,
+} from "../process/gateway-work-admission.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import {
   QuestionManager,
   QuestionManagerError,
@@ -85,7 +92,8 @@ describe("QuestionManager", () => {
       const sessionAccess = {
         agentId: "main",
         sessionKey: "agent:main:own",
-        canAccess: () => true,
+        assertSourceCurrent: () => {},
+        assertCurrent: () => {},
         release,
       };
       let requesterActive = true;
@@ -327,6 +335,47 @@ describe("QuestionManager", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("preserves a replacement created by a retired entry's reset callback", async () => {
+    const replacementRelease = vi.fn();
+    const replacementWaitRelease = vi.fn();
+    const release = vi.fn(() => {
+      manager.request({
+        id: "reentrant-reset",
+        questions,
+        timeoutMs: 10_000,
+        sessionAccess: {
+          agentId: "main",
+          sessionKey: "agent:main:own",
+          assertSourceCurrent: () => {},
+          assertCurrent: () => {},
+          release: replacementRelease,
+        },
+        registerHumanInputWait: () => replacementWaitRelease,
+      });
+    });
+    const original = manager.request({
+      id: "reentrant-reset",
+      questions,
+      timeoutMs: 10_000,
+      registerHumanInputWait: () => release,
+    });
+    const observation = manager.observe(original.id)!;
+    const waiting = manager.waitAnswer(original.id);
+    manager.reset();
+    await expect(waiting).resolves.toEqual({ status: "pending" });
+    expect(release).toHaveBeenCalledExactlyOnceWith(false);
+    expect(observation.isCurrent()).toBe(false);
+    expect(manager.get(original.id)).toMatchObject({ id: original.id, status: "pending" });
+    expect(manager.get(original.id)).not.toBe(original);
+    expect(replacementRelease).not.toHaveBeenCalled();
+    expect(replacementWaitRelease).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1);
+    manager.close();
+    expect(replacementRelease).toHaveBeenCalledOnce();
+    expect(replacementWaitRelease).toHaveBeenCalledExactlyOnceWith(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("does not recreate a retention timer when resolution closes the manager reentrantly", () => {
     const record = manager.request({
       questions,
@@ -531,3 +580,124 @@ describe("answer canonicalization", () => {
     localManager.close();
   });
 });
+
+it.each(["fulfilled", "rejected"] as const)(
+  "joins %s terminal publication on the original root while admission and the owner close",
+  async (outcome) => {
+    resetGatewayWorkAdmission();
+    const failure = vi.fn();
+    manager = new QuestionManager(failure);
+    const parent = tryBeginGatewayRootWorkAdmission("question-publication");
+    expect(parent).not.toBeNull();
+    const gate = createDeferredCore();
+    const entered = vi.fn();
+    const releaseWait = vi.fn(() => parent!.release());
+    let id = "";
+    await parent!.run(async () => {
+      id = manager.request({
+        questions,
+        timeoutMs: 10_000,
+        registerHumanInputWait: () => releaseWait,
+        onResolved: async () => {
+          entered();
+          expect(getActiveGatewayRootWorkCount()).toBe(1);
+          await gate.promise;
+          if (outcome === "rejected") {
+            throw new Error("private fixture failure");
+          }
+        },
+      }).id;
+    });
+    const suspension = tryBeginGatewaySuspendAdmission(() => {});
+    expect(suspension?.commit()).toBe(true);
+    const waiting = manager.waitAnswer(id);
+    manager.resolve(id, answers);
+    expect(entered).toHaveBeenCalledOnce();
+    expect(releaseWait).toHaveBeenCalledWith(true);
+    expect(await waiting).toEqual({ status: "answered", answers });
+    manager.close();
+    let drained = false;
+    const closing = manager.drain().then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    expect(getActiveGatewayRootWorkCount()).toBe(1);
+    try {
+      gate.resolve();
+      await closing;
+      expect(failure).toHaveBeenCalledTimes(outcome === "rejected" ? 1 : 0);
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
+    } finally {
+      gate.resolve();
+      await closing;
+      parent!.release();
+      suspension?.release();
+      resetGatewayWorkAdmission();
+    }
+  },
+);
+
+it.each(["answered", "cancelled", "expired"] as const)(
+  "settles local %s waiters when reset retired the original publication root",
+  async (status) => {
+    resetGatewayWorkAdmission();
+    const failure = vi.fn();
+    manager = new QuestionManager(failure);
+    const parent = tryBeginGatewayRootWorkAdmission("question-reset-publication");
+    expect(parent).not.toBeNull();
+    const releaseWait = vi.fn(() => parent!.release());
+    const releaseSession = vi.fn();
+    const onResolved = vi.fn();
+    let id = "";
+    await parent!.run(async () => {
+      id = manager.request({
+        questions,
+        timeoutMs: 1_000,
+        registerHumanInputWait: () => releaseWait,
+        onResolved,
+        sessionAccess: {
+          agentId: "main",
+          sessionKey: "agent:main:own",
+          assertSourceCurrent: () => {},
+          assertCurrent: () => {},
+          release: releaseSession,
+        },
+      }).id;
+    });
+    const settled = vi.fn();
+    const waiting = manager.waitAnswer(id).then(settled);
+    try {
+      resetGatewayWorkAdmission();
+      if (status === "answered") {
+        expect(manager.resolve(id, answers)).toEqual({ status, answers });
+      } else if (status === "cancelled") {
+        expect(manager.cancel(id)).toEqual({ status });
+      } else {
+        vi.setSystemTime(2_001);
+        expect(manager.get(id)?.status).toBe(status);
+      }
+      await manager.drain();
+      expect(settled).toHaveBeenCalledExactlyOnceWith({
+        status,
+        ...(status === "answered" ? { answers } : {}),
+      });
+      expect(releaseWait).toHaveBeenCalledExactlyOnceWith(true);
+      expect(onResolved).not.toHaveBeenCalled();
+      expect(failure).toHaveBeenCalledOnce();
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
+      expect(manager.get(id)?.status).toBe(status);
+      expect(releaseSession).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(QUESTION_RESOLVED_ENTRY_GRACE_MS);
+      expect(manager.get(id)).toBeNull();
+      expect(releaseSession).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      manager.close();
+      await manager.drain();
+      await waiting;
+      parent!.release();
+      resetGatewayWorkAdmission();
+    }
+  },
+);

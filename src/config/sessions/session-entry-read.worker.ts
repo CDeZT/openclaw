@@ -1,6 +1,10 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { withSqlitePostCommitPublications } from "../../infra/sqlite-post-commit.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import {
+  isOpenClawAgentDatabasePathCurrent,
+  readOpenClawAgentDatabaseIdentity,
+} from "../../state/openclaw-agent-db-identity.js";
 import { SessionMetadataUnavailableError } from "../../state/openclaw-agent-db-read-error.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import { resolveSessionLifecycleTimestamps } from "./lifecycle.js";
@@ -8,6 +12,7 @@ import { readExactSessionEntryCandidatesInDatabase } from "./session-accessor.sq
 import { readTranscriptHeaderFromDatabase } from "./session-accessor.sqlite-read.js";
 import { readSessionBackingFactsInDatabase } from "./session-backing-facts.js";
 import { assertCanonicalSqliteSessionKeysCurrent } from "./session-canonical-key.js";
+import { listSessionMembersInDatabase } from "./session-sharing-store.kernel.js";
 import type {
   SessionExactEntriesWorkerInput,
   SessionExactEntriesWorkerResult,
@@ -46,7 +51,30 @@ export function readExactSessionEntriesWithLifecycle(
               const entry = selected.value.find(
                 ({ sessionKey }) => sessionKey === request.lifecycleSessionKey,
               )?.entry;
+              const identity = request.includeAuthorization
+                ? readOpenClawAgentDatabaseIdentity(database)
+                : undefined;
+              if (
+                identity &&
+                (typeof identity.identity !== "string" ||
+                  !isOpenClawAgentDatabasePathCurrent(database))
+              ) {
+                throw new Error("Session database physical identity changed");
+              }
               return {
+                ...(identity && typeof identity.identity === "string"
+                  ? { databaseIdentity: { ...identity, identity: identity.identity } }
+                  : {}),
+                ...(request.includeMembers
+                  ? {
+                      members: Object.fromEntries(
+                        selected.value.map(({ sessionKey }) => [
+                          sessionKey,
+                          listSessionMembersInDatabase(database, sessionKey),
+                        ]),
+                      ),
+                    }
+                  : {}),
                 kind: "session-exact-entries" as const,
                 entries: selected.value,
                 lifecycleTimestamps: resolveSessionLifecycleTimestamps({

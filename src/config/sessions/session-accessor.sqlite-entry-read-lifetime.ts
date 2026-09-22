@@ -30,18 +30,8 @@ export function captureSessionEntryRead(
     });
   const selected = capture();
   let released = false;
-  const sameGeneration = (current: ReturnType<typeof capture>) =>
-    selected !== undefined &&
-    current !== undefined &&
-    Boolean(selected.sessionId?.trim() && selected.lifecycleRevision?.trim()) &&
-    current.agentId === selected.agentId &&
-    current.sessionKey === selected.sessionKey &&
-    current.sessionId === selected.sessionId &&
-    current.lifecycleRevision === selected.lifecycleRevision;
   return {
     entry: selected?.entry,
-    // Questions outlive metadata updates; only their original session incarnation is retained.
-    isGenerationCurrent: () => !released && database.db.isOpen && sameGeneration(capture()),
     isCurrent: () => {
       if (released || !database.db.isOpen) {
         return false;

@@ -63,11 +63,12 @@ export function installQuestionTestHooks() {
     handlers = createQuestionHandlers(manager, storeWriteService);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     releaseAgentRunDelegatedAuthority(requesterAuthority);
     unregisterAuthorityClosed();
     clearAgentRunContext(requestParams.runId);
     manager.close();
+    await manager.drain();
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
@@ -85,6 +86,7 @@ export async function callQuestionRpc(
 ) {
   const calls: Parameters<RespondFn>[] = [];
   const respond: RespondFn = (...args) => calls.push(args);
+  const cfg = options?.cfg ?? {};
   const requestOptions: GatewayRequestOptions = {
     req: { type: "req", id: "request-1", method, params },
     respond,
@@ -94,7 +96,7 @@ export async function callQuestionRpc(
     context: createDirectChatContext({
       broadcast,
       validateAgentRuntimeApprovalAuthority: createAgentRuntimeApprovalAuthorityValidator(),
-      getRuntimeConfig: () => options?.cfg ?? {},
+      getRuntimeConfig: () => cfg,
     }),
   };
   if (options?.throughRouter) {

@@ -50,7 +50,6 @@ it.each(["alias replacement", "cold-store close", "same-file reopen"] as const)(
       try {
         expect(read.entry?.sessionId).toBe("identical-session");
         expect(read.isCurrentAtResponse()).toBe(true);
-        expect(read.isGenerationCurrentAtResponse()).toBe(true);
         if (change === "alias replacement") {
           fs.rmSync(aliasDirectory, { recursive: true });
           fs.symlinkSync(replacementDirectory, aliasDirectory, "junction");
@@ -63,7 +62,6 @@ it.each(["alias replacement", "cold-store close", "same-file reopen"] as const)(
           }
         }
         expect(read.isCurrentAtResponse()).toBe(false);
-        expect(read.isGenerationCurrentAtResponse()).toBe(false);
       } finally {
         read.release();
       }

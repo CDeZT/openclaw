@@ -159,6 +159,8 @@ export type SessionExactEntriesWorkerInput = {
   sessionKeys: readonly string[];
   lifecycleSessionKey?: string;
   projection?: "full" | "backing";
+  includeMembers?: boolean;
+  includeAuthorization?: boolean;
   continuation?: CanonicalSessionReaderContinuation;
 };
 
@@ -166,6 +168,13 @@ export type SessionExactEntriesWorkerResult = {
   kind: "session-exact-entries";
   entries: SessionEntrySummary[];
   lifecycleTimestamps: SessionLifecycleTimestamps;
+  databaseIdentity?: {
+    identity: string;
+    incarnation: string;
+    filename: string;
+    birthtime?: string;
+  };
+  members?: Record<string, SessionMember[]>;
 };
 
 export type SessionStoreTargetWorkerInput = {

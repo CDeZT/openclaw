@@ -330,9 +330,12 @@ export function createGatewayBroadcaster(params: {
         }
       }
       if (
-        sessionKeys.length > 0 &&
-        params.canReceiveSessionEvent &&
-        !params.canReceiveSessionEvent(c, sessionKeys, agentId, event, payload)
+        (event === "question.requested" || event === "question.resolved") &&
+        opts?.canReceiveQuestion
+          ? !opts.canReceiveQuestion(c)
+          : sessionKeys.length > 0 &&
+            params.canReceiveSessionEvent &&
+            !params.canReceiveSessionEvent(c, sessionKeys, agentId, event, payload)
       ) {
         continue;
       }

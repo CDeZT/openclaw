@@ -25,7 +25,6 @@ export function retainGatewaySessionEntryReadOnly(sessionKey: string, agentId: s
     return {
       ...selected,
       isCurrent: () => !released,
-      isGenerationCurrentAtResponse: () => false,
       isCurrentAtResponse: () =>
         !released &&
         sameRoute() &&
@@ -66,12 +65,6 @@ export function retainGatewaySessionEntryReadOnly(sessionKey: string, agentId: s
       entry: read.entry,
       // Catalog projection calls this per model; exact target reads belong at publication.
       isCurrent: () => !released && claim.isCurrent(),
-      isGenerationCurrentAtResponse: () =>
-        !released &&
-        claim.isCurrent() &&
-        read.isGenerationCurrent() &&
-        isOpenClawAgentDatabasePathCurrent(database) &&
-        sameRoute(),
       // Re-read canonical target facts and verify physical ownership before publishing.
       isCurrentAtResponse: () =>
         !released &&

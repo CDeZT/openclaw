@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, expect, it, vi } from "vitest";
+import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { prepareSystemAgentRunAdmission } from "../../agents/admitted-run-context.js";
 import { createAskUserTool } from "../../agents/tools/ask-user-tool.js";
 import { resetPendingAskUserQuestionsForTest } from "../../agents/tools/ask-user-tool.test-support.js";
@@ -21,6 +22,7 @@ import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js
 import { QuestionManager } from "../question-manager.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
+import { dispatchGatewayMethodInProcessRaw } from "../server-plugin-in-process-dispatch.js";
 import { roleClient, rolePolicyConfig } from "../session-sharing.test-utils.js";
 import { createQuestionHandlers } from "./question.js";
 import { createSecretStoreWriteService } from "./secrets.js";
@@ -50,21 +52,28 @@ async function withHostedQuestion(
     manager: QuestionManager;
     answer: (id: string) => Promise<Parameters<RespondFn>>;
     read: (id: string) => Promise<Parameters<RespondFn>>;
+    hosted: (
+      method: string,
+      params: Record<string, unknown>,
+    ) => ReturnType<typeof dispatchGatewayMethodInProcessRaw>;
     request: ReturnType<typeof vi.fn<(options: GatewayRequestHandlerOptions) => Promise<void>>>;
     revoke: () => void;
     closeParent: () => void;
   }) => Promise<void>,
   foreign = false,
+  broadRole?: "write" | "view" | "none",
 ) {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const cfg = rolePolicyConfig();
-    cfg.gateway!.roles!.definitions.view!.scopes = ["operator.sessions.write"];
+    const role = broadRole ?? "view";
+    const scopes = [broadRole ? "operator.questions" : "operator.sessions.write"];
+    cfg.gateway!.roles!.definitions[role]!.scopes = scopes;
     cfg.session = { store: state.path("sessions.json") };
     cfg.agents = { defaults: { workspace: state.workspaceDir }, entries: { main: {} } };
     await state.writeConfig(cfg);
     setRuntimeConfigSnapshot(cfg);
-    const browser = roleClient("view", "hosted-question-owner");
-    browser.connect.scopes = ["operator.sessions.write"];
+    const browser = roleClient(role, "hosted-question-owner");
+    browser.connect.scopes = scopes;
     const profileId = expectDefined(browser.authenticatedUserProfile, "original person").profileId;
     const scope = { agentId: "main", sessionKey, storePath: cfg.session.store };
     await upsertSessionEntryCore(scope, {
@@ -119,24 +128,26 @@ async function withHostedQuestion(
     );
     const request = vi.fn(async (options: GatewayRequestHandlerOptions) => {
       expect(options.client?.internal?.syntheticClient).toBe(true);
-      expect(options.client?.connect.scopes).toEqual(["operator.sessions.write"]);
+      expect(options.client?.connect.scopes).toEqual(scopes);
       expect(readGatewayRequestMutationAuthority(options).sessionScope).toBe(
-        "operator.sessions.write",
+        broadRole ? undefined : "operator.sessions.write",
       );
       expect(options.client?.internal?.operatorRoleActor).toEqual({ kind: "operator", profileId });
       expect(options.client?.internal?.operatorRunAuthority?.source).toBe(
         captured.authority.source,
       );
-      const identity = expectDefined(
-        options.client?.internal?.agentRuntimeIdentity,
-        "trusted runtime producer",
-      );
-      expect(identity).toMatchObject({
-        agentId: "main",
-        sessionKey,
-        operationalRunInstance: admitted.operationalRunInstance,
-      });
-      expect(context.validateAgentRuntimeApprovalAuthority?.(identity)).toBe(true);
+      const identity = options.client?.internal?.agentRuntimeIdentity;
+      if (broadRole) {
+        expect(identity).toBeUndefined();
+      } else {
+        const trustedIdentity = expectDefined(identity, "trusted runtime producer");
+        expect(trustedIdentity).toMatchObject({
+          agentId: "main",
+          sessionKey,
+          operationalRunInstance: admitted.operationalRunInstance,
+        });
+        expect(context.validateAgentRuntimeApprovalAuthority?.(trustedIdentity)).toBe(true);
+      }
       await expectDefined(handlers["question.request"], "question producer")(options);
     });
     const registry = createGatewayMethodRegistry(
@@ -148,6 +159,14 @@ async function withHostedQuestion(
           name === "question.request"
             ? request
             : async (options: GatewayRequestHandlerOptions) => {
+                if (broadRole && options.client?.internal?.syntheticClient) {
+                  expect(options.client.authenticatedUserProfile).toBeUndefined();
+                  expect(options.client.internal.operatorRoleActor).toEqual({
+                    kind: "operator",
+                    profileId,
+                  });
+                  expect(options.client.connect.scopes).toEqual(["operator.questions"]);
+                }
                 if (name === "question.waitAnswer") {
                   expect(options.client?.connect.scopes).toEqual(["operator.sessions.read"]);
                   expect(readGatewayRequestMutationAuthority(options).sessionScope).toBe(
@@ -192,6 +211,13 @@ async function withHostedQuestion(
             answers: { answers: { destination: ["Home"] } },
           }),
         read: (id) => browserRequest("question.get", { id }),
+        hosted: (method, params) =>
+          withGatewayToolCallerIdentity(caller, () =>
+            dispatchGatewayMethodInProcessRaw(method, params, {
+              syntheticScopes: ["operator.questions"],
+              resolveGatewayContext: caller.gatewayContextResolver,
+            }),
+          ),
         revoke: () => source.abort(new Error("original question source revoked")),
         closeParent: () => {
           parent.close();
@@ -200,6 +226,7 @@ async function withHostedQuestion(
       });
     } finally {
       manager.close();
+      await manager.drain();
       parent.close();
       captured.release();
     }
@@ -270,3 +297,68 @@ it("does not register another hosted question after the original operator source
     expect(fixture.manager.list()).toEqual([]);
   });
 });
+
+it.each(["write", "view", "none"] as const)(
+  "uses the original role-only hosted actor's %s cap for broad shared questions",
+  async (role) => {
+    await withHostedQuestion(
+      async (fixture) => {
+        const request = {
+          id: "broad-shared",
+          agentId: "main",
+          sessionKey,
+          timeoutMs: 60_000,
+          questions: [
+            {
+              questionId: "destination",
+              header: "Destination",
+              question: "Where next?",
+              options: [],
+              isOther: true,
+            },
+          ],
+        };
+        fixture.manager.request(request);
+        const sql = observeHostDataSql();
+        try {
+          const read = await fixture.hosted("question.get", { id: request.id });
+          expect(read.ok).toBe(role !== "none");
+          if (role === "none") {
+            expect(read.error?.details).toMatchObject({ reason: "QUESTION_NOT_FOUND" });
+          } else {
+            expect(read.payload).toMatchObject({ question: { id: request.id, status: "pending" } });
+          }
+          const answer = await fixture.hosted("question.resolve", {
+            id: request.id,
+            answers: { answers: { destination: ["Home"] } },
+          });
+          expect(answer.ok).toBe(role === "write");
+          if (role !== "write") {
+            expect(answer.error?.details).toMatchObject(
+              role === "none"
+                ? { reason: "QUESTION_NOT_FOUND" }
+                : { code: "SESSION_PARTICIPATION_REQUIRED" },
+            );
+          }
+          expect(fixture.manager.get(request.id)?.status).toBe(
+            role === "write" ? "answered" : "pending",
+          );
+          const created = await fixture.hosted("question.request", {
+            ...request,
+            id: "broad-created",
+          });
+          expect(created.ok).toBe(role === "write");
+          expect(fixture.request).toHaveBeenCalledOnce();
+          expect(fixture.manager.get("broad-created")?.status).toBe(
+            role === "write" ? "pending" : undefined,
+          );
+          expect(sql.queries.filter((query) => /session_|transcript_/i.test(query))).toEqual([]);
+        } finally {
+          sql.restore();
+        }
+      },
+      true,
+      role,
+    );
+  },
+);

@@ -17,7 +17,7 @@ import {
   retainGatewayRootWorkAdmissionContinuationScope,
   type GatewayRootWorkAdmissionContinuationScope,
 } from "../process/gateway-work-admission.js";
-import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
+import { AsyncWorkScope, getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import type { QuestionSessionAccess } from "./question-session-access.js";
 
 /** Grace period for late question.waitAnswer and question.get calls. */
@@ -51,7 +51,10 @@ type QuestionManagerRequest = {
   sessionKey?: string;
   runId?: string;
   timeoutMs: number;
-  onResolved?: (event: QuestionResolvedEvent, observation: QuestionObservation) => void;
+  onResolved?: (
+    event: QuestionResolvedEvent,
+    observation: QuestionObservation,
+  ) => void | Promise<void>;
   sessionAccess?: QuestionSessionAccess;
   isRequesterActive?: () => boolean;
   /** Trusted handler binds the run; the manager owns expiry and terminal release. */
@@ -120,6 +123,20 @@ function resolvedEvent(record: QuestionRecord): QuestionResolvedEvent | null {
 export class QuestionManager {
   private readonly entries = new Map<string, QuestionEntry>();
   private closed = false;
+  private readonly publications = new AsyncWorkScope();
+
+  constructor(private readonly onPublicationError?: () => void) {}
+
+  async drain(): Promise<void> {
+    if (this.closed) {
+      await this.publications.drain();
+    } else {
+      await AsyncWorkScope.runWhenAllIdle(
+        () => [this.publications],
+        () => {},
+      );
+    }
+  }
 
   request(params: QuestionManagerRequest): QuestionRecord {
     if (this.closed) {
@@ -321,12 +338,15 @@ export class QuestionManager {
       return;
     }
     this.closed = true;
+    this.publications.beginClose();
     this.reset();
   }
 
   /** Reusable on open owners (v2026.8.1 SDK context); never reopens a closed owner. */
   reset(): void {
-    for (const entry of this.entries.values()) {
+    const entries = [...this.entries.values()];
+    this.entries.clear();
+    for (const entry of entries) {
       entry.sessionAccess?.release();
       clearTimeout(entry.expiryTimer);
       const releaseHumanInputWait = entry.releaseHumanInputWait;
@@ -341,7 +361,6 @@ export class QuestionManager {
         waiter();
       }
     }
-    this.entries.clear();
   }
 
   private requireEntry(id: string): QuestionEntry {
@@ -438,24 +457,53 @@ export class QuestionManager {
 
   private finish(entry: QuestionEntry): void {
     clearTimeout(entry.expiryTimer);
-    // Requester-scope loss must not refresh the still-live run's recovery clock.
-    const releaseHumanInputWait = entry.releaseHumanInputWait;
-    entry.releaseHumanInputWait = undefined;
-    releaseHumanInputWait?.(entry.isRequesterActive?.() !== false);
-    entry.isRequesterActive = undefined;
-    entry.admissionContinuation?.release();
+    const continuation = entry.admissionContinuation;
     entry.admissionContinuation = null;
-    for (const waiter of entry.waiters) {
-      waiter();
-    }
-    const event = resolvedEvent(entry.record);
-    if (event) {
-      try {
-        entry.onResolved?.(event, this.observeEntry(entry));
-      } catch {
-        // Broadcast fanout is observational and must not change question truth.
+    let settled = false;
+    const settle = () => {
+      if (settled) {
+        return;
       }
-    }
+      settled = true;
+      const releaseHumanInputWait = entry.releaseHumanInputWait;
+      entry.releaseHumanInputWait = undefined;
+      try {
+        releaseHumanInputWait?.(entry.isRequesterActive?.() !== false);
+      } finally {
+        entry.isRequesterActive = undefined;
+        for (const waiter of entry.waiters) {
+          waiter();
+        }
+      }
+    };
+    const publish = async () => {
+      try {
+        // Enter the original continuation before these callbacks can release its last parked root.
+        settle();
+        const event = resolvedEvent(entry.record);
+        if (event && this.entries.get(entry.record.id) === entry) {
+          await entry.onResolved?.(event, this.observeEntry(entry));
+        }
+      } finally {
+        continuation?.release();
+      }
+    };
+    // Track before invoking: synchronous truth and callbacks retain their ordering,
+    // while worker preparation and rejected publication are joined by Gateway shutdown.
+    void this.publications
+      .track(() => {
+        try {
+          return continuation ? continuation.run(publish) : publish();
+        } finally {
+          // Root reset can refuse entry before publish starts. Local waiters still
+          // observe the committed terminal fact without admitting another root.
+          settle();
+        }
+      })
+      .catch(() => {
+        continuation?.release();
+        this.onPublicationError?.();
+      });
     // A resolution callback can reset/close the owner synchronously; it must
     // not recreate a retention timer after that entry has been retired.
     if (this.entries.get(entry.record.id) !== entry) {

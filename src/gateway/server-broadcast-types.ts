@@ -10,6 +10,8 @@ type GatewayBroadcastStateVersion = {
 export type GatewayBroadcastOpts = {
   /** Private producer-bound question observation; never inferred from the event payload. */
   canReadQuestion?: (client: GatewayClient) => boolean;
+  /** Same short-lived worker preparation owns the final sharing gate, including broad recipients. */
+  canReceiveQuestion?: (client: GatewayClient) => boolean;
   /** Agent scope for agent-relative keys such as `global`. */
   agentId?: string;
   dropIfSlow?: boolean;
