@@ -520,10 +520,10 @@ describe("shared missing skill ancestors", () => {
       } catch (error) {
         try {
           captureFailure?.("before test teardown");
-        } finally {
-          // Diagnostic capture must not replace the original operation failure.
-          throw error;
+        } catch {
+          // Diagnostic failure must not replace the original operation error.
         }
+        throw error;
       } finally {
         unregister();
         await closeSkillsWatchers(true);
