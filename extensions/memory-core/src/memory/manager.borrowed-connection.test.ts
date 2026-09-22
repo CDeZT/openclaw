@@ -10,6 +10,7 @@ import {
   sessionPathForSessionIdentity,
 } from "openclaw/plugin-sdk/memory-core-host-engine-sessions";
 import {
+  encodeMemoryEmbedding,
   ensureMemoryChunkProvenance,
   loadSqliteVecExtension,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
@@ -523,12 +524,12 @@ describe("memory manager shared agent connection", () => {
       await fs.unlink(changedPath);
       shared.db
         .prepare(
-          "INSERT INTO memory_index_chunks_fts(text, id, path, source, model, start_line, end_line) VALUES ('old-model violet', 'old-model', 'memory/updated.md', 'memory', 'old-model', 1, 1)",
+          "INSERT INTO memory_index_chunks(id, path, source, model, start_line, end_line, hash, text, embedding, updated_at) VALUES ('old-model', 'memory/updated.md', 'memory', 'old-model', 1, 1, 'old-hash', 'old-model violet', x'', 1)",
         )
         .run();
       shared.db
         .prepare(
-          "INSERT INTO memory_index_chunks_fts(text, id, path, source, model, start_line, end_line) VALUES ('other-source', 'other-source', 'memory/updated.md', 'sessions', 'old-model', 1, 1)",
+          "INSERT INTO memory_index_chunks(id, path, source, model, start_line, end_line, hash, text, embedding, updated_at) VALUES ('other-source', 'memory/updated.md', 'sessions', 'old-model', 1, 1, 'other-hash', 'other-source', x'', 1)",
         )
         .run();
     } else if (scenario === "watched-file") {
@@ -538,10 +539,10 @@ describe("memory manager shared agent connection", () => {
       const owner = manager as unknown as { cache: { maxEntries: number } };
       owner.cache.maxEntries = 2;
       const insert = shared.db.prepare(
-        "INSERT INTO memory_embedding_cache(provider, model, provider_key, hash, embedding, dims, updated_at) VALUES ('fixture', 'fixture', 'fixture', ?, '[1]', 1, ?)",
+        "INSERT INTO memory_embedding_cache(provider, model, provider_key, hash, embedding, dims, updated_at) VALUES ('fixture', 'fixture', 'fixture', ?, ?, 1, ?)",
       );
       for (let index = 0; index < 331; index += 1) {
-        insert.run(`cache-${index}`, index);
+        insert.run(`cache-${index}`, encodeMemoryEmbedding([1]), index);
       }
     }
     if (sessionWork) {
