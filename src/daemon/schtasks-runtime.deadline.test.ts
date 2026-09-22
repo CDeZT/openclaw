@@ -115,6 +115,54 @@ describe("bounded Startup runtime observations", () => {
     },
   );
 
+  it.each(
+    (["gateway", "node"] as const).flatMap((kind) =>
+      [
+        { label: "null command line", entry: { ProcessId: 222, CommandLine: null } },
+        { label: "missing command line", entry: { ProcessId: 222 } },
+        { label: "empty command line", entry: { ProcessId: 222, CommandLine: "" } },
+        { label: "blank command line", entry: { ProcessId: 222, CommandLine: "  " } },
+        {
+          label: "missing process identity",
+          entry: { CommandLine: command(kind).programArguments.join(" ") },
+        },
+      ].map(({ label, entry }) => ({ kind, label, entry })),
+    ),
+  )("keeps incomplete $kind snapshot with $label unknown", async ({ kind, entry }) => {
+    processOutput = JSON.stringify([
+      { ProcessId: 111, CommandLine: "powershell.exe Get-CimInstance" },
+      entry,
+    ]);
+    const runtime = await resolveFallbackRuntime(
+      { OPENCLAW_SERVICE_KIND: kind },
+      command(kind),
+      "observe",
+      100,
+    );
+    expect(runtime.status).toBe("unknown");
+    expect(runtime.missingUnit).not.toBe(true);
+    expect(portCalls()).toHaveLength(0);
+  });
+
+  it.each(["gateway", "node"] as const)(
+    "retains positive %s process identity in an incomplete snapshot",
+    async (kind) => {
+      const installed = command(kind);
+      processOutput = JSON.stringify([
+        { ProcessId: 111, CommandLine: null },
+        { ProcessId: 4242, CommandLine: installed.programArguments.join(" ") },
+      ]);
+      const runtime = await resolveFallbackRuntime(
+        { OPENCLAW_SERVICE_KIND: kind },
+        installed,
+        "observe",
+        100,
+      );
+      expect(runtime).toMatchObject({ status: "running", pid: 4242 });
+      expect(portCalls()).toHaveLength(0);
+    },
+  );
+
   it.each(["", "[]", "[{}]", "not-json"])(
     "does not treat unavailable snapshot %j as stopped",
     async (output) => {

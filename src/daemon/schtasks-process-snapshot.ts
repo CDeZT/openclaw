@@ -14,6 +14,21 @@ export function getSnapshotProcessId(entry: WindowsProcessSnapshotEntry): number
   return typeof pid === "number" && Number.isFinite(pid) && pid > 0 ? pid : null;
 }
 
+/** Only fully readable rows can support a negative process-match observation. */
+export function isCompleteWindowsProcessSnapshot(
+  entries: readonly WindowsProcessSnapshotEntry[],
+): boolean {
+  return (
+    entries.length > 0 &&
+    entries.every(
+      (entry) =>
+        getSnapshotProcessId(entry) !== null &&
+        typeof entry.CommandLine === "string" &&
+        entry.CommandLine.trim().length > 0,
+    )
+  );
+}
+
 export function readWindowsProcessSnapshot(
   timeoutMs?: number,
 ): WindowsProcessSnapshotEntry[] | null {

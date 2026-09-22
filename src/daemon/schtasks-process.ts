@@ -21,6 +21,7 @@ import { resolveGatewayServiceProbeHosts } from "./gateway-service-probe-hosts.j
 import { readScheduledTaskCommand, resolveTaskName } from "./schtasks-layout.js";
 import {
   getSnapshotProcessId,
+  isCompleteWindowsProcessSnapshot,
   readWindowsProcessSnapshot,
   type WindowsProcessSnapshotEntry,
 } from "./schtasks-process-snapshot.js";
@@ -477,8 +478,11 @@ export async function readBoundedScheduledTaskProcess(
   const pid = shouldManageGatewayListenerPort(env)
     ? findInstalledGatewayChildPid(snapshot, port, command.programArguments)
     : findInstalledProcessPid(snapshot, port, command.programArguments, isNodeHostArgv);
+  // A positive exact match survives unrelated unreadable rows. Only a complete
+  // snapshot can prove no match; missing argv or PID can conceal this process.
+  const complete = pid !== null || isCompleteWindowsProcessSnapshot(snapshot);
   remaining();
-  return { port, pid };
+  return complete ? { port, pid } : null;
 }
 
 export async function resolveListenerBackedScheduledTaskRuntime(
