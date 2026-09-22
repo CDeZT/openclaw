@@ -1,5 +1,5 @@
-# Disposable source-owner proof. Never merge this workflow or the X instrumentation.
-name: Temporary FreeBSD signed identity owner proof
+# Disposable release-preparation proof. Never merge this workflow or X instrumentation.
+name: Temporary fs-safe release docs proof
 on:
   pull_request:
     types: [synchronize]
@@ -13,19 +13,18 @@ concurrency:
 env:
   CONSUMER_SHA: ${{ github.event.pull_request.head.sha }}
   WORKFLOW_SHA: ${{ github.workflow_sha }}
-  PREDECESSOR_SHA: 956eba7050d9f038fad3c8ea971372a3097e8d1d
+  PREDECESSOR_SHA: 5a7a6db9644275dcb7e5342b5197a49301aabf4d
   SOURCE_X_SHA: 1388021b60cd6b87ec5bb840fdcfbd06e39f3530
-  OLD_OWNER_SHA: 3ba5c9504ae5bf89837f491f0f227c68de14778a
-  OLD_OWNER_DIGEST: 7271fed7aed56d0d796c6a2da2bb9ad3cd3f1131099a495c8d7ee55a1bb81072
-  NEW_OWNER_SHA: 33436f37f3b4060784250eabdbea24ef05dee30f
-  NEW_OWNER_DIGEST: f9f315ce5d5f71e88ddd8743b23a37cc7e71e71bc0e00c25beda2996bf6817ee
+  DOCS_SOURCE_SHA: 80a34f9800a75c975469d9c41ee56fa45025babb
+  DOCS_SOURCE_TREE: 042a9bd0b07ba725e5be315ba1e17973b7294404
+  INPUT_MANIFEST_SHA: 6ee246fe1bc84b316e8e0c1f674e2ed7d3c36fe0d92013afd7046d1845522766
 jobs:
-  native-owner:
+  release-docs:
     if: >-
       github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
       github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
       github.event.pull_request.number == 155285 &&
-      github.event.before == '956eba7050d9f038fad3c8ea971372a3097e8d1d' &&
+      github.event.before == '5a7a6db9644275dcb7e5342b5197a49301aabf4d' &&
       github.event.pull_request.state == 'open' && github.event.pull_request.draft &&
       github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
@@ -33,143 +32,140 @@ jobs:
       github.event.pull_request.head.ref == 'test/freebsd-temp-root-diagnostic' &&
       github.event.pull_request.user.login == 'vincentkoc'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.CONSUMER_SHA }}
-          fetch-depth: 8
+          fetch-depth: 9
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: /.github/workflows/freebsd-temp-root-diagnostic.yml
-      - name: Authenticate the successor and exact source owner modules
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Authenticate the sole workflow successor
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CONSUMER_SHA"
           test "$(git show -s --format=%P HEAD)" = "$PREDECESSOR_SHA"
-          test "$(git rev-parse "$PREDECESSOR_SHA^{tree}")" = 25d63b462b138c7de95c4599f637638a7e229a1e
+          test "$(git rev-parse "$PREDECESSOR_SHA^{tree}")" = 4fd1352f6da5c9987956977e061a07285cb6fe59
           test "$(git diff --name-only "$SOURCE_X_SHA" HEAD)" = .github/workflows/freebsd-temp-root-diagnostic.yml
           test -z "$(git status --porcelain)"
           git -c gc.auto=0 -c maintenance.auto=false fetch --no-tags --depth=1 --no-write-fetch-head origin "$WORKFLOW_SHA"
           test "$(git rev-parse "$CONSUMER_SHA:.github/workflows/freebsd-temp-root-diagnostic.yml")" = "$(git rev-parse "$WORKFLOW_SHA:.github/workflows/freebsd-temp-root-diagnostic.yml")"
-          python3 - <<'SOURCE'
-          import base64,hashlib,json,os,subprocess
-          from pathlib import Path
-          root=Path('owner-input');root.mkdir(mode=0o700)
-          pins=[('old','OLD_OWNER_SHA','OLD_OWNER_DIGEST',5586,'aac8b6ccf5a0d933658213c87ede404df3d9ed60'),('new','NEW_OWNER_SHA','NEW_OWNER_DIGEST',5860,'b7f7c617a7859a73bf1c92885969d50f0ffc824f')]
-          for label,sha_key,digest_key,size,blob in pins:
-              ref=os.environ[sha_key]
-              item=json.loads(subprocess.check_output(['gh','api',f'repos/openclaw/fs-safe/contents/src/secure-temp-repair.ts?ref={ref}']))
-              assert item['type']=='file' and item['path']=='src/secure-temp-repair.ts' and item['encoding']=='base64'
-              content=base64.b64decode(item['content'],validate=False)
-              assert item['sha']==blob and item['size']==size and len(content)==size
-              assert hashlib.sha256(content).hexdigest()==os.environ[digest_key]
-              assert hashlib.sha1(f'blob {len(content)}\0'.encode()+content).hexdigest()==blob
-              with (root/f'{label}.ts').open('xb') as file:file.write(content)
-              print(json.dumps(dict(role=label,repository='openclaw/fs-safe',source=ref,path=item['path'],bytes=size,sha256=os.environ[digest_key],gitBlob=blob)))
-          SOURCE
-      - name: Prove the actual receipt and repair owners on a negative-device filesystem
-        uses: vmactions/freebsd-vm@8b0f1a8fc0ea0def307835c258940ca358fe6480 # v1.5.6
+          mkdir -m 700 evidence
+      - name: Check out the exact fs-safe release proposal
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          release: "15.1"
-          arch: x86_64
-          mem: 4096
-          sync: rsync
-          copyback: false
-          disable-cache: true
-          debug-on-error: false
-          envs: CONSUMER_SHA OLD_OWNER_SHA OLD_OWNER_DIGEST NEW_OWNER_SHA NEW_OWNER_DIGEST
-          prepare: |
-            set -eu
-            mkdir -p /usr/local/etc/pkg/repos
-            cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<'REPO'
-            FreeBSD-ports: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }
-            REPO
-            pkg install -y node24 ca_root_nss
-          run: |
-            set -eu
-            node --input-type=module <<'PROBE'
-            import assert from 'node:assert/strict';
-            import fs from 'node:fs';
-            import os from 'node:os';
-            import path from 'node:path';
-            import {execFileSync} from 'node:child_process';
-            import {createHash} from 'node:crypto';
-            import {pathToFileURL} from 'node:url';
-            const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
-            const identity=stat=>({dev:stat.dev.toString(),ino:stat.ino.toString(),uid:stat.uid.toString(),mode:stat.mode.toString(),directory:stat.isDirectory(),symlink:stat.isSymbolicLink()});
-            const stat=file=>fs.lstatSync(file,{bigint:true});
-            const snapshot=file=>({identity:identity(stat(file)),bytes:fs.readFileSync(file).length,sha256:hash(fs.readFileSync(file))});
-            const result={consumer:process.env.CONSUMER_SHA,oldSource:process.env.OLD_OWNER_SHA,newSource:process.env.NEW_OWNER_SHA,platform:process.platform,arch:process.arch,node:process.version,scope:'actual source-owner proof on real filesystem; no OpenClaw package or dependency override',cases:[]};
-            let stage='runtime',status=1,root,rootIdentity,parent,parentIdentity,oldMask;
-            try {
-              assert.equal(process.platform,'freebsd');assert.equal(process.arch,'x64');assert.match(process.version,/^v24\./);
-              assert.equal(process.getuid(),0);assert.equal(process.geteuid(),0);
-              result.release=execFileSync('/bin/freebsd-version',['-u'],{encoding:'utf8'}).trim();
-              assert.equal(result.release,'15.1-RELEASE-p3');
-              stage='source';
-              const modules={};
-              for(const role of ['old','new']) {
-                const filename=path.resolve('owner-input',`${role}.ts`),bytes=fs.readFileSync(filename);
-                assert.equal(hash(bytes),process.env[`${role.toUpperCase()}_OWNER_DIGEST`]);
-                modules[role]=await import(pathToFileURL(filename).href);
-              }
-              stage='fixture';oldMask=process.umask(0o077);
-              parent=fs.realpathSync(os.tmpdir());parentIdentity=identity(stat(parent));
-              root=fs.mkdtempSync(path.join(parent,'fs-safe-signed-owner-'));fs.chmodSync(root,0o700);rootIdentity=identity(stat(root));
-              assert(rootIdentity.directory&&!rootIdentity.symlink);assert.equal(rootIdentity.uid,'0');
-              const sentinel=path.join(root,'sentinel');fs.writeFileSync(sentinel,'native-owner-proof\n',{flag:'wx',mode:0o600});const sentinelBefore=snapshot(sentinel);
-              const observed=stat(root);result.observed=identity(observed);
-              if(observed.dev>=0n) {
-                result.outcome='inconclusive';result.reason='real-negative-device-unavailable';status=78;
-              } else {
-                stage='old-receipt';
-                assert.throws(()=>modules.old.secureTempDirectoryReceipt(observed,0),error=>error instanceof Error&&error.message==='Secure temp directory identity, owner, or type could not be verified.');
-                result.oldRejected=true;
-                stage='new-receipt';
-                const admitted=modules.new.secureTempDirectoryReceipt(observed,0);
-                assert.deepEqual(admitted,{dev:observed.dev,ino:observed.ino,uid:observed.uid,mode:observed.mode});result.newAdmitted=true;
-                const original=modules.new.captureSecureTempRepairAdapter(undefined,false);assert(original);
-                assert.equal(original.lstatSync,fs.lstatSync);assert.equal(original.fstatSync,fs.fstatSync);assert.equal(original.openSync,fs.openSync);assert.equal(original.fchmodSync,fs.fchmodSync);assert.equal(original.closeSync,fs.closeSync);
-                for(const mode of [0o777,0o500])for(const finalize of [false,true]) {
-                  stage=`repair-${mode.toString(8)}-${finalize?'finalize':'ordinary'}`;
-                  const directory=path.join(root,`case-${mode.toString(8)}-${finalize}`);fs.mkdirSync(directory,{mode:0o700});
-                  const leaf=path.join(directory,'sentinel');fs.writeFileSync(leaf,'unchanged\n',{flag:'wx',mode:0o600});const leafBefore=snapshot(leaf);
-                  fs.chmodSync(directory,mode);const before=stat(directory);
-                  assert.equal(before.dev,observed.dev);assert(before.dev<0n);assert.equal(before.mode&0o7777n,BigInt(mode));
-                  const receipt=modules.new.secureTempDirectoryReceipt(before,0);
-                  let opens=0,closes=0,accesses=0,repaired=0,fd;
-                  // Observe the actual default open/close calls; all authority comes
-                  // from the original builtin adapter and real lstat/fstat results.
-                  const adapter={...original,openSync(...args){fd=original.openSync(...args);opens++;return fd;},closeSync(value){assert.equal(value,fd);original.closeSync(value);closes++;}};
-                  modules.new.repairSecureTempDirectory(directory,receipt,0,adapter,()=>{accesses++;fs.accessSync(directory,fs.constants.W_OK|fs.constants.X_OK);},()=>{repaired++;},finalize);
-                  assert.deepEqual([opens,closes,accesses,repaired],[1,1,1,1]);
-                  assert.throws(()=>fs.fstatSync(fd),error=>error?.code==='EBADF');
-                  const after=stat(directory);assert.deepEqual([after.dev,after.ino,after.uid],[before.dev,before.ino,before.uid]);
-                  assert(after.isDirectory()&&!after.isSymbolicLink());assert.equal(after.mode&0o7777n,0o700n);
-                  assert.deepEqual(snapshot(leaf),leafBefore);assert.deepEqual(snapshot(sentinel),sentinelBefore);
-                  assert.deepEqual(identity(stat(root)),rootIdentity);assert.deepEqual(identity(stat(parent)),parentIdentity);
-                  result.cases.push({modeBefore:mode.toString(8),finalize,modeAfter:'700',rawIdentityPreserved:true,sentinelPreserved:true,opens,closes,descriptorClosed:true,accesses,repaired});
-                }
-                stage='post-source';
-                for(const role of ['old','new'])assert.equal(hash(fs.readFileSync(path.resolve('owner-input',`${role}.ts`))),process.env[`${role.toUpperCase()}_OWNER_DIGEST`]);
-                assert.equal(result.cases.length,4);result.outcome='passed';status=0;
-              }
-            } catch(error) {
-              result.outcome='failed';result.failedStage=stage;
-              result.failureClass=error?.code==='ERR_ASSERTION'?'assertion':'operation';status=1;
-            } finally {
-              if(oldMask!==undefined)process.umask(oldMask);
-              result.cleanup='uncreated';
-              if(root) {
-                try {
-                  assert.deepEqual(identity(stat(root)),rootIdentity);
-                  fs.rmSync(root,{recursive:true});assert.equal(fs.existsSync(root),false);
-                  assert.deepEqual(identity(stat(parent)),parentIdentity);result.cleanup='removed';
-                } catch {result.cleanup='failed-or-retained';if(status===0){status=1;result.outcome='failed';result.failedStage='cleanup';}}
-              }
-              result.exit=status;console.log(JSON.stringify(result));process.exitCode=status;
-            }
-            PROBE
+          repository: openclaw/fs-safe
+          ref: ${{ env.DOCS_SOURCE_SHA }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Authenticate docs and command inputs
+        id: inputs
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          cat > ../evidence/verify-inputs.py <<'INPUTS'
+          import hashlib,json,os,subprocess,sys
+          from pathlib import Path
+          def git(*args):return subprocess.check_output(['git',*args],text=True).strip()
+          assert git('rev-parse','HEAD')==os.environ['DOCS_SOURCE_SHA']
+          assert git('rev-parse','HEAD^{tree}')==os.environ['DOCS_SOURCE_TREE']
+          subprocess.run(['git','diff','--exit-code','HEAD'],check=True)
+          keys=['package.json','pnpm-lock.yaml','pnpm-workspace.yaml','scripts/build-docs-site.mjs','scripts/docs-site-assets.mjs','scripts/docs-site-navigation.mjs']
+          for p in Path('docs').rglob('*'):
+              assert not p.is_symlink(),str(p)
+              if p.is_file():keys.append(p.as_posix())
+          if Path('CNAME').exists():keys.append('CNAME')
+          rows=[]
+          for name in sorted(keys):
+              p=Path(name);assert p.is_file() and not p.is_symlink()
+              content=p.read_bytes();rows.append(dict(path=name,bytes=len(content),sha256=hashlib.sha256(content).hexdigest()))
+          raw=(json.dumps(rows,separators=(',',':'))+'\n').encode()
+          assert len(rows)==65 and hashlib.sha256(raw).hexdigest()==os.environ['INPUT_MANIFEST_SHA']
+          package=json.loads(Path('package.json').read_text())
+          assert package['version']=='0.18.1' and package['packageManager']=='pnpm@12.4.2'
+          assert package['scripts']['docs:site']=='node scripts/build-docs-site.mjs'
+          Path('../evidence/inputs-'+sys.argv[1]+'.json').write_bytes(raw)
+          print(json.dumps(dict(stage=sys.argv[1],repository='openclaw/fs-safe',source=os.environ['DOCS_SOURCE_SHA'],tree=os.environ['DOCS_SOURCE_TREE'],consumer=os.environ['CONSUMER_SHA'],workflow=os.environ['WORKFLOW_SHA'],inputFiles=len(rows),inputManifestSha256=hashlib.sha256(raw).hexdigest())))
+          INPUTS
+          python3 ../evidence/verify-inputs.py before
+          test ! -e dist/docs-site
+          test ! -e node_modules
+      - name: Set up supported Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+      - name: Set up pinned pnpm without a workspace install
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 12.4.2
+          package_json_file: candidate/package.json
+          run_install: false
+      - name: Run the canonical docs command once
+        id: docs
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v24.21.0
+          test "$(pnpm --version)" = 12.4.2
+          node --input-type=module <<'COMMAND'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import {spawnSync} from 'node:child_process';
+          assert.equal(process.platform,'linux');assert.equal(process.arch,'x64');
+          const started=new Date().toISOString(),begin=process.hrtime.bigint();
+          const child=spawnSync('pnpm',['docs:site'],{stdio:'inherit'});
+          const receipt={repository:'openclaw/fs-safe',source:process.env.DOCS_SOURCE_SHA,tree:process.env.DOCS_SOURCE_TREE,consumer:process.env.CONSUMER_SHA,run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT,command:['pnpm','docs:site'],started,finished:new Date().toISOString(),wallNanoseconds:(process.hrtime.bigint()-begin).toString(),node:process.version,pnpm:'12.4.2',platform:process.platform,arch:process.arch,status:child.status,signal:child.signal,spawnError:child.error?.code??null,scope:'canonical static docs build; no package build, workspace install, deployment or release'};
+          let status=child.status===0&&!child.signal&&!child.error?0:(child.status||1);
+          try{fs.writeFileSync('../evidence/command.json',JSON.stringify(receipt)+'\n');console.log(JSON.stringify(receipt));}catch(error){console.error(error);if(status===0)status=1;}
+          process.exitCode=status;
+          COMMAND
+      - name: Verify every expected site output
+        if: ${{ success() && steps.docs.outcome == 'success' }}
+        working-directory: candidate
+        run: |
+          python3 - <<'OUTPUT'
+          import hashlib,json,os,re
+          from pathlib import Path
+          root=Path('dist/docs-site');assert root.is_dir() and not root.is_symlink()
+          pages=sorted(p.relative_to('docs').with_suffix('.html').as_posix() for p in Path('docs').rglob('*.md'))
+          assert len(pages)==54 and len(set(pages))==54
+          assets=['.nojekyll','CNAME','favicon.svg','llms.txt','social-card.png','social-card.svg']
+          files=[]
+          for p in root.rglob('*'):
+              assert not p.is_symlink()
+              if p.is_file():files.append(p.relative_to(root).as_posix())
+          assert sorted(files)==sorted(pages+assets)
+          for rel in pages:
+              html=(root/rel).read_text()
+              assert html.startswith('<!doctype html>') and '<html lang="en">' in html and '<title>' in html and '</html>' in html
+              assert re.search(r'<link rel="canonical" href="https://fs-safe\.io/',html)
+          assert (root/'.nojekyll').read_bytes()==b''
+          assert (root/'CNAME').read_text()=='fs-safe.io'
+          for asset in ['social-card.png','social-card.svg']:assert (root/asset).read_bytes()==(Path('docs')/asset).read_bytes()
+          assert '<svg' in (root/'favicon.svg').read_text()
+          index=(root/'llms.txt').read_text();assert index.startswith('# fs-safe\n')
+          urls=re.findall(r'^- [^\n]+: (https://fs-safe\.io/[^\n]*)$',index,re.M)
+          assert sorted(urls)==sorted('https://fs-safe.io/'+('' if p=='index.html' else p) for p in pages)
+          rows=[dict(path=p,bytes=len((root/p).read_bytes()),sha256=hashlib.sha256((root/p).read_bytes()).hexdigest()) for p in sorted(files)]
+          raw=(json.dumps(rows,separators=(',',':'))+'\n').encode();Path('../evidence/site-inventory.json').write_bytes(raw)
+          receipt=dict(source=os.environ['DOCS_SOURCE_SHA'],htmlPages=len(pages),assets=len(assets),files=len(files),inventorySha256=hashlib.sha256(raw).hexdigest(),localLinksAndAnchors='canonical builder validated',outcome='passed')
+          Path('../evidence/output.json').write_text(json.dumps(receipt)+'\n');print(json.dumps(receipt))
+          OUTPUT
+      - name: Verify source and inputs after either command outcome
+        if: ${{ always() && steps.inputs.outcome == 'success' }}
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          python3 ../evidence/verify-inputs.py after
+          test ! -e node_modules
+          git diff --check
+      - name: Retain the bounded proof records on either outcome
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fs-safe-release-docs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/*.json
+          if-no-files-found: warn
+          retention-days: 7
