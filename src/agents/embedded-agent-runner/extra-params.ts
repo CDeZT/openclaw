@@ -45,6 +45,11 @@ import {
 import type { AgentRuntimeTransport } from "../runtime-plan/types.js";
 import type { StreamFn } from "../runtime/index.js";
 import type { SettingsManager } from "../sessions/index.js";
+import {
+  isMiMoReasoningAsVisibleTextOpenAICompatibleModel,
+  isMiMoReasoningOpenAICompatibleModel,
+  normalizeCompletionsModelId,
+} from "./extra-params-models.js";
 import { log } from "./logger.js";
 import { parseCacheRetention, resolveCacheRetention } from "./prompt-cache-retention.js";
 import type { ProviderThinkLevel } from "./utils.js";
@@ -809,22 +814,12 @@ function applyPostPluginStreamWrappers(
   log.warn(`ignoring invalid parallel_tool_calls param: ${summary}`);
 }
 
-function normalizeDeepSeekV4CandidateId(modelId: unknown): string | undefined {
-  if (typeof modelId !== "string") {
-    return undefined;
-  }
-  const normalized = modelId.trim().toLowerCase();
-  const suffixIndex = normalized.indexOf(":");
-  const withoutSuffix = suffixIndex === -1 ? normalized : normalized.slice(0, suffixIndex);
-  return withoutSuffix.split("/").pop();
-}
-
 function isDeepSeekV4OpenAICompatibleModel(model: Parameters<StreamFn>[0]): boolean {
   return isDeepSeekV4OpenAICompletionsModel(model) && !isMicrosoftFoundryProviderId(model.provider);
 }
 
 function isDeepSeekV4OpenAICompletionsModel(model: Parameters<StreamFn>[0]): boolean {
-  const normalizedModelId = normalizeDeepSeekV4CandidateId(model.id);
+  const normalizedModelId = normalizeCompletionsModelId(model.id);
   return (
     model.api === "openai-completions" &&
     (normalizedModelId === "deepseek-v4-flash" || normalizedModelId === "deepseek-v4-pro")
@@ -907,35 +902,6 @@ function stripDeepSeekV4ReasoningContent(payload: Record<string, unknown>): void
     }
     delete (message as Record<string, unknown>).reasoning_content;
   }
-}
-
-const MIMO_REASONING_OPENAI_COMPATIBLE_MODEL_IDS = new Set([
-  "mimo-v2-pro",
-  "mimo-v2-omni",
-  "mimo-v2.5",
-  "mimo-v2.5-pro",
-  "mimo-v2.6-pro",
-]);
-const MIMO_REASONING_AS_VISIBLE_TEXT_MODEL_IDS = new Set(["mimo-v2-pro", "mimo-v2-omni"]);
-
-function isMiMoReasoningOpenAICompatibleModel(model: Parameters<StreamFn>[0]): boolean {
-  const normalizedModelId = normalizeDeepSeekV4CandidateId(model.id);
-  return (
-    model.api === "openai-completions" &&
-    normalizedModelId !== undefined &&
-    MIMO_REASONING_OPENAI_COMPATIBLE_MODEL_IDS.has(normalizedModelId)
-  );
-}
-
-function isMiMoReasoningAsVisibleTextOpenAICompatibleModel(
-  model: Parameters<StreamFn>[0],
-): boolean {
-  const normalizedModelId = normalizeDeepSeekV4CandidateId(model.id);
-  return (
-    model.api === "openai-completions" &&
-    normalizedModelId !== undefined &&
-    MIMO_REASONING_AS_VISIBLE_TEXT_MODEL_IDS.has(normalizedModelId)
-  );
 }
 
 /**

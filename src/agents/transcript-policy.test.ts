@@ -397,6 +397,10 @@ describe("resolveTranscriptPolicy", () => {
     "hf:moonshotai/kimi-k2-thinking",
     "xiaomi/mimo-v2.6-pro",
     "xiaomi/mimo-v2.6-pro:cloud",
+    "mimo-v2.6-flash",
+    "xiaomi/mimo-v2.6-flash:cloud",
+    "mimo-v2.6-pro-ultraspeed",
+    "xiaomi/mimo-v2.6-pro-ultraspeed:cloud",
   ])(
     "preserves historical reasoning for %s replay-required OpenAI-compatible models",
     (modelId) => {

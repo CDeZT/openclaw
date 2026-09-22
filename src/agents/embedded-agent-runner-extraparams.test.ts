@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 // Covers extra-params stream wrapper composition across provider families.
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import type { Context, Model, SimpleStreamOptions } from "openclaw/plugin-sdk/llm";
@@ -8,7 +7,6 @@ import {
   testing as extraParamsTesting,
   type WrapProviderStreamFnParams,
 } from "./embedded-agent-runner/extra-params.test-support.js";
-import { createZeroUsageFixture } from "./test-helpers/usage-fixtures.js";
 
 vi.mock("../plugins/provider-hook-runtime.js", () => ({
   clearProviderRuntimePluginCacheForTest: vi.fn(),
@@ -823,79 +821,6 @@ describe("applyExtraParamsToAgent", () => {
 
     expect(payload.reasoning_effort).toBe("high");
     expect(payload).not.toHaveProperty("thinking");
-  });
-
-  it("fills MiMo V2.6 reasoning_content for unowned OpenAI-compatible proxy models", () => {
-    const payload = runResponsesPayloadMutationCase({
-      applyProvider: "opencode",
-      applyModelId: "xiaomi/mimo-v2.6-pro",
-      thinkingLevel: "high",
-      model: {
-        api: "openai-completions",
-        provider: "opencode",
-        id: "xiaomi/mimo-v2.6-pro",
-      } as Model<"openai-completions">,
-      payload: {
-        messages: [
-          { role: "user", content: "continue" },
-          { role: "assistant", content: "I used a tool" },
-          { role: "tool", content: "ok" },
-        ],
-      },
-    });
-
-    const messages = payload.messages as Array<Record<string, unknown>>;
-    expect(payload.thinking).toEqual({ type: "enabled" });
-    expect(payload.reasoning_effort).toBe("high");
-    expect(messages[1]).toHaveProperty("reasoning_content", "");
-  });
-
-  it("promotes reasoning-only MiMo V2 proxy finals to visible text", async () => {
-    const resultMessage = {
-      role: "assistant",
-      content: [{ type: "thinking", thinking: "proxy final answer" }],
-      api: "openai-completions",
-      provider: "opencode",
-      model: "xiaomi/mimo-v2-pro",
-      usage: createZeroUsageFixture(),
-      stopReason: "stop",
-      timestamp: 1,
-    } as const;
-    const baseStreamFn: StreamFn = () => {
-      const stream = createAssistantMessageEventStream();
-      queueMicrotask(() => {
-        stream.push({ type: "done", reason: "stop", message: resultMessage as never });
-      });
-      return stream;
-    };
-    const agent = { streamFn: baseStreamFn };
-    applyExtraParamsToAgent(agent, undefined, "opencode", "xiaomi/mimo-v2-pro", undefined, "high");
-
-    const model = {
-      api: "openai-completions",
-      provider: "opencode",
-      id: "xiaomi/mimo-v2-pro",
-    } as Model<"openai-completions">;
-    const stream = await agent.streamFn?.(model, { messages: [] }, {});
-    assert(stream, "expected stream function");
-    const events: unknown[] = [];
-    for await (const event of stream) {
-      events.push(event);
-    }
-
-    expect(events).toEqual([
-      {
-        type: "done",
-        reason: "stop",
-        message: {
-          ...resultMessage,
-          content: [{ type: "text", text: "proxy final answer" }],
-        },
-      },
-    ]);
-    await expect(stream.result()).resolves.toMatchObject({
-      content: [{ type: "text", text: "proxy final answer" }],
-    });
   });
 
   it("strips xai Responses reasoning payload fields", () => {

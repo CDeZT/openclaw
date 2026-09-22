@@ -166,6 +166,24 @@ describe("buildOpenAICompletionsParams sanitizes reasoning replay fields", () =>
       assertSanitizedFields: true,
     },
     {
+      label: "preserves MiMo V2.6 Flash proxy replay with stale reasoning metadata",
+      model: {
+        ...customMiMoProxyModel,
+        id: "xiaomi/mimo-v2.6-flash:cloud",
+        reasoning: false,
+      },
+      assertSanitizedFields: true,
+    },
+    {
+      label: "preserves MiMo V2.6 Pro UltraSpeed proxy replay with stale reasoning metadata",
+      model: {
+        ...customMiMoProxyModel,
+        id: "xiaomi/mimo-v2.6-pro-ultraspeed",
+        reasoning: false,
+      },
+      assertSanitizedFields: true,
+    },
+    {
       label: "preserves reasoning_content replay for custom Kimi K2 proxy routes",
       model: customKimiProxyModel,
       assertSanitizedFields: true,
