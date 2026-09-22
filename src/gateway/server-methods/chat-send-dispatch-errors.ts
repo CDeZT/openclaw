@@ -1,3 +1,6 @@
+import { types } from "node:util";
+import { projectDiagnosticValue } from "@openclaw/ai/diagnostics";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { renderAgentHarnessPreflightUserMessage } from "../../agents/embedded-agent-helpers/user-facing-text.js";
 import { describeFailoverError } from "../../agents/failover-error.js";
@@ -5,6 +8,8 @@ import { renderFailoverCodeUserCopy } from "../../agents/failover/user-copy.js";
 import { DispatchSessionRefreshRequiredError } from "../../auto-reply/reply/dispatch-session-refresh-error.js";
 import { SessionGoalOperationError } from "../../config/sessions/goals-operations.js";
 import { clearAgentRunContext, getAgentRunContext } from "../../infra/agent-run-registry.js";
+import { collectErrorGraphCandidates } from "../../infra/errors.js";
+import { serializeRedactedFileLogRecord } from "../../logging/redact.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { ExpectedProfileMismatchError } from "../expected-profile.js";
@@ -43,6 +48,99 @@ type PendingDispatchLifecycleError = {
   sessionId: string;
   startedAt: number;
 };
+
+const MAX_DISPATCH_ERROR_DIAGNOSTIC_CHARS = 100_000;
+const nativeErrorStackGetter = Object.getOwnPropertyDescriptor(new Error(), "stack")?.get;
+
+function collectChatSendErrorStacks(error: unknown): string[] {
+  let remaining = 63;
+  const candidates = collectErrorGraphCandidates(error, (candidate) => {
+    const children: unknown[] = [];
+    const append = (value: unknown) => {
+      if (remaining > 0 && value !== null && typeof value === "object") {
+        children.push(value);
+        remaining -= 1;
+      }
+    };
+    try {
+      append(Object.getOwnPropertyDescriptor(candidate, "cause")?.value);
+      const errors = Object.getOwnPropertyDescriptor(candidate, "errors")?.value;
+      if (remaining > 0 && Array.isArray(errors)) {
+        const length = Object.getOwnPropertyDescriptor(errors, "length")?.value;
+        const limit = Math.min(typeof length === "number" ? length : 0, remaining);
+        for (let index = 0; index < limit; index += 1) {
+          append(Object.getOwnPropertyDescriptor(errors, String(index))?.value);
+        }
+      }
+    } catch {
+      // Opaque causes do not prevent retaining readable sibling stacks.
+    }
+    return children;
+  });
+  return candidates.flatMap((candidate) => {
+    try {
+      if (!types.isNativeError(candidate)) {
+        return [];
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(candidate, "stack");
+      if (typeof descriptor?.value === "string") {
+        return [descriptor.value];
+      }
+      if (!nativeErrorStackGetter || descriptor?.get !== nativeErrorStackGetter) {
+        return [];
+      }
+      // Node 26 exposes its own lazy stack accessor. Only invoke that known getter,
+      // and do not let its name/message formatting invoke error-owned accessors.
+      for (const key of ["name", "message"]) {
+        let owner: object | null = candidate;
+        for (let depth = 0; owner; depth += 1) {
+          if (depth === 16) {
+            return [];
+          }
+          const label = Object.getOwnPropertyDescriptor(owner, key);
+          if (label) {
+            if (
+              !("value" in label) ||
+              (label.value !== undefined && typeof label.value !== "string")
+            ) {
+              return [];
+            }
+            break;
+          }
+          owner = Object.getPrototypeOf(owner);
+        }
+      }
+      const stack: unknown = nativeErrorStackGetter.call(candidate);
+      return typeof stack === "string" ? [stack] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function logChatSendError(
+  context: Pick<GatewayRequestContext, "logGateway">,
+  runId: string,
+  phase: "setup" | "dispatch",
+  error: unknown,
+): void {
+  // Capture the original graph before public copy drops stacks and private causes.
+  // Redact the complete snapshot before clipping so a split credential cannot escape masking.
+  try {
+    const diagnostic = serializeRedactedFileLogRecord({
+      // Error-owned conversion hooks must not run while recording a failure.
+      error: projectDiagnosticValue(error, { omitField: (key) => key === "toJSON" }),
+      stacks: projectDiagnosticValue(collectChatSendErrorStacks(error)),
+    });
+    context.logGateway.error(`chat.send ${phase} failed`, {
+      runId,
+      diagnostic: truncateUtf16Safe(diagnostic, MAX_DISPATCH_ERROR_DIAGNOSTIC_CHARS),
+      diagnosticTruncated: diagnostic.length > MAX_DISPATCH_ERROR_DIAGNOSTIC_CHARS,
+    });
+  } catch {
+    // Best-effort diagnostics must not replace the original terminal outcome.
+  }
+}
 
 function formatChatSendError(error: unknown): string {
   if (error instanceof DispatchSessionRefreshRequiredError) {
@@ -96,6 +194,7 @@ export async function handleChatSendSetupError(params: {
     error: params.error,
     phase: "pre-ack",
   });
+  logChatSendError(params.context, clientRunId, "setup", params.error);
   if (restartSafeAdmission) {
     const terminalized = await params
       .terminalizeRestartSafeAdmission({
@@ -196,6 +295,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
   let publishDispatchError: (() => void) | undefined;
 
   const handleError = async (err: unknown) => {
+    logChatSendError(context, clientRunId, "dispatch", err);
     const errorMessage = formatChatSendError(err);
     const failureDisposition =
       params.classifyFailure?.(err) ??

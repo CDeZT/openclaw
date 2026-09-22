@@ -125,4 +125,39 @@ describe("trusted transcript display metadata", () => {
       });
     },
   );
+
+  it("keeps retained failure details and run correlation in history and live projection", () => {
+    const content = `This turn ended before a reply: Worker setup failed\n${"  at prepareWorkspace (worker.ts:42)\n".repeat(260)}Cause: network allocation failed`;
+    const failure = {
+      role: "custom",
+      customType: "run-failed-before-reply",
+      content,
+      display: true,
+      details: { runId: "failed-run", error: "PRIVATE_DIAGNOSTIC" },
+    };
+    const history = projectTranscriptEntryMessage(
+      { ...failure, type: "custom_message", id: "failure-entry" },
+      2,
+      position,
+    );
+    const live = projectSessionMessagePayload({
+      message: failure,
+      messageId: "failure-entry",
+      messageSeq: 2,
+      sessionKey: "agent:main:main",
+    }).payload?.message;
+    expect(content.length).toBeGreaterThan(8_000);
+    for (const projected of [projectChatDisplayMessage(history), live]) {
+      expect(projected).toMatchObject({ content });
+      expect(readSessionMessageIdentity(projected)?.runId).toBe("failed-run");
+      expect(projected).not.toHaveProperty("details");
+      expect(JSON.stringify(projected)).not.toContain("PRIVATE_DIAGNOSTIC");
+    }
+    // The failure allowance must not raise explicit caps or ordinary message caps.
+    expect(projectChatDisplayMessage(history, { maxChars: 512 })?.content).not.toContain("Cause:");
+    expect(projectChatDisplayMessage({ role: "user", content })?.content).not.toContain("Cause:");
+    const oversized = projectChatDisplayMessage({ ...failure, content: "x".repeat(20_000) });
+    expect(String(oversized?.content).length).toBeLessThan(10_100);
+    expect(oversized?.__openclaw).toMatchObject({ truncated: true });
+  });
 });

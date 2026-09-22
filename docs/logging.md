@@ -57,6 +57,36 @@ You can override the path in `~/.openclaw/openclaw.json`:
 
 ## How to read logs
 
+### Find a failed turn by run ID
+
+When chat setup or dispatch throws, the Gateway records an error-level
+`chat.send setup failed` or `chat.send dispatch failed` log entry. Its `runId`
+matches the turn's diagnostic reference. This is a run correlation ID, separate
+from an OpenTelemetry trace ID.
+
+The `diagnostic` field contains a redacted snapshot of the caught error,
+including its stack, causes, and aggregate errors when available. The snapshot
+is limited to 100,000 characters after redaction; `diagnosticTruncated: true`
+indicates clipping. Upstream services may already have shortened an error before
+it reaches the Gateway, so the record cannot always recover the original stack.
+The conversation retains up to 10,000 characters of its redacted user-facing
+explanation, preserving line breaks. **Details** expands this bounded text and
+shows the run ID; **Copy error** and **Copy run ID** copy them separately. An
+explicit truncation notice appears when the retained explanation is clipped.
+
+Search for the run ID in the Control UI **Logs** tab or in CLI JSON output:
+
+```bash
+openclaw logs --json --max-bytes 1000000 | rg --fixed-strings 'RUN_ID'
+```
+
+The Logs tab and `logs.tail` read a bounded window of the configured active log;
+they do not search older archives. For an older turn, search the configured log
+directory on the Gateway host, including dated files and numbered archives.
+Retrieval follows the existing operator log permissions and file retention
+described above. Logging is best effort, and `logging.level: "silent"` disables
+file records; a run ID does not guarantee that a log record is still available.
+
 ### CLI: live tail (recommended)
 
 Tail the gateway log file via RPC:

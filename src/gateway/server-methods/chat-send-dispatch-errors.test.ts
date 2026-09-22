@@ -37,6 +37,9 @@ describe("handleChatSendSetupError", () => {
     const broadcast = vi.fn();
     const respond = vi.fn();
     const dedupe = new Map();
+    const logError = vi.fn();
+    const failure = new SessionTranscriptProjectionUnavailableError("sess-main");
+    failure.stack = `setup stack password=synthetic-password\n${"x".repeat(100_100)}`;
 
     await handleChatSendSetupError({
       admission: {
@@ -55,11 +58,11 @@ describe("handleChatSendSetupError", () => {
         broadcast,
         chatRunState: { clearRun },
         dedupe,
-        logGateway: { warn: vi.fn() },
+        logGateway: { warn: vi.fn(), error: logError },
         nodeSendToSession: vi.fn(),
         removeChatRun: vi.fn(),
       } as never,
-      error: new SessionTranscriptProjectionUnavailableError("sess-main"),
+      error: failure,
       respond,
       session: {
         agentId: "main",
@@ -75,6 +78,14 @@ describe("handleChatSendSetupError", () => {
       expect.objectContaining({ code: "UNAVAILABLE", retryable: true, retryAfterMs: 250 }),
       expect.anything(),
     );
+    expect(logError).toHaveBeenCalledWith(
+      "chat.send setup failed",
+      expect.objectContaining({ runId: "setup-projection-retry", diagnosticTruncated: true }),
+    );
+    const diagnostic = logError.mock.calls[0]?.[1].diagnostic;
+    expect(diagnostic).toHaveLength(100_000);
+    expect(diagnostic).toContain("setup stack");
+    expect(diagnostic).not.toContain("synthetic-password");
     expect(dedupe.size).toBe(0);
     expect(broadcast).not.toHaveBeenCalled();
     expect(cleanupAdmittedRun).toHaveBeenCalledOnce();
@@ -147,6 +158,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
           await persistUserTurnTranscript();
         }
         const warn = vi.fn();
+        const logError = vi.fn();
         const chatRunState = createChatRunState();
         const broadcast = vi.fn();
         const agentRunSeq = new Map<string, number>();
@@ -187,7 +199,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
             dedupe: new Map(),
             getRuntimeConfig: () => ({}),
             getSessionEventSubscriberConnIds: () => new Set<string>(),
-            logGateway: { warn },
+            logGateway: { warn, error: logError },
             nodeSendToSession: vi.fn(),
             removeChatRun: vi.fn(),
           } as never,
@@ -229,7 +241,53 @@ describe("createChatSendDispatchErrorLifecycle", () => {
                   userMessage: policyMessage,
                 })
               : new Error("Cloud worker unavailable");
+        const cause = new Error("worker diagnostic password=synthetic-password");
+        cause.stack =
+          "Error: worker diagnostic password=synthetic-password\n    at allocateWorker (fixture.ts:42:1)";
+        const stackGetter = vi.fn(() => {
+          throw new Error("Custom stack accessor must not run");
+        });
+        const opaque = new Error("opaque sibling");
+        Object.defineProperty(opaque, "stack", { get: stackGetter });
+        const boundedChildren =
+          policyFailure && restartSafe
+            ? Array.from({ length: 70 }, (_, index) =>
+                Object.assign(new Error(`bounded child ${index}`), {
+                  stack: `bounded child ${index}`,
+                }),
+              )
+            : [];
+        failure.cause = new AggregateError([cause, opaque, ...boundedChildren], "worker failures");
+        const toJSON = vi.fn(() => {
+          throw new Error("Error conversion must not run");
+        });
+        Object.assign(failure, { attemptCount: 42n, toJSON });
         await lifecycle.handleError(failure);
+        expect(logError).toHaveBeenCalledWith(
+          "chat.send dispatch failed",
+          expect.objectContaining({ runId, diagnosticTruncated: false }),
+        );
+        const logged = JSON.parse(logError.mock.calls[0]?.[1].diagnostic);
+        expect(logged.error).toMatchObject({
+          message: failure.message,
+          attemptCount: "42",
+          cause: {
+            message: "worker failures",
+          },
+        });
+        // Leave the outer Error's native stack untouched: recent Node versions expose
+        // it as an accessor, including after assigning a synthetic child stack.
+        expect(logged.stacks).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining(failure.message),
+            expect.stringContaining("at allocateWorker (fixture.ts:42:1)"),
+          ]),
+        );
+        expect(logged.stacks.length).toBeLessThanOrEqual(64);
+        expect(logged.stacks).not.toContain("bounded child 69");
+        expect(stackGetter).not.toHaveBeenCalled();
+        expect(JSON.stringify(logged)).not.toContain("synthetic-password");
+        expect(toJSON).not.toHaveBeenCalled();
         expect(previewGroup?.signal.aborted).toBe(false);
         await lifecycle.finalize();
         expect(broadcast).toHaveBeenLastCalledWith(
@@ -383,7 +441,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
           chatRunState: createChatRunState(),
           dedupe,
           getRuntimeConfig: () => ({}),
-          logGateway: { warn },
+          logGateway: { warn, error: vi.fn() },
           nodeSendToSession: vi.fn(),
           removeChatRun,
         } as never,
@@ -492,7 +550,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
             chatRunState,
             dedupe,
             getRuntimeConfig: () => ({}),
-            logGateway: { warn },
+            logGateway: { warn, error: vi.fn() },
             nodeSendToSession: vi.fn(),
             removeChatRun,
           } as never,
@@ -569,7 +627,12 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         chatRunState,
         dedupe,
         getRuntimeConfig: () => ({}),
-        logGateway: { warn: vi.fn() },
+        logGateway: {
+          warn: vi.fn(),
+          error: vi.fn(() => {
+            throw new Error("diagnostic sink unavailable");
+          }),
+        },
         nodeSendToSession: vi.fn(),
         removeChatRun: vi.fn(),
       } as never,
@@ -646,7 +709,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         chatRunState,
         dedupe,
         getRuntimeConfig: () => ({}),
-        logGateway: { warn: vi.fn() },
+        logGateway: { warn: vi.fn(), error: vi.fn() },
         nodeSendToSession: vi.fn(),
         removeChatRun: vi.fn(),
       } as never,
@@ -739,7 +802,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
           dedupe,
           getRuntimeConfig: () => cfg,
           getSessionEventSubscriberConnIds: () => new Set<string>(),
-          logGateway: { warn: vi.fn() },
+          logGateway: { warn: vi.fn(), error: vi.fn() },
           nodeSendToSession: vi.fn(),
           removeChatRun: vi.fn(),
         } as never,

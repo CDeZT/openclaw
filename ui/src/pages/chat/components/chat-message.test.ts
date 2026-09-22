@@ -552,6 +552,45 @@ afterEach(() => {
 });
 
 describe("grouped chat rendering", () => {
+  it("keeps a retained failure compact and copies literal diagnostic text and its run ID", async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const diagnostic = `This turn ended before a reply: Worker startup failed.\n${"  at prepare (/workspace/example.ts:12)\n".repeat(240)}<img src=x onerror=alert(1)>\nTerminal cause`;
+    const container = document.createElement("div");
+    renderGroupedMessage(
+      container,
+      {
+        role: "custom",
+        customType: "run-failed-before-reply",
+        content: diagnostic,
+        __openclaw: { id: "failure-notice", seq: 1, runId: "failed-run" },
+      },
+      "custom",
+    );
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    const summary = details?.querySelector("summary");
+    expect(summary?.querySelector("strong")?.textContent).toBe(
+      "This turn ended before a reply: Worker startup failed.",
+    );
+    expect(summary?.textContent).not.toContain("Terminal cause");
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector(".chat-error")?.hasAttribute("role")).toBe(false);
+    summary?.click();
+    expect(details?.open).toBe(true);
+    expect(details?.querySelector("pre")?.textContent).toBe(diagnostic);
+    expect(details?.querySelector("code")?.textContent).toBe("failed-run");
+    details?.querySelector<HTMLButtonElement>('[aria-label="Copy error"]')?.click();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenLastCalledWith(diagnostic);
+    expect(details?.open).toBe(true);
+    details?.querySelector<HTMLButtonElement>('[aria-label="Copy run ID"]')?.click();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenLastCalledWith("failed-run");
+  });
+
   it.each([
     { customType: "run-failed-before-reply", label: "Error" },
     { customType: "cloud-workspace-recovery-failed", label: "Error" },

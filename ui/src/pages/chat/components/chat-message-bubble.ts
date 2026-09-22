@@ -3,6 +3,7 @@ import { html, nothing, type TemplateResult } from "lit";
 import { ref } from "lit/directives/ref.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { CHAT_PENDING_INPUT_MESSAGE_PREFIX } from "../../../../../packages/gateway-protocol/src/schema/chat-history-constants.js";
+import { RUN_FAILED_BEFORE_REPLY_TRANSCRIPT_TYPE } from "../../../../../src/shared/session-run-error.ts";
 import { icons } from "../../../components/icons.ts";
 import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
 import { parseMarkdownJson } from "../../../components/markdown-json.ts";
@@ -11,6 +12,7 @@ import { toSanitizedMarkdownHtml } from "../../../components/markdown.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerChatMessageMetadataEnglish } from "../../../i18n/locales/en-chat-message-metadata.ts";
 import type { BoardProvider } from "../../../lib/board/provider.ts";
+import { redactToolDetail } from "../../../lib/browser-redact.ts";
 import type { MessageContentItem, ToolCard } from "../../../lib/chat/chat-types.ts";
 import { resolveMessageDisplayMarkdown } from "../../../lib/chat/message-display.ts";
 import "../../../components/person-reference.ts";
@@ -34,6 +36,7 @@ import type { LinkFaviconFetcher } from "../link-favicon-loader.ts";
 import { workspaceResultConflictFromTranscript } from "../workspace-conflict.ts";
 import { readAsyncQuestions, renderAsyncQuestionSummary } from "./chat-async-question.ts";
 import type { AsyncQuestionPresentation } from "./chat-async-question.types.ts";
+import { renderChatErrorNotice } from "./chat-error-notice.ts";
 import {
   renderAssistantAttachments,
   renderMessageAttachment,
@@ -223,6 +226,23 @@ export function renderGroupedMessage(
   const workspaceConflict = workspaceResultConflictFromTranscript(message);
   if (workspaceConflict) {
     return renderWorkspaceConflictTranscriptMessage(workspaceConflict, messageKey, opts.entryId);
+  }
+  if (sourceRole === "custom" && m.customType === RUN_FAILED_BEFORE_REPLY_TRANSCRIPT_TYPE) {
+    return html`<div
+      class="chat-bubble"
+      data-message-id=${messageKey}
+      data-entry-id=${opts.entryId || nothing}
+      data-message-text=${displayMarkdown || nothing}
+      .messageActions=${opts.messageActions}
+    >
+      ${renderChatErrorNotice(
+        redactToolDetail(displayMarkdown, { preservePaths: true }),
+        nothing,
+        undefined,
+        readSessionMessageIdentity(message)?.runId ?? undefined,
+        true,
+      )}
+    </div>`;
   }
   const isToolShell = normalizedRole === "tool";
   const isStandaloneToolMessage = isStandaloneToolMessageForDisplay(message);

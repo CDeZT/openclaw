@@ -212,7 +212,7 @@ describe("durable pre-reply run failure", () => {
           ...event,
           data: {
             ...event.data,
-            error: `Worker rejected token=${secret}\n${"detail ".repeat(150)}token=${secret}: upload failed`,
+            error: `Worker rejected token=${secret}\n${"detail 🦞 ".repeat(1_500)}token=${secret}: upload failed`,
           },
         },
       });
@@ -221,14 +221,38 @@ describe("durable pre-reply run failure", () => {
       expect(JSON.stringify(entries)).not.toContain(secret);
       expect(entries[0]).toMatchObject({ details: { runId, error: expect.any(String) } });
       const report = entries[0] as { details: { error: string } };
-      expect(report.details.error.length).toBeLessThanOrEqual(512);
-      expect(report.details.error).not.toContain("\n");
+      expect(report.details.error.length).toBeGreaterThan(9_900);
+      expect(report.details.error.length).toBeLessThanOrEqual(10_000);
+      expect(report.details.error).toContain("\ndetail 🦞 ");
+      expect(report.details.error).toMatch(
+        /\[Error truncated; search Gateway logs by run ID for more detail\.\]$/,
+      );
+      expect(report.details.error).not.toMatch(/[\uD800-\uDFFF]/u);
       const lastRunError = loadSessionEntry(target)?.lastRunError;
       expect(lastRunError).not.toContain(secret);
       expect(lastRunError).not.toContain("abcdefghijklmnopqrstuvwxyz");
       expect(lastRunError).toMatch(/^Worker rejected token=/);
       expect(lastRunError).toMatch(/upload failed$/);
       expect(lastRunError?.length).toBeLessThanOrEqual(160);
+    });
+  });
+
+  it("retains multiline diagnostics beyond both previous display caps", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await seed();
+      const diagnostic = `Worker setup failed\n${"  at prepareWorkspace (worker.ts:42)\n".repeat(260)}Cause: network allocation failed`;
+      expect(diagnostic.length).toBeGreaterThan(8_000);
+      expect(diagnostic.length).toBeLessThan(10_000);
+      await persistGatewaySessionLifecycleEvent({
+        ...target,
+        event: { ...event, data: { ...event.data, error: diagnostic } },
+      });
+      expect(await reports()).toMatchObject([
+        {
+          content: `This turn ended before a reply: ${diagnostic}`,
+          details: { runId, error: diagnostic },
+        },
+      ]);
     });
   });
 
