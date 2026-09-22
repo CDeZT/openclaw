@@ -159,13 +159,25 @@
 }
 
 @media (max-width: 768px), (pointer: coarse) {
-  .app-toast--notification .app-toast__action,
-  .app-toast--notification .app-toast__dismiss {
+  .app-toast--notification .app-toast__action {
+    position: relative;
     min-width: 44px;
-    min-height: 44px;
+    min-height: 32px;
+    padding: var(--space-1) 10px;
+    border-radius: 6px;
+    font-size: calc(12px * var(--control-ui-text-scale));
+  }
+
+  .app-toast--notification .app-toast__action::after {
+    /* Keep a 44px tap area without making the visible CTA dominate the card. */
+    position: absolute;
+    inset: -6px 0;
+    content: "";
   }
 
   .app-toast--notification .app-toast__dismiss {
+    min-width: 44px;
+    min-height: 44px;
     /* Grow only into outer padding; the grid reserves the rest of the hit area. */
     margin-block-start: -10px;
     margin-inline-end: -10px;

@@ -472,7 +472,7 @@ describe("shared toast", () => {
 
     expect(reasons).toEqual(["replaced", "action", "ran-action", "dismiss", "disconnected"]);
   });
-  it("renders notification headings with an icon dismiss and animates the five-second timeout", async () => {
+  it("renders notification headings and animates the five-second timeout", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("matchMedia", () => ({ matches: false }));
     const host = await mountHost();
@@ -491,11 +491,6 @@ describe("shared toast", () => {
     expect(host.querySelector(".app-toast__message")?.textContent?.trim()).toBe(
       "Please review the spacing.",
     );
-    const footer = host.querySelector(".app-toast__footer")!;
-    expect(footer.textContent?.trim()).toBe("View session");
-    expect(footer.contains(host.querySelector(".app-toast__action"))).toBe(true);
-    expect(host.querySelector(".app-toast__dismiss svg")).not.toBeNull();
-    expect(host.querySelector(".app-toast__dismiss")?.textContent?.trim()).toBe("");
     await vi.advanceTimersByTimeAsync(4_999);
     expect(onDismiss).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);

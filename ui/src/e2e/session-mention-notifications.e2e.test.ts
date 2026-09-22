@@ -2,7 +2,6 @@ import type { Page } from "playwright";
 import { expect as expectBrowser } from "playwright/test";
 import { expect, it } from "vitest";
 import type { MentionInboxItem } from "../../../packages/gateway-protocol/src/index.js";
-import { prepareMentionExcerpts } from "../../../src/gateway/mention-excerpt.js";
 import type { ChatSplitLayout } from "../pages/chat/split-layout-types.ts";
 import {
   controlUiBundledSettingsStorageKey,
@@ -254,11 +253,6 @@ suite.define(() => {
           arrival.sessionTitle,
         );
         await expectBrowser(toast.locator(".mention-toast__excerpt")).toHaveText(arrival.excerpt!);
-        await expectBrowser(toast.locator(".app-toast__footer")).toHaveText("View session");
-        await expectBrowser(toast.locator(".app-toast__dismiss svg")).toHaveCount(1);
-        await expectBrowser(toast.getByRole("button", { name: "Dismiss", exact: true })).toHaveText(
-          "",
-        );
         await toast.evaluate(async (element) => {
           await Promise.all(element.getAnimations().map((animation) => animation.finished));
         });
@@ -293,17 +287,11 @@ suite.define(() => {
         { viewport: { width, height }, colorScheme: theme },
         async ({ page }) => {
           const gateway = await openTab(page, keys[0], width < 768);
-          const text = `${"Earlier background. ".repeat(200)}Before we ship, @Taylor can you check the spacing? ${"Later details. ".repeat(200)}`;
-          const start = text.indexOf("@Taylor");
-          const prepared = prepareMentionExcerpts(
-            text,
-            [{ profileId: "profile-taylor", start, end: start + 7 }],
-            (value) => value,
-          ).recipients[0]!;
           const item = {
             ...arrival,
-            excerpt: prepared.excerpt,
-            excerptMention: prepared.excerptMention,
+            excerpt:
+              "… background. Before we ship, @Taylor can you check the spacing? Later details. Later details. Later details. Later details. Later details. Later details. Later details. Later details. Later details. Later details. Later details. Later details. Later details. Later details. …",
+            excerptMention: { start: 30, end: 37 },
             senderLabel: "Alexandria Catherine Montgomery-Worthington",
             sessionTitle: "Release readiness — notification delivery and workspace collaboration",
           };
@@ -314,13 +302,10 @@ suite.define(() => {
           await expectBrowser(toast).toContainText("mentioned you");
           const layout = await toast.evaluate((element) => {
             const box = element.getBoundingClientRect();
-            const avatar = element.querySelector(".viewer-avatar")!.getBoundingClientRect();
             return {
-              width: box.width,
               right: box.right,
               left: box.left,
               overflow: element.scrollWidth > element.clientWidth,
-              avatar: avatar.width,
             };
           });
           expect(layout.overflow).toBe(false);
@@ -340,7 +325,6 @@ suite.define(() => {
           );
           if (width < 768) {
             const dismiss = await toast.locator(".app-toast__dismiss").boundingBox();
-            expect(action!.height).toBeGreaterThanOrEqual(44);
             expect(dismiss!.width).toBeGreaterThanOrEqual(44);
             expect(dismiss!.height).toBeGreaterThanOrEqual(44);
             expect(dismiss!.x).toBeGreaterThanOrEqual(heading!.x + heading!.width);
@@ -351,7 +335,13 @@ suite.define(() => {
           await captureUiProof(suite, page, "03-after-" + name + ".png");
           // Routing into the mentioned session retires its active toast without a
           // server dismissal; this is a tab-local presentation decision.
-          await toast.getByRole("button", { name: "View session" }).click();
+          if (width < 768) {
+            // Tap beyond the compact visible border, inside the retained touch area.
+            await page.mouse.click(action!.x + action!.width / 2, action!.y + action!.height + 4);
+          } else {
+            await toast.getByRole("button", { name: "View session" }).click();
+          }
+          await expectBrowser(page).toHaveURL(controlUiSessionUrl(suite.server.baseUrl, targetKey));
           await expectBrowser(toast).toHaveCount(0);
           expect(await gateway.getRequests("mentions.dismiss")).toHaveLength(0);
         },

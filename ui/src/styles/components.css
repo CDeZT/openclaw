@@ -1494,7 +1494,7 @@ openclaw-toast-host[data-toast-placement="shell"]
 }
 
 .mention-excerpt__highlight {
-  color: var(--mention-highlight);
+  color: var(--accent);
 }
 
 .btn--icon {

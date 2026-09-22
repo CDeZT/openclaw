@@ -197,7 +197,6 @@
   --danger-muted: rgba(248, 113, 113, 0.75);
   --danger-subtle: rgba(248, 113, 113, 0.08);
   --info: #60a5fa;
-  --mention-highlight: #4aa8c4;
   --info-subtle: rgba(96, 165, 250, 0.08);
   --warn-bright: #f59e0b;
   --warn-strong: #d97706;
@@ -623,7 +622,6 @@
   --danger-muted: rgba(185, 28, 28, 0.75);
   --danger-subtle: rgba(185, 28, 28, 0.08);
   --info: #1d4ed8;
-  --mention-highlight: #16758d;
   --info-subtle: rgba(29, 78, 216, 0.08);
   --pr-merged: #7c3aed;
 

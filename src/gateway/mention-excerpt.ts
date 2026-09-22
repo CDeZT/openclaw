@@ -2,7 +2,7 @@ import { flattenMarkdownToPlainText } from "@openclaw/normalization-core/markdow
 import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { HumanMention } from "../../packages/gateway-protocol/src/index.js";
 
-export type PreparedMentionExcerpt = {
+type PreparedMentionExcerpt = {
   profileId: string;
   excerpt: string;
   excerptMention: { start: number; end: number };
@@ -49,8 +49,7 @@ export function prepareMentionExcerpts(
     return { ...mention, marker, label, redactedStart: -1 };
   });
   masked += text.slice(cursor);
-  const maskedRedacted = redact(masked);
-  let restored = maskedRedacted;
+  let restored = redact(masked);
   for (const selection of selections) {
     selection.redactedStart = restored.indexOf(selection.marker);
     restored = restored.replace(selection.marker, () => selection.label);

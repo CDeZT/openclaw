@@ -3,16 +3,6 @@ import { describe, expect, it } from "vitest";
 import { renderMentionExcerpt } from "./mention-excerpt.ts";
 
 describe("mention excerpt rendering", () => {
-  it("highlights the supplied middle-of-text span without changing the text or creating a link", () => {
-    const text = "Before the release, @Alex Chen please review the spacing.";
-    const start = text.indexOf("@Alex Chen");
-    const root = document.createElement("div");
-    render(renderMentionExcerpt(text, { start, end: start + 10 }), root);
-    expect(root.textContent).toBe(text);
-    expect(root.querySelector(".mention-excerpt__highlight")?.textContent).toBe("@Alex Chen");
-    expect(root.querySelector("a, button, openclaw-person-reference")).toBeNull();
-  });
-
   it("escapes both highlighted text and surrounding markup", () => {
     const text = "<img src=x> @<Taylor> & after";
     const start = text.indexOf("@");

@@ -79,7 +79,7 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
       }
     }
     // Read live state in render(), never the toast that began the import.
-    super.scheduleUpdate();
+    await super.scheduleUpdate();
   }
 
   private syncPlacement() {
@@ -203,7 +203,7 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
         pending.options.signal?.removeEventListener("abort", pending.abort);
         pending.options.onDismiss?.("disconnected");
       }
-    } else if (promoteNext && reason !== "replaced") {
+    } else if (promoteNext) {
       while (this.toastQueue.length) {
         const next = this.toastQueue.shift()!;
         next.options.signal?.removeEventListener("abort", next.abort);

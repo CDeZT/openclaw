@@ -543,7 +543,6 @@ export function createMentionInbox(params: {
         ];
         if (
           input.recipientProfileIds.length > MAX_HUMAN_MENTIONS ||
-          (input.mentions?.length ?? 0) > MAX_HUMAN_MENTIONS ||
           input.sessionKey.length > 512 ||
           references.some((value) => !value || value.length > 256)
         ) {
@@ -552,9 +551,7 @@ export function createMentionInbox(params: {
         }
         const prepared = prepareMentionExcerpts(
           input.excerpt ?? "",
-          (input.mentions ?? []).filter((mention) =>
-            input.recipientProfileIds.includes(mention.profileId),
-          ),
+          input.mentions ?? [],
           redactSensitiveText,
         );
         const committed = mutate<StoredMention[]>(() => {

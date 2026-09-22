@@ -133,6 +133,7 @@ describe("renderSidebarMentionItem", () => {
     const rendered = container.querySelector(".sidebar-mention-row__excerpt")!;
     expect(rendered.textContent?.trim()).toBe(excerpt);
     expect(rendered.querySelector(".mention-excerpt__highlight")?.textContent).toBe("@Alex Chen");
+    expect(rendered.querySelector("a, button, openclaw-person-reference")).toBeNull();
   });
 
   it("disables repeated dismissal while leaving the session link usable", () => {

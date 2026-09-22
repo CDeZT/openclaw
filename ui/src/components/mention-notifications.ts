@@ -27,7 +27,6 @@ class MentionNotifications extends OpenClawLightDomContentsElement {
     () => this.context,
     (context) => {
       const mentions = context.sidebarAttention.getMentions(createMentionsCapability);
-      let disposed = false;
       let viewLoad: Promise<NotificationView> | null = null;
       const forget = (entry: PendingMention) => {
         if (this.pending.get(entry.mention.id) === entry) {
@@ -56,10 +55,8 @@ class MentionNotifications extends OpenClawLightDomContentsElement {
           });
           const view = await viewLoad;
           if (
-            disposed ||
             this.context !== context ||
             entry.abort.signal.aborted ||
-            this.pending.get(entry.mention.id) !== entry ||
             this.isVisible(entry.mention)
           ) {
             cancel(entry);
@@ -85,7 +82,6 @@ class MentionNotifications extends OpenClawLightDomContentsElement {
         }
       });
       return () => {
-        disposed = true;
         stopArrivals();
         stopState();
         for (const entry of this.pending.values()) {

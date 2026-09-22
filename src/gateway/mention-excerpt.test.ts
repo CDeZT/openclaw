@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { prepareMentionExcerpts } from "./mention-excerpt.js";
 
 const identity = (text: string) => text;
-function selection(text: string, label: string, profileId = "taylor", from = 0) {
-  const start = text.indexOf(label, from);
+function selection(text: string, label: string, profileId = "taylor") {
+  const start = text.indexOf(label);
   expect(start).toBeGreaterThanOrEqual(0);
   return { profileId, start, end: start + label.length };
 }
@@ -22,17 +22,6 @@ describe("selected mention excerpts", () => {
     expect(preview.excerpt.slice(preview.excerptMention.start, preview.excerptMention.end)).toBe(
       "@Taylor",
     );
-  });
-
-  it("uses the selected occurrence rather than an earlier unselected copy", () => {
-    const text = `An unselected @Taylor example. ${"Background. ".repeat(300)}The actual request is for @Taylor to check the alignment.`;
-    const preview = prepareMentionExcerpts(
-      text,
-      [selection(text, "@Taylor", "taylor", 100)],
-      identity,
-    ).recipients[0]!;
-    expect(preview.excerpt).toContain("actual request is for @Taylor to check");
-    expect(preview.excerpt).not.toContain("unselected");
   });
 
   it("gives distant recipients their own context and preserves multi-word selected names", () => {
