@@ -1,10 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { disableCronJobsBoundToSessions } from "../../cron/job-session-bindings.js";
-import { createDeferredCore } from "../../shared/deferred.js";
 import { ensureSessionGroupRegistered } from "../session-groups.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import { publishSessionPatchEffects } from "./sessions-patch-effects.js";
-import { sessionLog } from "./sessions-shared.js";
 import type { GatewayRequestContext } from "./types.js";
 
 vi.mock("../../cron/job-session-bindings.js", () => ({ disableCronJobsBoundToSessions: vi.fn() }));
@@ -28,7 +26,7 @@ describe("committed category patch effects", () => {
       context: { cron: {} } as GatewayRequestContext,
       callerScopes: [],
       callerCanManageCron: true,
-      category: "Travel",
+      catalogChanged: false,
       targets: [
         {
           accessChanged: false,
@@ -44,63 +42,32 @@ describe("committed category patch effects", () => {
   }
 
   it.each([true, false])(
-    "joins category registration before publishing inserted=%s",
+    "publishes only the accumulated catalog outcome inserted=%s",
     async (inserted) => {
-      const registration = createDeferredCore<boolean>();
-      vi.mocked(ensureSessionGroupRegistered).mockReturnValueOnce(registration.promise);
-      const publishing = publishSessionPatchEffects(params());
-      try {
-        expect(emitSessionsChanged).toHaveBeenCalledOnce();
-        expect(disableCronJobsBoundToSessions).not.toHaveBeenCalled();
-      } finally {
-        registration.resolve(inserted);
-        await publishing;
-      }
-      expect(
-        vi.mocked(emitSessionsChanged).mock.calls.filter(([, event]) => event.reason === "groups"),
-      ).toHaveLength(inserted ? 1 : 0);
+      const patch = { ...params(), catalogChanged: inserted };
+      // Multiple committed targets still produce one GLOBAL catalog invalidation.
+      patch.targets.push({
+        ...patch.targets[0]!,
+        target: {
+          canonicalKey: "agent:work:travel",
+          targetAgentId: "work",
+          requestedAgentId: "work",
+          fullPatch: { key: "agent:work:travel", category: "Travel" },
+        },
+      });
+      await publishSessionPatchEffects(patch);
+      expect(ensureSessionGroupRegistered).not.toHaveBeenCalled();
+      const groups = vi
+        .mocked(emitSessionsChanged)
+        .mock.calls.filter(([, event]) => event.reason === "groups");
+      expect(groups).toEqual(
+        inserted ? [[patch.context, { reason: "groups" }, { catalogOnly: true }]] : [],
+      );
       expect(disableCronJobsBoundToSessions).toHaveBeenCalledOnce();
     },
   );
 
-  it("preserves the committed patch and remaining effects when catalog registration fails", async () => {
-    vi.mocked(ensureSessionGroupRegistered).mockRejectedValueOnce(new Error("catalog unavailable"));
-    const patch = params();
-
-    await expect(publishSessionPatchEffects(patch)).resolves.toBeUndefined();
-
-    expect(patch.targets[0]?.entry.category).toBe("Travel");
-    expect(emitSessionsChanged).toHaveBeenCalledWith(
-      patch.context,
-      { sessionKey: "agent:main:travel", reason: "patch" },
-      { accessChanged: false },
-    );
-    expect(emitSessionsChanged).toHaveBeenCalledWith(
-      patch.context,
-      { reason: "groups" },
-      { catalogOnly: true },
-    );
-    expect(sessionLog.warn).toHaveBeenCalledWith(
-      expect.stringContaining("retry the same category assignment"),
-    );
-    expect(disableCronJobsBoundToSessions).toHaveBeenCalledOnce();
-
-    // A repeated assignment still invokes the catalog owner and publishes recovery.
-    vi.mocked(ensureSessionGroupRegistered).mockResolvedValueOnce(true);
-    await publishSessionPatchEffects(patch);
-    expect(ensureSessionGroupRegistered).toHaveBeenCalledTimes(2);
-    expect(
-      vi.mocked(emitSessionsChanged).mock.calls.filter(([, event]) => event.reason === "groups"),
-    ).toHaveLength(2);
-  });
-
-  it("does not publish a catalog change when the group already exists", async () => {
-    vi.mocked(ensureSessionGroupRegistered).mockResolvedValue(false);
-    await publishSessionPatchEffects(params());
-    expect(emitSessionsChanged).toHaveBeenCalledOnce();
-  });
-
-  it("does not register a category when no target committed", async () => {
+  it("does not invent registration or an event when no target committed", async () => {
     await publishSessionPatchEffects({ ...params(), targets: [] });
     expect(ensureSessionGroupRegistered).not.toHaveBeenCalled();
     expect(emitSessionsChanged).not.toHaveBeenCalled();

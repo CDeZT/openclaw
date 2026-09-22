@@ -11,6 +11,7 @@ import {
   applySessionEntryCanonicalReplacements,
   type SessionEntryCanonicalReplacement,
 } from "../../config/sessions/session-accessor.sqlite-replacement-projection.js";
+import type { SessionEntryCommitContext } from "../../config/sessions/session-accessor.types.js";
 import { SessionLabelOwnerIndex } from "../../config/sessions/session-entry-selection.js";
 import { parseSessionLabel } from "../../sessions/session-label.js";
 import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
@@ -34,7 +35,10 @@ import {
   type SessionPatchCatalogResult,
 } from "./sessions-patch-catalog-preparation.js";
 import type { SessionPatchDiagnostics } from "./sessions-patch-diagnostics.js";
-import { publishSessionPatchEffects } from "./sessions-patch-effects.js";
+import {
+  publishSessionPatchEffects,
+  registerPatchedSessionCategory,
+} from "./sessions-patch-effects.js";
 import {
   assertSessionPatchCommitAllowed,
   sessionChangedError,
@@ -104,6 +108,7 @@ export async function executeSessionPatchMutations(params: {
   }
   const { outcomes, prepared, preparedByIndex } = preflight;
   const permissionErrors = new Map<number, ErrorShape>();
+  let catalogChanged = false;
 
   const catalogs = createSessionPatchCatalogPreparation(
     (agentId) => params.context.loadGatewayModelCatalogSnapshot({ agentId }),
@@ -435,6 +440,24 @@ export async function executeSessionPatchMutations(params: {
                     };
                   };
                   const groupStore = {
+                    afterCommitted:
+                      typeof params.patch.category === "string" && params.patch.category.trim()
+                        ? async (
+                            result: GroupAdmissionResult,
+                            source: SessionEntryCommitContext,
+                          ) => {
+                            if (
+                              result.kind === "complete" &&
+                              result.outcomes.some((outcome) => outcome.ok && outcome.applied)
+                            ) {
+                              const reloadCatalog = await registerPatchedSessionCategory(
+                                params.patch.category,
+                                source,
+                              );
+                              catalogChanged ||= reloadCatalog;
+                            }
+                          }
+                        : undefined,
                     assertCommitAllowed: () =>
                       assertSessionPatchCommitAllowed({
                         personalModelSelection,
@@ -577,7 +600,7 @@ export async function executeSessionPatchMutations(params: {
     context: params.context,
     callerScopes,
     callerCanManageCron: callerIsAdmin,
-    category: params.patch.category,
+    catalogChanged,
     targets: prepared.flatMap((target) => {
       const outcome = outcomes[target.index];
       return outcome?.ok && outcome.applied

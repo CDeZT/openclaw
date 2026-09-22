@@ -82,6 +82,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       return;
     }
     const p = params;
+    const category = normalizeOptionalString(p.category);
     const emptyWorkspace = p.worktreeSource === "empty";
     const worktreeSelectionError = validateSessionWorktreeSelection(p);
     if (worktreeSelectionError) {
@@ -527,6 +528,9 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       loadGatewayModelCatalogSnapshot: () =>
         context.loadGatewayModelCatalogSnapshot({ agentId: sessionAgentId }),
       commitGuard,
+      afterEntryCommitted: category
+        ? (_entry, source) => registerCreatedSessionCategory(category, context, source)
+        : undefined,
       afterCreate: async (session) => {
         if (!authority.hasActive()) {
           return;
@@ -576,7 +580,6 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     if (created.postCommit.status === "failed") {
       runError = errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(created.postCommit.error));
     }
-    await registerCreatedSessionCategory(normalizeOptionalString(p.category), context);
     const createdWorktree = preparedWorktree?.worktree
       ? {
           id: preparedWorktree.worktree.id,

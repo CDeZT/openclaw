@@ -481,7 +481,9 @@ export function executeSharedStateCommand(
     env: getSqliteWorkerStateContext().environment,
   };
   if (command.type === "sessionGroups.register") {
-    return registerSessionGroupInDatabase(database, command.input.name, writeOptions.env);
+    return registerSessionGroupInDatabase(database, command.input.name, writeOptions.env, (stage) =>
+      requestSqliteWorkerOperationAdmission({ stage, facts: undefined }),
+    );
   }
   if (command.type === "deliveryQueue.ack") {
     return executeDeliveryQueueAck(command.input, writeOptions);

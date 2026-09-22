@@ -9,9 +9,11 @@ import {
   applySessionEntryReplacements,
   listSessionEntriesReadOnly,
 } from "../config/sessions/session-accessor.js";
+import type { SessionEntryCommitContext } from "../config/sessions/session-accessor.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import { createSqliteWorkerWriteAdmission } from "../infra/sqlite-worker-store.js";
 import { readConfigMachineState } from "../state/config-machine-state.js";
 import { ensureColumn, tableHasColumn } from "../state/openclaw-state-db-schema-helpers.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
@@ -20,7 +22,7 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
-import { executeOpenClawStateWorker } from "../state/openclaw-state-worker-store.js";
+import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 import {
   SessionMutationAuthorizationChangedError,
   type SessionMutationTarget,
@@ -284,21 +286,35 @@ export function putSessionGroups(params: {
 }
 
 /**
- * Absorbs a category assigned through sessions.patch so the catalog keeps
- * covering every group an operator UI can observe, appended at the end.
+ * Absorbs a committed session category into the global catalog, appended at the end.
+ * The caller retains the physical session writer until registration settles, so
+ * a queued member sweep cannot clear the category before this follow-up inserts it.
  */
 export async function ensureSessionGroupRegistered(
   name: string,
-  env: NodeJS.ProcessEnv = process.env,
+  source: SessionEntryCommitContext,
 ): Promise<boolean> {
   const normalized = normalizeOptionalString(name);
   if (!normalized) {
     return false;
   }
-  return executeOpenClawStateWorker(captureOpenClawStateWorkerContext({ env }), {
-    type: "sessionGroups.register",
-    input: { name: normalized },
-  });
+  const context = captureOpenClawStateWorkerContext({ env: source.env });
+  const assertCurrent = () => {
+    context.admission.assertCurrent();
+    source.assertCurrent();
+  };
+  const registered = await runOpenClawStateWorkerOperation(
+    context,
+    (scope) => scope.execute({ type: "sessionGroups.register", input: { name: normalized } }),
+    {
+      assertCurrent,
+      createAdmission: createSqliteWorkerWriteAdmission(assertCurrent, [
+        context.admission.databasePath,
+      ]),
+    },
+  );
+  assertCurrent();
+  return registered;
 }
 
 function readCatalogEntry(db: DatabaseSync, name: string) {

@@ -18,6 +18,7 @@ export function registerSessionGroupInDatabase(
   database: OpenClawStateDatabase,
   name: string,
   env: NodeJS.ProcessEnv,
+  admit?: (stage: "transaction" | "commit") => void,
 ): boolean {
   // Existing categories need no writer admission. Missing names must be checked
   // again after admission because another writer can register them in between.
@@ -26,7 +27,9 @@ export function registerSessionGroupInDatabase(
   }
   return runOpenClawStateWriteTransaction(
     ({ db }) => {
+      admit?.("transaction");
       if (hasSessionGroup(db, name)) {
+        admit?.("commit");
         return false;
       }
       const kysely = getNodeSqliteKysely<Pick<OpenClawStateKyselyDatabase, "session_groups">>(db);
@@ -42,6 +45,7 @@ export function registerSessionGroupInDatabase(
           created_at: Date.now(),
         }),
       );
+      admit?.("commit");
       return true;
     },
     { database, path: database.path, env },

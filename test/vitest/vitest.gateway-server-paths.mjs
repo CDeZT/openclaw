@@ -97,6 +97,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server/skill-library-read.test.ts",
   "src/gateway/server/ws-connection/connect-device-pairing.test.ts",
   "src/gateway/session-delivery-clock-jump.integration.test.ts",
+  "src/gateway/session-groups.registration.test.ts",
   "src/gateway/session-groups.test.ts",
   "src/gateway/session-message-events.test.ts",
   "src/gateway/session-repository-materialization.test.ts",

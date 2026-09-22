@@ -1,5 +1,6 @@
 import type { SessionsPatchParams } from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import type { SessionEntryCommitContext } from "../../config/sessions/session-accessor.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { disableCronJobsBoundToSessions } from "../../cron/job-session-bindings.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -10,13 +11,34 @@ import { persistSessionPatchModelSelection } from "./sessions-patch-model-select
 import { sessionLog } from "./sessions-shared.js";
 import type { GatewayRequestContext } from "./types.js";
 
+/** Retained post-commit bookkeeping; returns whether global catalog observers must reload. */
+export async function registerPatchedSessionCategory(
+  category: SessionsPatchParams["category"],
+  source: SessionEntryCommitContext,
+): Promise<boolean> {
+  if (typeof category !== "string" || !category.trim()) {
+    return false;
+  }
+  try {
+    return await ensureSessionGroupRegistered(category, source);
+  } catch (error) {
+    // The session commit remains authoritative. Registration can commit before
+    // cleanup or the post-await source check fails. Preserve the catalog-only
+    // reload on rejection: it is invalidation, not an insertion receipt or retry.
+    sessionLog.warn(
+      `sessions.patch: category ${JSON.stringify(category)} was saved, but group registration failed; retry the same category assignment to repair the catalog: ${formatErrorMessage(error)}`,
+    );
+    return true;
+  }
+}
+
 /** Publish committed patch effects even when active-runtime application later reports an error. */
 export async function publishSessionPatchEffects(params: {
   cfg: OpenClawConfig;
   context: GatewayRequestContext;
   callerScopes: readonly string[];
   callerCanManageCron: boolean;
-  category: SessionsPatchParams["category"];
+  catalogChanged: boolean;
   targets: Array<{
     accessChanged: boolean;
     entry: SessionEntry;
@@ -68,26 +90,8 @@ export async function publishSessionPatchEffects(params: {
     }
   }
 
-  const category = params.category;
-  if (params.targets.length > 0 && typeof category === "string" && category.trim()) {
-    // A first-use category is a group-catalog mutation: clients reload the
-    // catalog only on reason "groups" (the sessions.groups.* siblings emit it).
-    let catalogChanged: boolean;
-    try {
-      catalogChanged = await ensureSessionGroupRegistered(category);
-    } catch (error) {
-      // The session category is already durable. Preserve that outcome and the
-      // existing same-category patch recovery instead of asking clients to undo it.
-      sessionLog.warn(
-        `sessions.patch: category ${JSON.stringify(category)} was saved, but group registration failed; retry the same category assignment to repair the catalog: ${formatErrorMessage(error)}`,
-      );
-      // Registration may have committed before cleanup failed. Reload the catalog
-      // on uncertain outcomes too, without invalidating unrelated session rows.
-      catalogChanged = true;
-    }
-    if (catalogChanged) {
-      emitSessionsChanged(params.context, { reason: "groups" }, { catalogOnly: true });
-    }
+  if (params.catalogChanged) {
+    emitSessionsChanged(params.context, { reason: "groups" }, { catalogOnly: true });
   }
   if (params.callerCanManageCron && archivedSessionKeys.size > 0) {
     try {
