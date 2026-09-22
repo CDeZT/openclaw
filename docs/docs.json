@@ -2091,6 +2091,7 @@
                     "group": "Web search",
                     "pages": [
                       "tools/web",
+                      "tools/anysearch-search",
                       "tools/brave-search",
                       "tools/duckduckgo-search",
                       "tools/exa-search",

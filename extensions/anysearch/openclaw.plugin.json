@@ -1,0 +1,75 @@
+{
+  "id": "anysearch",
+  "categories": ["web"],
+  "name": "AnySearch",
+  "description": "OpenClaw AnySearch provider plugin for web search.",
+  "activation": {
+    "onStartup": false
+  },
+  "setup": {
+    "providers": [
+      {
+        "id": "anysearch",
+        "envVars": ["ANYSEARCH_API_KEY"]
+      }
+    ]
+  },
+  "uiHints": {
+    "webSearch.apiKey": {
+      "label": "AnySearch API Key",
+      "help": "AnySearch API key (fallback: ANYSEARCH_API_KEY env var). Leave blank for anonymous access at lower rate limits.",
+      "sensitive": true,
+      "placeholder": "as_sk_..."
+    },
+    "webSearch.tag": {
+      "label": "AnySearch Vertical Tag",
+      "help": "Optional vertical domain tag such as code.doc. Tags must come from the AnySearch sub-domain directory."
+    },
+    "webSearch.zone": {
+      "label": "AnySearch Zone",
+      "help": "Optional zone: cn or intl."
+    },
+    "webSearch.language": {
+      "label": "AnySearch Language",
+      "help": "Optional language hint for results."
+    }
+  },
+  "contracts": {
+    "webSearchProviders": ["anysearch"]
+  },
+  "configGroups": [
+    {
+      "id": "web-search",
+      "title": "Web search",
+      "order": 10,
+      "properties": ["webSearch"]
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "webSearch": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "apiKey": {
+            "type": ["string", "object"]
+          },
+          "tag": {
+            "type": "string"
+          },
+          "zone": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}

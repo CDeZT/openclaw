@@ -16,6 +16,7 @@ for (const providerId of [
 }
 
 for (const providerId of [
+  "anysearch",
   "brave",
   "duckduckgo",
   "exa",
