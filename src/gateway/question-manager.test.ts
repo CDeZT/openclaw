@@ -1,5 +1,10 @@
+import type { GatewayRequestHandlerOptions } from "openclaw/plugin-sdk/gateway-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Question, QuestionAnswers } from "../../packages/gateway-protocol/src/index.js";
+import type {
+  Question,
+  QuestionAnswers,
+  QuestionResolvedEvent,
+} from "../../packages/gateway-protocol/src/index.js";
 import {
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
@@ -15,6 +20,10 @@ import {
 } from "./question-manager.js";
 
 const QUESTION_RESOLVED_ENTRY_GRACE_MS = 15_000;
+
+type PublicQuestionRequest = Parameters<
+  NonNullable<GatewayRequestHandlerOptions["context"]["questionManager"]>["request"]
+>[0];
 
 const questions: Question[] = [
   {
@@ -207,6 +216,21 @@ describe("QuestionManager", () => {
     });
     await expect(waiting).resolves.toEqual({ status: "answered", answers });
     expect(manager.get(record.id)).toMatchObject({ status: "answered", resolvedBy: "control-ui" });
+  });
+
+  it("accepts ignored synchronous callback results through the public Gateway contract", async () => {
+    const observed: QuestionResolvedEvent[] = [];
+    const request = {
+      questions,
+      timeoutMs: 10_000,
+      onResolved: (event) => observed.push(event),
+    } satisfies PublicQuestionRequest;
+    const record = manager.request(request);
+
+    expect(manager.resolve(record.id, answers)).toEqual({ status: "answered", answers });
+    expect(observed).toEqual([{ id: record.id, status: "answered", answers }]);
+    await manager.drain();
+    expect(observed).toHaveLength(1);
   });
 
   it("keeps resolution receipts opt-in for simultaneous and late waiters", async () => {
@@ -605,8 +629,9 @@ it.each(["fulfilled", "rejected"] as const)(
           if (outcome === "rejected") {
             throw new Error("private fixture failure");
           }
+          return { published: true };
         },
-      }).id;
+      } satisfies PublicQuestionRequest).id;
     });
     const suspension = tryBeginGatewaySuspendAdmission(() => {});
     expect(suspension?.commit()).toBe(true);

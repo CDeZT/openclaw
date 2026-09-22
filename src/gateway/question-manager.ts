@@ -51,10 +51,7 @@ type QuestionManagerRequest = {
   sessionKey?: string;
   runId?: string;
   timeoutMs: number;
-  onResolved?: (
-    event: QuestionResolvedEvent,
-    observation: QuestionObservation,
-  ) => void | Promise<void>;
+  onResolved?: (event: QuestionResolvedEvent, observation: QuestionObservation) => void;
   sessionAccess?: QuestionSessionAccess;
   isRequesterActive?: () => boolean;
   /** Trusted handler binds the run; the manager owns expiry and terminal release. */
@@ -482,7 +479,7 @@ export class QuestionManager {
         settle();
         const event = resolvedEvent(entry.record);
         if (event && this.entries.get(entry.record.id) === entry) {
-          await entry.onResolved?.(event, this.observeEntry(entry));
+          await Promise.resolve(entry.onResolved?.(event, this.observeEntry(entry)));
         }
       } finally {
         continuation?.release();
