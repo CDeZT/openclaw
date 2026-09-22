@@ -5351,7 +5351,6 @@ jobs:
           path: |
             ${{ runner.temp }}/openclaw-menu-default-*/*-window.png
             ${{ runner.temp }}/openclaw-menu-default-*/*-menu-*.png
-            ${{ runner.temp }}/openclaw-menu-default-*/guest-model-policy-recording.mov
             ${{ runner.temp }}/openclaw-menu-default-*/*-capture-status.json
             ${{ runner.temp }}/openclaw-menu-default-*/capture-export.json
           if-no-files-found: error

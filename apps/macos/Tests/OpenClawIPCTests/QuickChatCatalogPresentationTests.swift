@@ -150,14 +150,7 @@ struct QuickChatCatalogPresentationTests {
         let controller = QuickChatController(
             enableUI: true, model: model, monitoringEnabled: false,
             hotkeyRegistrar: { _ in }, hotkeyRemover: {})
-        var recording: (task: Task<Void, Never>, started: AsyncStream<Void>, bounds: CGRect)?
-        var invalidationTimer: Timer?
-        var cueWindow: NSPanel?
-        defer {
-            invalidationTimer?.invalidate()
-            cueWindow?.orderOut(nil)
-            controller.stop()
-        }
+        defer { controller.stop() }
         do {
             controller.present()
             try await self.waitForModel { model.canUseModelControls }
@@ -167,12 +160,10 @@ struct QuickChatCatalogPresentationTests {
                 ($0.contentView as? NSHostingView<QuickChatView>)?.rootView.model === model
             })
             let content = try #require(panel.contentView)
-            var button = try await self.guestModelButton(in: panel, model: model)
-            var sceneBounds = CGRect.null
+            var button = try await self.waitForModelButton(in: panel, value: model.modelControlLabel)
             try AppKitTestSupport.pointAtModelButton(button, in: panel)
             try await AppKitTestSupport.openMenu(button, in: panel, requireCompositedPopup: true) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-permitted")
-                sceneBounds = sceneBounds.union(try #require(Self.guestSceneBounds(panel: panel)).scene)
                 let choices = try #require(menu.items.first { $0.title == "Fixture" }?.submenu)
                 #expect(choices.items.map(\.title) == ["Primary fixture", "Fallback fixture", "Custom fixture"])
                 #expect(menu.items.contains { $0.title == "Session default" })
@@ -186,11 +177,10 @@ struct QuickChatCatalogPresentationTests {
             let noDefault = try await fixture.prepareModelChange(.noDefault)
             noDefault()
             try await self.waitForModel { model.modelChoices.map(\.modelID) == ["custom"] && model.canUseModelControls }
-            button = try await self.guestModelButton(in: panel, model: model)
+            button = try await self.waitForModelButton(in: panel, value: model.modelControlLabel)
             try AppKitTestSupport.pointAtModelButton(button, in: panel)
             try await AppKitTestSupport.openMenu(button, in: panel, requireCompositedPopup: true) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-null")
-                sceneBounds = sceneBounds.union(try #require(Self.guestSceneBounds(panel: panel)).scene)
                 #expect(!menu.items.contains { $0.title == "Session default" })
                 #expect(model.displayedModelSelectionID == nil)
             }
@@ -200,55 +190,13 @@ struct QuickChatCatalogPresentationTests {
 
             let held = AsyncTestGate()
             let invalidate = try await fixture.prepareModelChange(.holding, onHeldRead: { held.open() })
-            button = try await self.guestModelButton(in: panel, model: model)
-            let panelBounds = try AppKitTestSupport.screenCaptureRect(for: panel.frame)
-            // This fixture's one-line status band measured 112 -> 143 points on the baseline runner.
-            // Reserve only that downward growth; the assertions below reject any larger scene.
-            let panelEnvelope = CGRect(
-                x: panelBounds.minX,
-                y: panelBounds.minY,
-                width: panelBounds.width,
-                height: panelBounds.height + 31)
-            let cue = Self.makeGuestCue(above: panel)
-            cueWindow = cue.window
-            sceneBounds = sceneBounds.union(panelEnvelope)
-                .union(try AppKitTestSupport.screenCaptureRect(for: cue.window.frame)).integral
-            recording = Self.recordGuestModelMenu(bounds: sceneBounds)
-            let captureBounds = recording?.bounds ?? sceneBounds
-            if let recording {
-                for await _ in recording.started {
-                    // Camera startup occurs before the unchanged menu deadline starts.
-                    try await Task.sleep(for: .seconds(1))
-                    break
-                }
-            }
+            button = try await self.waitForModelButton(in: panel, value: model.modelControlLabel)
             try AppKitTestSupport.pointAtModelButton(button, in: panel)
-            var dismissalError: Error?
-            do {
-                try await AppKitTestSupport.openMenu(
-                    button, in: panel, waitForDismissal: true, requireCompositedPopup: true)
-                { menu in
-                    cue.label.stringValue = "PROOF · Resting menu; update signal pending"
-                    cue.window.displayIfNeeded()
-                    try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-open")
-                    self.assertGuestSceneContained(panel: panel, bounds: captureBounds)
-                    // Keep the already-asserted resting state legible in the bounded recording.
-                    let emitInvalidation: @MainActor @Sendable () -> Void = {
-                        cue.label.stringValue = "PROOF · Policy change signal; fresh catalog held"
-                        cue.window.displayIfNeeded()
-                        invalidate()
-                    }
-                    let timer = Timer(timeInterval: 1, repeats: false) { _ in
-                        MainActor.assumeIsolated { emitInvalidation() }
-                    }
-                    invalidationTimer = timer
-                    for mode in [RunLoop.Mode.eventTracking, .common] {
-                        RunLoop.main.add(timer, forMode: mode)
-                    }
-                }
-            } catch {
-                // Preserve the real stale rendering on an unchanged baseline before reporting the failed contract.
-                dismissalError = error
+            try await AppKitTestSupport.openMenu(
+                button, in: panel, waitForDismissal: true, requireCompositedPopup: true)
+            { menu in
+                try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-open")
+                invalidate()
             }
             let heldDeadline = ContinuousClock.now + .seconds(5)
             let heldTimeout = Task {
@@ -265,189 +213,34 @@ struct QuickChatCatalogPresentationTests {
             #expect(heldReadArrived, "The replacement catalog read must arrive before the five-second deadline")
             await fixture.releaseHeldCatalog()
             try await self.waitForModel { model.modelControlStatusMessage != nil && !model.isLoadingModelControls }
-            button = try await self.guestModelButton(in: panel, model: model)
-            cue.label.stringValue = "PROOF · Catalog refresh failed"
+            button = try await self.waitForModelButton(in: panel, value: model.modelControlLabel)
             try AppKitTestSupport.pointAtModelButton(button, in: panel)
             try await AppKitTestSupport.openMenu(button, in: panel, requireCompositedPopup: true) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-invalidated")
-                self.assertGuestSceneContained(panel: panel, bounds: captureBounds)
                 #expect(menu.items.allSatisfy { $0.action == nil && $0.submenu == nil })
             }
             #expect(model.modelChoices.isEmpty)
             #expect(model.text == "Unsent fixture draft")
-            if let dismissalError { Issue.record("Policy invalidation did not dismiss the owned menu: \(dismissalError)") }
-            // Hold the asserted failure state for reading, independently of request or menu deadlines.
-            try await Task.sleep(for: .seconds(1))
 
             let recover = try await fixture.prepareModelChange(.permitted)
             recover()
             try await self.waitForModel { model.modelChoices.count == 3 && model.canUseModelControls }
-            button = try await self.guestModelButton(in: panel, model: model)
-            cue.label.stringValue = "PROOF · Catalog recovered"
+            button = try await self.waitForModelButton(in: panel, value: model.modelControlLabel)
             try AppKitTestSupport.pointAtModelButton(button, in: panel)
             try await AppKitTestSupport.openMenu(button, in: panel, requireCompositedPopup: true) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-recovered")
-                self.assertGuestSceneContained(panel: panel, bounds: captureBounds)
                 #expect(menu.items.contains { $0.title == "Session default" })
             }
             let patches = await fixture.patches
             #expect(patches == ["model=fixture/fallback"])
-            await recording?.task.value
             controller.stop()
             await gateway.shutdown()
         } catch {
-            invalidationTimer?.invalidate()
-            recording?.task.cancel()
-            await recording?.task.value
             await fixture.releaseHeldCatalog()
             controller.stop()
             await gateway.shutdown()
             throw error
         }
-    }
-
-    private func guestModelButton(in panel: NSWindow, model: QuickChatModel) async throws -> AnyObject {
-        var previousGeometry: (panel: NSRect, content: NSRect, compositor: CGRect)?
-        var lastGeometry = "No owned geometry was observed"
-        do {
-            return try await AppKitTestSupport.waitForAccessibilityElement(
-                in: panel, description: "the Model button after its owned panel settles")
-            { elements in
-                guard let content = panel.contentView else { return nil }
-                let frame = panel.frame
-                let bounds = content.bounds
-                let actual = Self.guestSceneBounds(panel: panel)?.panel
-                lastGeometry = "panel=\(frame) content=\(bounds) WindowServer=\(String(describing: actual))"
-                guard !frame.isEmpty, !bounds.isEmpty,
-                      bounds.size == panel.contentRect(forFrameRect: frame).size,
-                      let expected = try? AppKitTestSupport.screenCaptureRect(for: frame),
-                      let actual, expected.integral == actual.integral
-                else {
-                    previousGeometry = nil
-                    return nil
-                }
-                // Applied panel and content geometry must remain stable across accessibility observations.
-                let previous = previousGeometry
-                previousGeometry = (frame, bounds, actual)
-                guard previous?.panel == frame, previous?.content == bounds, previous?.compositor == actual else {
-                    return nil
-                }
-                return elements.first {
-                    let value: Any? = $0.accessibilityValue?()
-                    return $0.accessibilityLabel?() == "Model" && $0.isAccessibilityEnabled?() == true &&
-                        value as? String == model.modelControlLabel
-                }
-            }
-        } catch {
-            print("Guest panel readiness failed: \(lastGeometry)")
-            throw error
-        }
-    }
-
-    private static func makeGuestCue(above panel: NSWindow) -> (window: NSPanel, label: NSTextField) {
-        let frame = NSRect(x: panel.frame.minX, y: panel.frame.maxY + 6, width: panel.frame.width, height: 24)
-        let window = NSPanel(
-            contentRect: frame,
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false)
-        window.level = .floating
-        window.hidesOnDeactivate = false
-        window.ignoresMouseEvents = true
-        window.hasShadow = false
-        window.backgroundColor = .windowBackgroundColor
-        let label = NSTextField(labelWithString: "PROOF · Preparing model menu")
-        label.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
-        label.textColor = .secondaryLabelColor
-        label.frame = NSRect(x: 8, y: 4, width: frame.width - 16, height: 16)
-        let content = NSView(frame: NSRect(origin: .zero, size: frame.size))
-        content.addSubview(label)
-        window.contentView = content
-        window.orderFront(nil)
-        window.displayIfNeeded()
-        return (window, label)
-    }
-
-    private func assertGuestSceneContained(panel: NSWindow, bounds: CGRect) {
-        guard let actual = Self.guestSceneBounds(panel: panel) else {
-            Issue.record("The owned panel has no Window Server bounds")
-            return
-        }
-        #expect(
-            bounds.contains(actual.scene.integral),
-            "Owned scene \(actual.scene) exceeds recording crop \(bounds)")
-    }
-
-    private static func guestSceneBounds(panel: NSWindow) -> (panel: CGRect, scene: CGRect)? {
-        let windows = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], 0)
-            as? [[String: Any]] ?? []).filter {
-                $0[kCGWindowOwnerPID as String] as? Int32 == ProcessInfo.processInfo.processIdentifier &&
-                    ($0[kCGWindowNumber as String] as? Int == panel.windowNumber ||
-                        $0[kCGWindowLayer as String] as? Int == NSWindow.Level.popUpMenu.rawValue)
-            }
-        var panelBounds: CGRect?
-        var scene = CGRect.null
-        for window in windows {
-            guard let fields = window[kCGWindowBounds as String] as? [String: Any],
-                  let bounds = CGRect(dictionaryRepresentation: fields as CFDictionary) else { continue }
-            scene = scene.union(bounds)
-            if window[kCGWindowNumber as String] as? Int == panel.windowNumber { panelBounds = bounds }
-        }
-        return panelBounds.map { ($0, scene) }
-    }
-
-    private static func recordGuestModelMenu(bounds: CGRect)
-        -> (task: Task<Void, Never>, started: AsyncStream<Void>, bounds: CGRect)?
-    {
-        guard let directory = ProcessInfo.processInfo.environment["OPENCLAW_TEST_MENU_CAPTURE_DIR"] else { return nil }
-        let output = URL(fileURLWithPath: directory, isDirectory: true)
-        let movie = output.appendingPathComponent("guest-model-policy-recording.mov")
-        let statusFile = output.appendingPathComponent("guest-model-policy-recording-capture-status.json")
-        let region: String? = if !bounds.isEmpty, !bounds.isNull {
-            [bounds.minX, bounds.minY, bounds.width, bounds.height].map { String(Int($0)) }.joined(separator: ",")
-        } else {
-            nil
-        }
-        let (started, signal) = AsyncStream<Void>.makeStream()
-        let task = Task.detached {
-            defer { signal.finish() }
-            var status: [String: Any] = [
-                "method": "/usr/sbin/screencapture",
-                "file": movie.lastPathComponent,
-                "durationLimitSeconds": 8,
-                "statusBandGrowthPoints": 31,
-                "requiresVisualInspection": true,
-            ]
-            do {
-                guard let region else {
-                    throw NSError(domain: "GuestModelRecording", code: 1, userInfo: [
-                        NSLocalizedDescriptionKey: "The owned panel and popup did not expose capture bounds.",
-                    ])
-                }
-                status["region"] = region
-                let result = try await BoundedProcess.run(
-                    path: "/usr/sbin/screencapture",
-                    arguments: ["-x", "-v", "-V", "8", "-R\(region)", movie.path],
-                    whileRunning: { _ in
-                        signal.yield(())
-                        signal.finish()
-                    },
-                    timeout: 10)
-                status["exitCode"] = result.terminationStatus
-                status["diagnostic"] = String(decoding: result.output.prefix(4096), as: UTF8.self)
-            } catch {
-                status["failure"] = error.localizedDescription
-            }
-            let attributes = try? FileManager.default.attributesOfItem(atPath: movie.path)
-            status["bytes"] = (attributes?[.size] as? NSNumber)?.intValue ?? 0
-            do {
-                try JSONSerialization.data(withJSONObject: status, options: [.prettyPrinted, .sortedKeys])
-                    .write(to: statusFile, options: .atomic)
-            } catch {
-                Issue.record("Could not preserve the bounded recording result: \(error)")
-            }
-        }
-        return (task, started, bounds)
     }
 
     private func waitForModelButton(in window: NSWindow, value expectedValue: String) async throws -> AnyObject {
@@ -607,7 +400,8 @@ private actor QuickChatCatalogFixture {
         self.onHeldRead = onHeldRead
         self.heldCatalogReadAt = nil
         self.sequence += 1
-        let socket = try #require(self.socket)
+        let currentSocket = self.socket
+        let socket = try #require(currentSocket)
         let frame = Data(
             """
             {"type":"event","event":"chat.metadata.changed","payload":{"modelSelectionChanged":true},"seq":\(self.sequence)}

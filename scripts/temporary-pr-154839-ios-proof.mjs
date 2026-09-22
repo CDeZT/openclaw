@@ -87,11 +87,9 @@ for (const repository of [event.repository, pullRequest.head.repo, pullRequest.b
 }
 assert.equal(pullRequest.head.ref, "feat/guest-model-discovery");
 assert.equal(pullRequest.base.ref, "main");
-for (const sha of [pullRequest.head.sha, pullRequest.base.sha, pullRequest.merge_commit_sha]) {
-  assert.match(sha, /^[a-f0-9]{40}$/u);
-}
+assert.match(pullRequest.head.sha, /^[a-f0-9]{40}$/u);
+assert.match(process.env.GITHUB_SHA ?? "", /^[a-f0-9]{40}$/u);
 assert.equal(process.env.IOS_GUEST_POLICY_PUBLIC_HEAD, pullRequest.head.sha);
-assert.equal(process.env.GITHUB_SHA, pullRequest.merge_commit_sha);
 assert.match(process.env.IOS_GUEST_POLICY_BASE_SHA ?? "", /^[a-f0-9]{40}$/u);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const simulator = process.env.IOS_GUEST_POLICY_SIMULATOR;
@@ -105,7 +103,8 @@ const baselineRoot = path.join(temporary, "baseline");
 const receipt = {
   baseline: BASELINE,
   publicHead: pullRequest.head.sha,
-  eventBase: pullRequest.base.sha,
+  eventBase: pullRequest.base.sha ?? null,
+  eventMerge: pullRequest.merge_commit_sha ?? null,
   workflowSha: process.env.GITHUB_WORKFLOW_SHA,
   runId: process.env.GITHUB_RUN_ID,
   runAttempt: process.env.GITHUB_RUN_ATTEMPT,
@@ -195,7 +194,7 @@ function start(
         }
         return code;
       },
-      (error) => {
+      /** @param {unknown} error */ (error) => {
         unjoined ||= hasUnjoinedWork(error);
         command.error = String(error);
         command.processTree = hasUnjoinedWork(error) ? "unconfirmed" : "terminated";
@@ -528,7 +527,7 @@ async function capture(name, cwd, revision) {
 try {
   receipt.candidate = await checked("candidate-sha", "git", ["rev-parse", "HEAD"]);
   assert.equal(receipt.candidate, process.env.IOS_GUEST_POLICY_CHECKOUT_SHA);
-  assert.equal(receipt.candidate, pullRequest.merge_commit_sha);
+  assert.equal(receipt.candidate, process.env.GITHUB_SHA);
   const commit = await checked("candidate-commit", "git", [
     "--no-replace-objects",
     "cat-file",

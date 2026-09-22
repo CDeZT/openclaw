@@ -155,7 +155,6 @@ await runWithFailedTrailer("macos-native", async () => {
                 "guest-model-open",
                 "guest-model-invalidated",
                 "guest-model-recovered",
-                "guest-model-policy-recording",
               ]
             : ["thread-reasoning", "thread-tool-activity", "model-initial", "thread-restored"];
         const allowed = new RegExp(
@@ -163,9 +162,7 @@ await runWithFailedTrailer("macos-native", async () => {
         );
         const files: string[] = [];
         for (const entry of fs.readdirSync(menuCaptures, { withFileTypes: true })) {
-          const ownedRecording =
-            profileMode === "default" && entry.name === "guest-model-policy-recording.mov";
-          if (!entry.isFile() || (!allowed.test(entry.name) && !ownedRecording)) {
+          if (!entry.isFile() || !allowed.test(entry.name)) {
             continue;
           }
           const source = await captureRoot.open(entry.name, {

@@ -42,22 +42,15 @@ enum AppKitTestSupport {
         try #require(application.isRunning)
     }
 
-    static func screenCaptureRect(for frame: NSRect) throws -> CGRect {
-        let primaryScreen = try #require(NSScreen.screens.first)
-        return CGRect(
-            x: frame.minX,
-            y: primaryScreen.frame.maxY - frame.maxY,
-            width: frame.width,
-            height: frame.height)
-    }
-
     static func pointAtModelButton(_ button: AnyObject, in window: NSWindow) throws {
         try #require((button.accessibilityWindow?() as? NSWindow) === window)
         try #require(button.accessibilityLabel?() == "Model" && button.isAccessibilityEnabled?() == true)
         let frame = try #require(button.accessibilityFrame?())
         try #require(!frame.isEmpty && window.frame.contains(frame))
-        let captureFrame = try self.screenCaptureRect(for: frame)
-        try #require(CGWarpMouseCursorPosition(CGPoint(x: captureFrame.midX, y: captureFrame.midY)) == .success)
+        // The native menu anchors at NSEvent.mouseLocation even when opened through accessibility.
+        let primaryScreen = try #require(NSScreen.screens.first)
+        let position = CGPoint(x: frame.midX, y: primaryScreen.frame.maxY - frame.midY)
+        try #require(CGWarpMouseCursorPosition(position) == .success)
     }
 
     static func accessibilityElements(in root: AnyObject) async throws -> [AnyObject] {

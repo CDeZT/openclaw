@@ -9,17 +9,13 @@ import type {
 } from "../model-account-authority.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
 import { resolveOperatorRolePolicyForProfile } from "../operator-role-policy.js";
-import { SESSION_READ_SCOPE, SESSION_WRITE_SCOPE } from "../operator-scopes.js";
+import { SESSION_READ_SCOPE } from "../operator-scopes.js";
 import { isGatewayClientProfilePending } from "./gateway-client-identity.js";
 import { isIneligiblePersonalGatewayCaller } from "./gateway-personal-caller.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 import { resolveAuthenticatedProfileId } from "./users-profile-access.js";
 
-type PersonalModelSelectionScope =
-  | "operator.read"
-  | "operator.write"
-  | typeof SESSION_READ_SCOPE
-  | typeof SESSION_WRITE_SCOPE;
+type PersonalModelSelectionScope = "operator.read" | "operator.write" | typeof SESSION_READ_SCOPE;
 
 /** Capture human authority once; every later privileged use rechecks this exact connection. */
 export function prepareUserModelAccountAction(
@@ -90,7 +86,7 @@ export function preparePersonalModelSelection(
   if (!authProfileId || !isUserModelAuthProfileId(authProfileId)) {
     return undefined;
   }
-  return preparePersonalModelAccountSelection(options, authProfileId, SESSION_WRITE_SCOPE);
+  return preparePersonalModelAccountSelection(options, authProfileId);
 }
 
 /** Capture either an explicit personal selection or the human's creation-time default authority. */
@@ -108,7 +104,7 @@ export function prepareSessionModelAccountAccess(
     client?.connId &&
     client.authenticatedUserProfile &&
     !isIneligiblePersonalGatewayCaller(client)
-      ? prepareUserModelAccountAction(options, undefined, SESSION_WRITE_SCOPE)
+      ? prepareUserModelAccountAction(options)
       : undefined;
   return { personalModelSelection, personalAccountDefaults };
 }
