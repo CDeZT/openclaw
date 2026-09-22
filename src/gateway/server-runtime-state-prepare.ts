@@ -13,6 +13,10 @@ import type { createPluginRegistryOwner } from "../plugins/runtime.js";
 import { isGatewayDraining } from "../process/command-queue.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.js";
+import {
+  canIsolateAgentDatabase,
+  listAgentDatabaseAdmissionRefusals,
+} from "../state/agent-database-admission.js";
 import { openClawStateDatabaseCache } from "../state/openclaw-state-db-cache.js";
 import { resolveDatabasePath } from "../state/openclaw-state-db-maintenance.js";
 import { createAuthRateLimiter } from "./auth-rate-limit.js";
@@ -26,7 +30,7 @@ import type { GatewayInstanceRuntime } from "./server-instance-runtime.types.js"
 import type { GatewayServerLiveState } from "./server-live-state.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import type { GatewayPluginReloadStatus } from "./server-plugin-runtime-generation.js";
-import type { SharedGatewaySessionGenerationState } from "./server-shared-auth-generation.js";
+import { SharedGatewaySessionGenerationState } from "./server-shared-auth-generation.js";
 import type { prepareGatewayServerBootstrap } from "./server-startup-bootstrap.js";
 import { createGatewayTransportBridge } from "./server-transport-bridge.js";
 import { createWizardSessionTracker } from "./server-wizard-sessions.js";
@@ -328,10 +332,10 @@ export async function prepareGatewayKernelState(params: {
     );
   const resolveSharedGatewaySessionGenerationForRuntimeSnapshot = () =>
     resolveSharedGatewaySessionGenerationForConfig(getRuntimeConfig());
-  const sharedGatewaySessionGenerationState: SharedGatewaySessionGenerationState = {
+  const sharedGatewaySessionGenerationState = new SharedGatewaySessionGenerationState({
     current: resolveCurrentSharedGatewaySessionGeneration(),
     required: null,
-  };
+  });
   const preauthHandshakeTimeoutMs = undefined;
   const initialHooksConfig = runtimeConfig.hooksConfig;
   const initialHookClientIpConfig = resolveHookClientIpConfig(cfgAtStart);
@@ -428,6 +432,12 @@ export async function prepareGatewayKernelState(params: {
     getEventLoopHealth: readinessEventLoopHealth.snapshot,
     getStateDatabaseFailure: () =>
       openClawStateDatabaseCache.getOpenClawStateDatabaseRuntimeFailure(resolveDatabasePath()),
+    getAgentDatabaseAdmissionRefusals: () => {
+      const cfg = getRuntimeConfig();
+      return listAgentDatabaseAdmissionRefusals().filter(
+        (refusal) => !canIsolateAgentDatabase(cfg, refusal.agentId),
+      );
+    },
     getPluginReloadStatus: params.getPluginReloadStatus,
     shouldSkipChannelReadiness: () =>
       isTruthyEnvValue(process.env.OPENCLAW_SKIP_CHANNELS) ||

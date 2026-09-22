@@ -334,29 +334,32 @@ function assertBackups(files, previous, before, skillKeys = []) {
     ),
   );
   requireProof(witnessed, "backup preservation proof inconclusive: no original history witness");
-  const possible = ring.some((_, shift) =>
-    ring.every((name, index) => {
-      if (index >= shift) {
-        const original = previous[ring[index - shift]];
-        return isDeepStrictEqual(
-          files[name],
-          original && shift > 0 ? { ...original, mode: rotatedBackupMode } : original,
-        );
-      }
-      if (!files[name] || files[name].mode !== rotatedBackupMode) {
-        return false;
-      }
-      // The oldest newly inserted backup is the exact root captured before this phase.
-      if (index === shift - 1) {
-        return files[name].raw === previous[ROOT].raw;
-      }
-      try {
-        assertRoot(files[name].raw, before, before.targetVersion, skillKeys);
-        return true;
-      } catch {
-        return false;
-      }
-    }),
+  // A changed root must retain its immediate predecessor, not just older history.
+  const possible = ring.some(
+    (_, shift) =>
+      (shift > 0 || files[ROOT].raw === previous[ROOT].raw) &&
+      ring.every((name, index) => {
+        if (index >= shift) {
+          const original = previous[ring[index - shift]];
+          return isDeepStrictEqual(
+            files[name],
+            original && shift > 0 ? { ...original, mode: rotatedBackupMode } : original,
+          );
+        }
+        if (!files[name] || files[name].mode !== rotatedBackupMode) {
+          return false;
+        }
+        // The oldest newly inserted backup is the exact root captured before this phase.
+        if (index === shift - 1) {
+          return files[name].raw === previous[ROOT].raw;
+        }
+        try {
+          assertRoot(files[name].raw, before, before.targetVersion, skillKeys);
+          return true;
+        } catch {
+          return false;
+        }
+      }),
   );
   requireProof(possible, "backup ring lost or rewrote recovery history");
   const fixedNames = Object.keys(previous).filter(
@@ -422,6 +425,12 @@ function assertRepair(artifacts, before, observation, root) {
     true,
   );
   assertBackups(observation.files, afterHop.files, before, skillKeys);
+  // The update may create this snapshot; standalone repair must retain its identity.
+  sameFile(
+    observation.files[`${ROOT}.pre-update`],
+    afterHop.files[`${ROOT}.pre-update`],
+    `${ROOT}.pre-update`,
+  );
   requireProof(
     !before.activateOpenai || config.plugins?.entries?.openai?.enabled === true,
     "required fixture OpenAI activation missing",

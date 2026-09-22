@@ -640,54 +640,47 @@ describe("Plugin SDK API baseline", () => {
     expect(unrelated).toEqual(baseline);
   });
 
-  it("bounds shared cyclic declaration walks without dropping reachable sections", () => {
-    const repoRoot = tempDirs.make("openclaw-plugin-sdk-api-cyclic-diamond-");
-    const fileName = path.join(repoRoot, "fixture.ts");
-    const depth = 6;
-    const declarations = [
-      "export type Root = { nested: N0 | M0 };",
-      "export type Alternate = { nested: M0 };",
-      "type Marker = { required: string };",
-    ];
-    for (let level = 0; level < depth; level++) {
-      const fields =
-        level + 1 === depth
-          ? "root: Root; marker: Marker"
-          : `left: N${level + 1}; right: M${level + 1}`;
-      declarations.push(`type N${level} = { ${fields} };`, `type M${level} = { ${fields} };`);
+  it("bounds repeated work inside a cyclic declaration fanout without sharing partial roots", () => {
+    const repoRoot = tempDirs.make("openclaw-plugin-sdk-cyclic-fanout-");
+    const files = Array.from({ length: 7 }, (_, index) =>
+      path.join(repoRoot, `cycle${index}.d.ts`),
+    );
+    for (const [index, file] of files.entries()) {
+      const siblings = files.map((_, other) => other).filter((other) => other !== index);
+      fs.writeFileSync(
+        file,
+        [
+          ...siblings.map((other) => `import type { C${other} } from "./cycle${other}.js";`),
+          `export interface C${index} { marker${index}: string; ${siblings.map((other) => `c${other}?: C${other};`).join(" ")} }`,
+        ].join("\n"),
+      );
     }
-    fs.writeFileSync(fileName, declarations.join("\n"));
-    const program = ts.createProgram([fileName], {
+    const program = ts.createProgram(files, {
+      target: ts.ScriptTarget.ESNext,
       module: ts.ModuleKind.NodeNext,
       moduleResolution: ts.ModuleResolutionKind.NodeNext,
-      target: ts.ScriptTarget.ESNext,
-      declaration: true,
-      emitDeclarationOnly: true,
     });
-    const sourceFile = program.getSourceFile(fileName);
-    expect(sourceFile).toBeDefined();
     const printer = ts.createPrinter();
-    const printNode = printer.printNode.bind(printer);
-    let statementPrints = 0;
-    printer.printNode = (...args) => {
-      statementPrints++;
-      return printNode(...args);
-    };
-    const render = createDeclarationClosureRenderer({ printer, program, repoRoot });
-    const root = render(sourceFile!, "Root");
-    const reachable = [
-      "Root",
-      "Marker",
-      ...Array.from({ length: depth }, (_, i) => [`N${i}`, `M${i}`]).flat(),
-    ];
-    expect(root?.sections.map((section) => section.name).toSorted()).toEqual(reachable.toSorted());
-    // Work must track reachable declarations, not every path through the cyclic diamond.
-    expect(statementPrints).toBeLessThanOrEqual(reachable.length * 4);
-    const alternate = render(sourceFile!, "Alternate");
-    expect(alternate?.sections.map((section) => section.name).toSorted()).toEqual(
-      [...reachable, "Alternate"].toSorted(),
+    let printCount = 0;
+    const render = createDeclarationClosureRenderer({
+      program,
+      repoRoot,
+      printer: {
+        ...printer,
+        printNode(...args: Parameters<typeof printer.printNode>) {
+          printCount += 1;
+          return printer.printNode(...args);
+        },
+      },
+    });
+    const first = render(program.getSourceFile(files[0]!)!, "C0");
+    const second = render(program.getSourceFile(files[3]!)!, "C3");
+    expect(first?.sections.map((section) => section.name)).toEqual(
+      files.map((_, index) => `C${index}`),
     );
-    expect(render(sourceFile!, "Root")).toEqual(root);
+    expect(second).toEqual(first);
+    // A dense cycle previously printed 3,914 declarations for these two roots.
+    expect(printCount).toBeLessThan(100);
   });
 
   it("keeps cycle members complete across cached export walks", async () => {

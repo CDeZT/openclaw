@@ -16,29 +16,32 @@ describe("task registry process state", () => {
     const firstState = firstModule.getTaskRegistryProcessState();
     const secondState = secondModule.getTaskRegistryProcessState();
 
-    firstState.tasks.set("task-duplicate", {
-      taskId: "task-duplicate",
-      runtime: "subagent",
-      taskKind: "agent-harness",
-      requesterSessionKey: "agent:main:parent",
-      ownerKey: "agent:main:parent",
-      scopeKind: "session",
-      runId: "agent-harness:child-duplicate",
-      task: "Duplicate module task",
-      status: "running",
-      deliveryStatus: "pending",
-      notifyPolicy: "silent",
-      createdAt: 1,
-    });
-
-    expect(secondState.tasks.get("task-duplicate")).toEqual(
-      expect.objectContaining({
+    try {
+      firstState.tasks.set("task-duplicate", {
+        taskId: "task-duplicate",
         runtime: "subagent",
         taskKind: "agent-harness",
+        requesterSessionKey: "agent:main:parent",
+        ownerKey: "agent:main:parent",
+        scopeKind: "session",
         runId: "agent-harness:child-duplicate",
-      }),
-    );
-    firstState.tasks.clear();
+        task: "Duplicate module task",
+        status: "running",
+        deliveryStatus: "pending",
+        notifyPolicy: "silent",
+        createdAt: 1,
+      });
+
+      expect(secondState.tasks.get("task-duplicate")).toEqual(
+        expect.objectContaining({
+          runtime: "subagent",
+          taskKind: "agent-harness",
+          runId: "agent-harness:child-duplicate",
+        }),
+      );
+    } finally {
+      firstState.tasks.delete("task-duplicate");
+    }
   });
 
   it.each(["sync", "async"])(

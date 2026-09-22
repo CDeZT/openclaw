@@ -114,6 +114,10 @@ function rewriteRoot(
       },
     };
   }
+  publishRoot(fixture, config);
+}
+
+function publishRoot(fixture: Fixture, config: unknown) {
   for (let index = 4; index >= 1; index -= 1) {
     const from = `${fixture.config}.bak${index === 1 ? "" : `.${index - 1}`}`;
     if (existsSync(from)) {
@@ -184,7 +188,7 @@ function disableFixtureSkills(fixture: Fixture) {
   for (const key of ["first-hop-unavailable", "first-hop-absent"]) {
     config.skills.entries[key] = { ...config.skills.entries[key], enabled: false };
   }
-  writeFileSync(fixture.config, JSON.stringify(config));
+  publishRoot(fixture, config);
 }
 
 describe("packaged first-hop config preservation assertions", () => {
@@ -232,6 +236,39 @@ describe("packaged first-hop config preservation assertions", () => {
     doctorOutput(fixture);
     expectSuccess(run(fixture, "assert-doctor"));
   });
+
+  it.each(["hop", "repair"].flatMap((phase) => [false, true].map((rotate) => ({ phase, rotate }))))(
+    "requires the preceding root in the $phase backup ring (rotate=$rotate)",
+    ({ phase, rotate }) => {
+      const fixture = makeFixture();
+      prepareHop(fixture);
+      if (phase === "repair") {
+        expectSuccess(run(fixture, "assert-hop"));
+        doctorOutput(fixture, "Doctor complete.\n", "repair");
+      }
+      const before = readFileSync(fixture.config, "utf8");
+      const config = JSON.parse(before);
+      config.meta.lastTouchedVersion = targetVersion;
+      config.agents.entries = { main: {} };
+      config.plugins = { entries: { openai: { enabled: true } } };
+      if (rotate) {
+        publishRoot(fixture, config);
+        expect(readFileSync(`${fixture.config}.bak`, "utf8")).toBe(before);
+        expectSuccess(run(fixture, `assert-${phase}`));
+      } else {
+        writeFileSync(fixture.config, JSON.stringify(config));
+        expectFailure(
+          run(fixture, `assert-${phase}`),
+          "backup ring lost or rewrote recovery history",
+        );
+        const observation = JSON.parse(
+          readFileSync(join(fixture.artifacts, `positive-config-after-${phase}.json`), "utf8"),
+        );
+        expect(observation.files["openclaw.json"].raw).toBe(readFileSync(fixture.config, "utf8"));
+        expect(existsSync(join(fixture.artifacts, "positive-config-converged.json"))).toBe(false);
+      }
+    },
+  );
 
   it("allows version stamping and ordered backup renames while keeping the original root outside the ring", () => {
     const fixture = makeFixture();
@@ -298,7 +335,7 @@ describe("packaged first-hop config preservation assertions", () => {
     prepareHop(fixture);
     const config = JSON.parse(readFileSync(fixture.config, "utf8"));
     config.plugins = { entries: { openai: { enabled: true } } };
-    writeFileSync(fixture.config, JSON.stringify(config));
+    publishRoot(fixture, config);
     expectSuccess(run(fixture, "assert-hop"));
     rewriteRoot(fixture, targetVersion, false, true);
     doctorOutput(fixture, "Doctor complete.\n", "repair");
@@ -401,7 +438,7 @@ describe("packaged first-hop config preservation assertions", () => {
     prepareHop(fixture);
     const repaired = JSON.parse(readFileSync(fixture.config, "utf8"));
     repaired.agents = { ...repaired.agents, entries: { main: {} } };
-    writeFileSync(fixture.config, JSON.stringify(repaired));
+    publishRoot(fixture, repaired);
     expectSuccess(run(fixture, "assert-hop"));
     let result;
     if (kind === "absent") {
@@ -731,6 +768,27 @@ describe("packaged first-hop config preservation assertions", () => {
     },
   );
 
+  it("rejects a repair that replaces the pre-update snapshot with identical bytes", () => {
+    const fixture = makeFixture();
+    prepareHop(fixture);
+    expectSuccess(run(fixture, "assert-hop"));
+    rewriteRoot(fixture, targetVersion, true, true);
+    const snapshot = `${fixture.config}.pre-update`;
+    const before = statSync(snapshot);
+    const raw = readFileSync(snapshot, "utf8");
+    copyFileSync(snapshot, `${snapshot}.new`);
+    renameSync(`${snapshot}.new`, snapshot);
+    expect(statSync(snapshot).ino).not.toBe(before.ino);
+    expect(readFileSync(snapshot, "utf8")).toBe(raw);
+    doctorOutput(fixture, "Doctor complete.\n", "repair");
+    expectFailure(run(fixture, "assert-repair"), "file changed: openclaw.json.pre-update");
+    const observation = JSON.parse(
+      readFileSync(join(fixture.artifacts, "positive-config-after-repair.json"), "utf8"),
+    );
+    expect(observation.files["openclaw.json.pre-update"].raw).toBe(raw);
+    expect(existsSync(join(fixture.artifacts, "positive-config-converged.json"))).toBe(false);
+  });
+
   it("rejects newline corruption in the newly inserted original-root backup", () => {
     const fixture = makeFixture();
     prepareHop(fixture);
@@ -836,7 +894,7 @@ describe("packaged first-hop config preservation assertions", () => {
       if (unexpected) {
         config.wizard.securityAcknowledgedAt = new Date().toISOString();
       }
-      writeFileSync(fixture.config, JSON.stringify(config));
+      publishRoot(fixture, config);
       if (unexpected) {
         expectFailure(run(fixture, "assert-hop"), "root config changed outside permitted metadata");
       } else {
@@ -1103,6 +1161,11 @@ openclaw() {
           for (const key of ["first-hop-unavailable", "first-hop-absent"]) {
             cfg.skills.entries[key] = { ...cfg.skills.entries[key], enabled: false };
           }
+          for (let index = 4; index >= 1; index -= 1) {
+            const from = file + ".bak" + (index === 1 ? "" : "." + (index - 1));
+            if (fs.existsSync(from)) fs.renameSync(from, file + ".bak." + index);
+          }
+          fs.copyFileSync(file, file + ".bak");
           fs.writeFileSync(file, JSON.stringify(cfg));
         '
       fi
