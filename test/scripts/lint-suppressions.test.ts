@@ -201,6 +201,11 @@ describe("production lint suppressions", () => {
         "extensions/matrix/src/onboarding.test-harness.ts|typescript/no-unnecessary-type-parameters|1",
         "extensions/nostr/src/nostr-profile-url-safety.ts|no-warning-comments|1",
         "extensions/qa-lab/src/gateway-child-setup.ts|preserve-caught-error|1",
+        // Slack SDK errors may contain credentials; only sanitized diagnostics cross the QA boundary.
+        "extensions/qa-lab/src/live-transports/slack/channel-e2e-observations.ts|preserve-caught-error|1",
+        "extensions/qa-lab/src/live-transports/slack/channel-e2e.ts|preserve-caught-error|1",
+        // Slack chat.postMessage targets the leased channel, not a browser window.
+        "extensions/qa-lab/src/live-transports/slack/channel-e2e.ts|unicorn/require-post-message-target-origin|1",
         "extensions/slack/src/monitor/provider-support.ts|typescript/no-unnecessary-type-parameters|1",
         // Gateway metadata uses __openclaw; execFile error causes can expose credential argv.
         "scripts/e2e/lib/upgrade-survivor/probe-volume-gateway.mjs|no-underscore-dangle|1",
