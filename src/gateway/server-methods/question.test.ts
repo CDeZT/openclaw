@@ -862,9 +862,9 @@ describe("question gateway methods", () => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         mockReferencedStoreSnapshot();
         const reload = createDeferred<{ warningCount: number }>();
-        const reloadEntered = createDeferred<void>();
+        const reloadStarted = createDeferred<void>();
         reloadSecrets.mockImplementation(() => {
-          reloadEntered.resolve();
+          reloadStarted.resolve();
           return reload.promise;
         });
         const id = await requestSecretQuestion();
@@ -876,7 +876,7 @@ describe("question gateway methods", () => {
         const competitors: Array<ReturnType<typeof call>> = [];
         try {
           await Promise.race([
-            reloadEntered.promise,
+            reloadStarted.promise,
             pending.then(() => {
               throw new Error("Question resolve settled before entering its deferred refresh");
             }),

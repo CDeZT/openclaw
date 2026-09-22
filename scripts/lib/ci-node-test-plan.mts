@@ -2996,7 +2996,10 @@ const WHOLE_CONFIG_SPLIT_FILE_LISTERS = new Map<string, () => string[]>([
       ...gatewayPluginTestFiles.filter((file) => !gatewayDatabaseWorkerTestFiles.includes(file)),
     ],
   ],
-  ["core-runtime-config", () => listTestFiles("src/config")],
+  [
+    "core-runtime-config",
+    () => listTestFiles("src/config").filter((file) => !isDatabaseWorkerCoreTestFile(file)),
+  ],
   // isolate:true gives every file a fresh module graph, so file stripes
   // cannot change behavior.
   ["core-unit-fast-isolated", getUnitFastIsolatedTestFiles],
