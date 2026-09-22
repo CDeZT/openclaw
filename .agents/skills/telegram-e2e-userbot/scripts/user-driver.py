@@ -493,26 +493,20 @@ class UserDriver:
         try:
             return self.client.request({"@type": "getChat", "chat_id": int(chat)}, timeout=10)["id"]
         except DriverError as error:
-            try:
-                self.client.request(
-                    {
-                        "@type": "loadChats",
-                        "chat_list": {"@type": "chatListMain"},
-                        "limit": 100,
-                    },
-                    timeout=30,
-                )
-            except DriverError as refresh_error:
-                if "failed (404)" not in str(refresh_error):
-                    raise
-            try:
-                return self.client.request(
-                    {"@type": "getChat", "chat_id": int(chat)}, timeout=10
-                )["id"]
-            except DriverError:
-                raise DriverError(
-                    f"Chat not found for tester account: {chat}. Add the QA user to the group, or configure the TDLib chat id from `user-driver.py chats --json`."
-                ) from error
+            chats = self.client.request(
+                {
+                    "@type": "getChats",
+                    "chat_list": {"@type": "chatListMain"},
+                    "limit": 100,
+                },
+                timeout=30,
+            )
+            chat_id = int(chat)
+            if chat_id in chats.get("chat_ids", []):
+                return chat_id
+            raise DriverError(
+                f"Chat not found for tester account: {chat}. Add the QA user to the group, or configure the TDLib chat id from `user-driver.py chats --json`."
+            ) from error
 
     def formatted_text(self, text):
         sut = resolve_sut(self.config, self.bot_config)

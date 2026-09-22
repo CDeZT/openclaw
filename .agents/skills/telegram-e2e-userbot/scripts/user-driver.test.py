@@ -57,27 +57,23 @@ class PhotoContentTest(unittest.TestCase):
         self.assertEqual(current["use_test_dc"], True)
         self.assertEqual(current["database_encryption_key"], "database-key")
 
-    def test_refreshes_main_chat_list_for_a_new_numeric_chat(self):
+    def test_resolves_a_new_numeric_chat_from_the_main_chat_list(self):
         class FakeClient:
             def __init__(self):
                 self.requests = []
-                self.get_chat_calls = 0
 
             def request(self, payload, timeout=20):
                 self.requests.append((payload, timeout))
                 if payload["@type"] == "getChat":
-                    self.get_chat_calls += 1
-                    if self.get_chat_calls == 1:
-                        raise driver.DriverError("getChat failed (400): Chat not found")
-                    return {"id": -1001}
-                return {"@type": "ok"}
+                    raise driver.DriverError("getChat failed (400): Chat not found")
+                return {"chat_ids": [-1001]}
 
         instance = driver.UserDriver.__new__(driver.UserDriver)
         instance.client = FakeClient()
         self.assertEqual(instance.resolve_chat("-1001"), -1001)
         self.assertEqual(
             [payload["@type"] for payload, _timeout in instance.client.requests],
-            ["getChat", "loadChats", "getChat"],
+            ["getChat", "getChats"],
         )
 
     def test_marks_sut_mentions_and_commands_with_utf16_entities(self):
