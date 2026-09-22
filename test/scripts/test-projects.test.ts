@@ -7,6 +7,7 @@ import { assert, beforeAll, describe, expect, it, vi } from "vitest";
 import { listExtensionTestFilesForRoots } from "../../scripts/lib/extension-test-plan.mts";
 import { readTestSelectorSourceFacts } from "../../scripts/lib/test-selector-source-facts.mts";
 import {
+  listVitestRuntimeConsumerFiles,
   resolveVitestPretestBuildMode,
   resolveVitestRuntimeConfigScopes,
 } from "../../scripts/lib/vitest-build-prerequisites.mts";
@@ -143,6 +144,11 @@ describe("test runtime prerequisites", () => {
     ],
     ["native catalog auth SDK", ["test/openai-model-discovery-auth-order.test.ts"], "runtime"],
     ["models.list native catalog", ["test/plugins/codex-model-catalog.gateway.test.ts"], "runtime"],
+    [
+      "Gateway TLS source fixture",
+      ["test/e2e/qa-lab/runtime/gateway-tls-pinning.test.ts"],
+      undefined,
+    ],
     ["native package setup SDK", ["test/plugin-npm-runtime-build.test.ts"], "runtime"],
     ["native Linux node SDK", ["src/node-host/linux-node-plugin.integration.test.ts"], "runtime"],
     ["native memory CLI SDK", ["src/entry.memory-json.test.ts"], "runtime"],
@@ -278,13 +284,14 @@ describe("test runtime prerequisites", () => {
 
   const catalogFile = "test/plugins/codex-model-catalog.gateway.test.ts";
   const freshnessFile = "src/gateway/server-methods/models-list.freshness.integration.test.ts";
-  const scopedFreshnessFile = "server-methods/models-list.freshness.integration.test.ts";
+  const scopedFreshnessFile = "**/models-list.freshness.integration.test.ts";
   it.each([
     ["gateway-database-workers", [], "runtime"],
     ["gateway-database-workers", [freshnessFile], "runtime"],
-    ["gateway-database-workers", [scopedFreshnessFile], "runtime"],
+    ["gateway-database-workers", ["models-list.freshness.integration"], "runtime"],
     ["gateway-database-workers", [freshnessFile, "--exclude", scopedFreshnessFile], undefined],
-    ["gateway-methods", [catalogFile], "runtime"],
+    ["gateway-database-workers", [catalogFile], "runtime"],
+    ["gateway-methods", [catalogFile], undefined],
     ["gateway-methods", [freshnessFile], undefined],
     ["gateway-methods", ["--exclude", catalogFile], undefined],
     ["gateway", [catalogFile], "runtime"],
@@ -299,6 +306,31 @@ describe("test runtime prerequisites", () => {
       {},
     );
     expect(resolveVitestPretestBuildMode(selections)).toBe(expected);
+  });
+
+  it.each([
+    "src/gateway/setup-inference.first-signin.integration.test.ts",
+    "src/gateway/server-methods/models-list.freshness.integration.test.ts",
+    "test/plugins/codex-model-catalog.gateway.test.ts",
+    "src/gateway/server-methods/models-list.worker-recovery.integration.test.ts",
+    "src/gateway/gateway-auth-recovery.test.ts",
+    "src/gateway/gateway-cron-process-identity.windows.test.ts",
+    "src/gateway/gateway-route-model-reuse.test.ts",
+    "src/gateway/gateway-ssh-upload-signal.test.ts",
+  ])("keeps Gateway worker runtime selection rooted at the repository for %s", (file) => {
+    const config = "test/vitest/vitest.gateway-database-workers.config.ts";
+    expect(listVitestRuntimeConsumerFiles([config])).toContain(file);
+    expect(
+      listVitestRuntimeConsumerFiles(["test/vitest/vitest.gateway-methods.config.ts"]),
+    ).not.toContain(file);
+    expect(
+      resolveVitestPretestBuildMode(resolveVitestRuntimeCliSelections(config, ["run", file], {})),
+    ).toBe("runtime");
+    expect(
+      resolveVitestPretestBuildMode(
+        resolveVitestRuntimeCliSelections(config, ["run", file, "--exclude", file], {}),
+      ),
+    ).toBeUndefined();
   });
 
   it.each([
@@ -383,7 +415,7 @@ describe("test runtime prerequisites", () => {
       "src/gateway/server-sidecar-retention.test.ts",
     ],
     ["gateway-database-workers", "src/gateway/server-methods/cron.runs.test.ts", freshnessFile],
-    ["gateway-methods", "src/gateway/server-methods/models.test.ts", catalogFile],
+    ["gateway-database-workers", "src/gateway/server-methods/models.test.ts", catalogFile],
     ["gateway", "src/gateway/server-request-context.test.ts", freshnessFile],
   ])("projects invocation-owned include files under %s", (project, ordinaryFile, runtimeFile) => {
     const selections = resolveVitestRuntimeCliSelections(
@@ -890,7 +922,11 @@ describe("scripts/test-projects changed-target routing", () => {
   it("keeps extension batch runner edits on extension script tests", () => {
     expectChangedTargets(
       ["scripts/test-extension-batch.mts"],
-      ["test/scripts/test-extension.test.ts", "test/scripts/test-projects-build-admission.test.ts"],
+      [
+        "test/scripts/test-extension.test.ts",
+        "test/scripts/test-projects-build-admission.test.ts",
+        "test/scripts/ci-node-test-plan.test.ts",
+      ],
     );
   });
 

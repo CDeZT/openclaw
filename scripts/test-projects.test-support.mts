@@ -3341,6 +3341,43 @@ function resolveDirectToolingReferenceTests(changedPath: string | string[], cwd:
   );
 }
 
+function hasToolingSourceOwner(changedPath: string, implementationPath: string): boolean {
+  const facts = getChangedPathFacts(changedPath);
+  return (
+    facts.surface === "rootTooling" ||
+    changedPath === "Dockerfile" ||
+    changedPath === ".crabbox.yaml" ||
+    changedPath.startsWith(".agents/") ||
+    isToolingScriptPath(implementationPath) ||
+    (facts.surface === "app" && /\/(?:fastlane|scripts)\//u.test(changedPath)) ||
+    (facts.surface === "extension" && /\/(?:scripts\/|package\.json$)/u.test(changedPath)) ||
+    (facts.surface === "rootTest" && changedPath.startsWith("test/e2e/qa-lab/"))
+  );
+}
+
+/** Inputs that retain the full maintainer-tooling family in automatic CI. */
+export function isToolingTestOwnerPath(changedPath: string): boolean {
+  const implementationPath = changedPath.endsWith(".d.mts")
+    ? changedPath.replace(/\.d\.mts$/u, ".mjs")
+    : changedPath;
+  const facts = getChangedPathFacts(changedPath);
+  return (
+    changedPath.startsWith("scripts/") ||
+    changedPath.startsWith("src/scripts/") ||
+    changedPath.startsWith("config/ci-") ||
+    changedPath.startsWith(".github/") ||
+    changedPath.startsWith("test/scripts/") ||
+    facts.surface === "rootGlobal" ||
+    facts.surface === "rootTest" ||
+    facts.surface === "testFixture" ||
+    facts.surface === "legacyRootAsset" ||
+    facts.surface === "unknown" ||
+    EXACT_TOOLING_TARGETS.has(implementationPath) ||
+    resolveSemanticToolingTargets(implementationPath).length > 0 ||
+    hasToolingSourceOwner(changedPath, implementationPath)
+  );
+}
+
 function resolveToolingTestTargets(changedPath: string, cwd = process.cwd()) {
   if (
     /^test\/scripts\/(?:ci-(?:checkout|git-owner|linux-git|platform-checkout|windows-process-census)\.test(?:-support)?\.ts|generated-publisher\.test-support\.ts|openclaw-performance-(?:workflow\.test(?:-support)?|git-lifecycle\.test)\.ts|plugin-release-git-lifecycle\.test\.ts|release-workflow-git-lifecycle\.test\.ts|fixtures\/(?:ci-platform-checkout\.mjs|ci-checkout-auth\.py|ci-windows-process-census\.(?:mjs|py)))$/u.test(
@@ -3385,14 +3422,7 @@ function resolveToolingTestTargets(changedPath: string, cwd = process.cwd()) {
     exactTargets.length > 0 ||
     semanticTargets.length > 0 ||
     toolingTestSource ||
-    facts.surface === "rootTooling" ||
-    changedPath === "Dockerfile" ||
-    changedPath === ".crabbox.yaml" ||
-    changedPath.startsWith(".agents/") ||
-    isToolingScriptPath(implementationPath) ||
-    (facts.surface === "app" && /\/(?:fastlane|scripts)\//u.test(changedPath)) ||
-    (facts.surface === "extension" && /\/(?:scripts\/|package\.json$)/u.test(changedPath)) ||
-    (facts.surface === "rootTest" && changedPath.startsWith("test/e2e/qa-lab/"));
+    hasToolingSourceOwner(changedPath, implementationPath);
   if (!hasToolingOwner) {
     return null;
   }
@@ -3722,7 +3752,10 @@ function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership 
   if (configTargetKind) {
     return configTargetKind;
   }
-  if (gatewayPluginTestFiles.includes(relative)) {
+  if (
+    gatewayPluginTestFiles.includes(relative) &&
+    (beforeDatabaseWorkerOwnership || !gatewayDatabaseWorkerTestFiles.includes(relative))
+  ) {
     return "gatewayMethods";
   }
   if (beforeDatabaseWorkerOwnership) {
@@ -3788,6 +3821,9 @@ function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership 
   // Otherwise a thin wrapper can move a stateful tooling test into a shared worker.
   if (isToolingIsolatedTestFile(relative)) {
     return "toolingIsolated";
+  }
+  if (isCliProcessTestFile(relative)) {
+    return "cliProcess";
   }
   if (resolveUnitFastTimerTestIncludePattern(relative)) {
     return "unitFastFakeTimers";
@@ -3883,9 +3919,6 @@ function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership 
   }
   if (isPathAtOrUnder(relative, "src/acp")) {
     return "acp";
-  }
-  if (isCliProcessTestFile(relative)) {
-    return "cliProcess";
   }
   if (isPathAtOrUnder(relative, "src/cli")) {
     return "cli";

@@ -13,7 +13,7 @@ import {
 } from "./lib/managed-child-process.mts";
 import { pnpmLockfileDocuments } from "./lib/pnpm-lockfile-documents.mjs";
 
-const BASELINE = "a63d697549fe75890000fa1ab2e92335d120c907";
+const BASELINE = process.env.IOS_GUEST_POLICY_BASE_SHA ?? "";
 const TEST = "OpenClawUITests/ChatCatalogUITests/testGuestModelPolicyRetiresOpenChoices";
 const OVERLAY = {
   "apps/ios/UITests/ChatCatalogUITests.swift":
@@ -90,7 +90,7 @@ assert.equal(pullRequest.base.ref, "main");
 assert.match(pullRequest.head.sha, /^[a-f0-9]{40}$/u);
 assert.match(process.env.GITHUB_SHA ?? "", /^[a-f0-9]{40}$/u);
 assert.equal(process.env.IOS_GUEST_POLICY_PUBLIC_HEAD, pullRequest.head.sha);
-assert.match(process.env.IOS_GUEST_POLICY_BASE_SHA ?? "", /^[a-f0-9]{40}$/u);
+assert.match(BASELINE, /^[a-f0-9]{40}$/u);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const simulator = process.env.IOS_GUEST_POLICY_SIMULATOR;
 assert.match(simulator ?? "", /^[A-Fa-f0-9-]{36}$/u);
@@ -538,7 +538,7 @@ try {
   const headers = commit.split("\n\n", 1)[0].split("\n");
   const parents = headers.filter((line) => line.startsWith("parent ")).map((line) => line.slice(7));
   // Preflight resolves the pinned merge's base; a PR event may retain an older base.
-  assert.deepEqual(parents, [process.env.IOS_GUEST_POLICY_BASE_SHA, pullRequest.head.sha]);
+  assert.deepEqual(parents, [BASELINE, pullRequest.head.sha]);
   assert.match(headers[0], /^tree [a-f0-9]{40}$/u);
   receipt.candidateTree = headers[0].slice(5);
   receipt.integratedMerge = {

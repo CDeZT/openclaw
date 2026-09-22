@@ -25,6 +25,11 @@ import type {
 } from "../gateway/worker-environments/placement-read-projection.types.js";
 import type { WorkerSessionPlacementChangeSnapshot } from "../gateway/worker-environments/placement-record.js";
 import type {
+  WorkerEnvironmentFacts,
+  WorkerEnvironmentPrunePage,
+  WorkerEnvironmentPruneReadInput,
+} from "../gateway/worker-environments/store-worker-contract.js";
+import type {
   DevicePairingReadCommand,
   DevicePairingReadReply,
 } from "../infra/device-pairing-read.types.js";
@@ -88,6 +93,8 @@ export type OpenClawStateReadCommand =
       };
     }[keyof SkillLibraryReadOnlyOperations]
   | { type: "agentDatabaseRegistry.read" }
+  | { type: "workerEnvironments.snapshot"; ids?: readonly string[] }
+  | { type: "workerEnvironments.pruneCandidates"; input: WorkerEnvironmentPruneReadInput }
   | { type: "onboardingRecommendations.read"; configKey: string }
   | { type: "userProfiles.reconcile"; profileId: string }
   | { type: "userProfiles.email.resolve"; email: string }
@@ -99,7 +106,6 @@ export type OpenClawStateReadCommand =
   | { type: "fleet.get"; tenantId: string }
   | { type: "nodeHost.config" }
   | { type: "workspace.snapshot"; workspaceDir: string }
-  | { type: "workerEnvironments.hasSessionAttachment"; environmentId: string }
   | { type: "sandboxRegistry.list" }
   | { type: "sandboxRegistry.get"; containerName: string }
   | { type: "sandboxRegistry.runtimeIds"; backendId: string; scopeKey: string }
@@ -169,6 +175,18 @@ export type OpenClawStateReadReply = (
     }
   | {
       ok: true;
+      type: "workerEnvironments.pruneCandidates";
+      sourceAdmitted: true;
+      page: WorkerEnvironmentPrunePage;
+    }
+  | {
+      ok: true;
+      type: "workerEnvironments.snapshot";
+      sourceAdmitted: true;
+      facts: WorkerEnvironmentFacts;
+    }
+  | {
+      ok: true;
       type: "onboardingRecommendations.read";
       sourceAdmitted: true;
       record: OnboardingRecommendationsRecord | null;
@@ -219,12 +237,6 @@ export type OpenClawStateReadReply = (
       row: Pick<Selectable<ConfigMachineState>, "value_json" | "updated_at_ms"> | undefined;
     }
   | { ok: true; type: "workspace.snapshot"; sourceAdmitted: true; snapshot: WorkspaceStateSnapshot }
-  | {
-      ok: true;
-      type: "workerEnvironments.hasSessionAttachment";
-      sourceAdmitted: true;
-      attached: boolean;
-    }
   | {
       ok: true;
       type: "sandboxRegistry.list";

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { preparePublicUpdateFailureIdentifiers } from "./update-failure-public-identifiers.js";
 import { prepareUpdateFailureReport } from "./update-failure-report-prepare.js";
+import { updateRunStepsFromResultStep } from "./update-run-step.js";
 
 // Prepare the real catalog/worker prerequisites before individual test deadlines.
 await preparePublicUpdateFailureIdentifiers();
@@ -18,6 +19,31 @@ function prepareDiagnosticReport(reason: string) {
 }
 
 describe("update report diagnostic command boundary", () => {
+  it.each([
+    "Package rollback launcher backup changed",
+    "Package rollback verification timed out",
+    "Package rollback verification failed",
+  ])("preserves the recorded %s cause without publishing private details", async (cause) => {
+    const report = await prepareUpdateFailureReport(
+      {
+        attemptId: "swap-summary",
+        result: { mode: "npm", status: "error", steps: [], durationMs: 1 },
+        recordedRun: {
+          runId: "swap-summary",
+          steps: updateRunStepsFromResultStep({
+            name: "package-swap",
+            exitCode: 1,
+            stderrTail: `${cause}: /private/customer/launcher. Installation recovery is unverified; inspect the installation and backups before restarting.`,
+          }),
+        },
+      },
+      context,
+    );
+    expect(report.body).toContain(`Failed phase package-swap: exit 1 (${cause})`);
+    expect(report.body).not.toContain("/private/customer");
+    expect(report.body).not.toContain("Installation recovery is unverified");
+  });
+
   it("includes every named lint finding using the existing public diagnostic redaction", async () => {
     const findings = Array.from({ length: 40 }, (_, index) => ({
       checkId: "core/doctor/security",

@@ -1617,6 +1617,7 @@ public struct ArtifactsDownloadParams: Codable, Sendable {
     public let agentid: String?
     public let messagerole: String?
     public let artifactid: String
+    public let transport: String?
 
     public init(
         sessionkey: String? = nil,
@@ -1624,7 +1625,8 @@ public struct ArtifactsDownloadParams: Codable, Sendable {
         taskid: String? = nil,
         agentid: String? = nil,
         messagerole: String? = nil,
-        artifactid: String)
+        artifactid: String,
+        transport: String? = nil)
     {
         self.sessionkey = sessionkey
         self.runid = runid
@@ -1632,6 +1634,7 @@ public struct ArtifactsDownloadParams: Codable, Sendable {
         self.agentid = agentid
         self.messagerole = messagerole
         self.artifactid = artifactid
+        self.transport = transport
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1641,6 +1644,7 @@ public struct ArtifactsDownloadParams: Codable, Sendable {
         case agentid = "agentId"
         case messagerole = "messageRole"
         case artifactid = "artifactId"
+        case transport
     }
 }
 
@@ -10806,6 +10810,28 @@ public struct PluginInspectSource: Codable, Sendable {
     }
 }
 
+public struct PluginInstallActivity: Codable, Sendable {
+    public let activityid: String
+    public let stage: AnyCodable
+    public let status: AnyCodable
+
+    public init(
+        activityid: String,
+        stage: AnyCodable,
+        status: AnyCodable)
+    {
+        self.activityid = activityid
+        self.stage = stage
+        self.status = status
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case activityid = "activityId"
+        case stage
+        case status
+    }
+}
+
 public struct PluginInstallTrust: Codable, Sendable {
     public let disposition: AnyCodable
     public let reasons: [String]?
@@ -11249,6 +11275,32 @@ public struct PluginsInspectResult: Codable, Sendable {
         case grants
         case trust
         case catalog
+    }
+}
+
+public struct PluginsInstallProgressEvent: Codable, Sendable {
+    public let activityid: String
+    public let stage: AnyCodable
+    public let status: AnyCodable
+    public let requestid: String
+
+    public init(
+        activityid: String,
+        stage: AnyCodable,
+        status: AnyCodable,
+        requestid: String)
+    {
+        self.activityid = activityid
+        self.stage = stage
+        self.status = status
+        self.requestid = requestid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case activityid = "activityId"
+        case stage
+        case status
+        case requestid = "requestId"
     }
 }
 
