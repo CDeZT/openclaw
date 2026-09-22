@@ -8,6 +8,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { addSessionMember } from "../../config/sessions/session-sharing-store.js";
 import { historyPages } from "../../config/sessions/session-transcript-worker-resources.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
 import { releaseAgentRunDelegatedAuthority } from "../../infra/agent-run-registry.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
@@ -86,7 +87,7 @@ async function fixture(state: OpenClawTestState, options?: { foreign?: boolean }
       id: (options?.foreign ? viewer : owner).authenticatedUserProfile!.profileId,
     },
   };
-  const write = (delta: Partial<typeof entry> = {}) =>
+  const write = (delta: Partial<SessionEntry> = {}) =>
     upsertSessionEntryCore(
       { agentId: "main", sessionKey: requestParams.sessionKey },
       { ...entry, ...delta },
@@ -635,8 +636,8 @@ it.each([
       let held = false;
       const spy = vi.spyOn(historyPages, "run").mockImplementation(async (input, options) => {
         let exact = false;
-        const result = await run(() => {
-          const request = typeof input === "function" ? input() : input;
+        const result = await run(async () => {
+          const request = typeof input === "function" ? await input() : input;
           exact = request.kind === "session-exact-entries";
           return request;
         }, options);

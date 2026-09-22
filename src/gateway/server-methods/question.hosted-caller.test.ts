@@ -19,6 +19,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createAgentRuntimeApprovalAuthorityValidator } from "../agent-runtime-identity-token.js";
 import { createGatewayMethodRegistry } from "../methods/registry.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
+import type { OperatorScope } from "../operator-scopes.js";
 import { QuestionManager } from "../question-manager.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
@@ -66,7 +67,7 @@ async function withHostedQuestion(
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const cfg = rolePolicyConfig();
     const role = broadRole ?? "view";
-    const scopes = [broadRole ? "operator.questions" : "operator.sessions.write"];
+    const scopes: OperatorScope[] = [broadRole ? "operator.questions" : "operator.sessions.write"];
     cfg.gateway!.roles!.definitions[role]!.scopes = scopes;
     cfg.session = { store: state.path("sessions.json") };
     cfg.agents = { defaults: { workspace: state.workspaceDir }, entries: { main: {} } };
