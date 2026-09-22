@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  CONFIG_WRITE_SAFETY_REJECTION_MESSAGE,
-  createConfigWriteSafetyRejectionError,
-} from "../config/io.write-errors.js";
+import { createConfigWriteSafetyRejectionError } from "../config/io.write-errors.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { commitSetupInferenceActivation } from "./setup-inference-transition.js";
 
@@ -39,7 +36,7 @@ describe("setup inference activation recovery", () => {
     const error = await activation.catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(AggregateError);
     expect(error).toMatchObject({
-      message: `Activation failed and recovery could not complete. ${CONFIG_WRITE_SAFETY_REJECTION_MESSAGE}`,
+      message: `Activation failed and recovery could not complete. ${recoveryError.message}`,
     });
     expect((error as Error).message).not.toContain(diagnosticPath);
     expect((error as Error).message).not.toContain(rejectedPath);
