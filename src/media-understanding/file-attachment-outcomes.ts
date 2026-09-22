@@ -39,6 +39,7 @@ export type FileAttachmentOutcome =
   | { kind: "extracted"; text: string; images: DocumentExtractedImage[] }
   | { kind: "rendered-to-images"; images: DocumentExtractedImage[] }
   | { kind: "no-extractable-text" }
+  | { kind: "text-limit"; images: DocumentExtractedImage[] }
   // localPath is set only after a root-approved cache read. The reply runtime
   // separately decides whether its final tool surface can reveal that path.
   | { kind: "unsupported-format"; mime?: string; localPath?: string }
@@ -84,6 +85,7 @@ const SKIPPED_FILE_OUTCOME_KINDS = new Set<FileAttachmentOutcome["kind"]>([
   "policy-rejected",
   "read-failure",
   "url-sources-disabled",
+  "text-limit",
 ]);
 
 export function isSkippedFileOutcome(outcome: FileAttachmentOutcome): boolean {
@@ -101,6 +103,8 @@ export function renderFileAttachmentOutcome(
       return "[PDF content rendered to images]";
     case "no-extractable-text":
       return "[No extractable text]";
+    case "text-limit":
+      return "[Document text omitted: context text limit reached]";
     case "unsupported-format": {
       const mime = markerSafeMime(outcome.mime);
       const formatClause = mime
