@@ -50,16 +50,16 @@ enum GatewayDiscoveryPreferences {
         connectionMode: AppState.ConnectionMode,
         remoteTransport: AppState.RemoteTransport,
         remoteURL: String,
-        remoteTarget: String) -> String?
+        remoteTarget: String,
+        root: [String: Any] = OpenClawConfigFile.loadDict()) -> String?
     {
         guard connectionMode == .remote else { return nil }
-        let defaultRemotePort = GatewayEnvironment.gatewayPort()
         let sshRemotePort: Int = if remoteTransport == .ssh {
-            RemotePortTunnel.resolveRemotePortOverride(
-                defaultRemotePort: defaultRemotePort,
-                for: CommandResolver.parseSSHTarget(remoteTarget)?.host ?? "") ?? defaultRemotePort
+            RemotePortTunnel.ports(
+                root: root,
+                sshHost: CommandResolver.parseSSHTarget(remoteTarget)?.host ?? "").remote
         } else {
-            defaultRemotePort
+            18789
         }
         return OnboardingSystemAgentResumeStore.routeIdentity(
             connectionMode: .remote,
@@ -84,21 +84,24 @@ enum GatewayDiscoveryPreferences {
             remoteTransport: resolution.transport,
             remoteURL: resolution.directURL?.absoluteString ?? GatewayRemoteConfig.resolveUrlString(root: root) ?? "",
             remoteTarget: resolution.transport == .ssh ? CommandResolver.connectionSettings(configRoot: root)
-                .target : "")
+                .target : "",
+            root: root)
     }
 
     static func deviceAuthGatewayID(
         connectionMode: AppState.ConnectionMode,
         remoteTransport: AppState.RemoteTransport,
         remoteURL: String,
-        remoteTarget: String) -> String?
+        remoteTarget: String,
+        root: [String: Any] = OpenClawConfigFile.loadDict()) -> String?
     {
         if connectionMode == .remote {
             return self.routeBinding(
                 connectionMode: connectionMode,
                 remoteTransport: remoteTransport,
                 remoteURL: remoteURL,
-                remoteTarget: remoteTarget)
+                remoteTarget: remoteTarget,
+                root: root)
         }
         return OnboardingSystemAgentResumeStore.routeIdentity(
             connectionMode: connectionMode,

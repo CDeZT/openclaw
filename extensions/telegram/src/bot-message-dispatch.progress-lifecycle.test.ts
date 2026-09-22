@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import { expectWindowRetiredAfterFinal } from "./bot-message-dispatch.progress-window.test-helpers.js";
 import {
   describeTelegramDispatch,
+  emitToolStart,
   allDeliveredReplyTexts,
   createContext,
   deliverReplies,
@@ -24,7 +25,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
       async ({ dispatcherOptions, replyOptions }) => {
         await replyOptions?.onItemEvent?.({ kind: "preamble", itemId: "c1", progressText: "Note" });
-        await replyOptions?.onToolStart?.({ name: "exec", phase: "start" });
+        await emitToolStart(replyOptions, { name: "exec", phase: "start", toolCallId: "exec-1" });
         await dispatcherOptions.deliver({ text: "Done" }, { kind: "final" });
         return { queuedFinal: true };
       },
@@ -35,7 +36,9 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
         ctxPayload: { SessionKey: "s1" } as unknown as TelegramMessageContext["ctxPayload"],
       }),
       streamMode: "progress",
-      telegramCfg: { streaming: { mode: "progress", progress: { commentary: true } } },
+      telegramCfg: {
+        streaming: { mode: "progress", progress: { toolProgress: true, commentary: true } },
+      },
     });
 
     expect(answerDraftStream.updatePreview).toHaveBeenCalled();
@@ -47,13 +50,13 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
       async ({ dispatcherOptions, replyOptions }) => {
-        await replyOptions?.onToolStart?.({ name: "exec", phase: "start" });
+        await emitToolStart(replyOptions, { name: "exec", phase: "start", toolCallId: "exec-1" });
         await dispatcherOptions.deliver(
           { text: "<think>hidden</think>", isReasoning: true },
           { kind: "block" },
         );
         await replyOptions?.onAssistantMessageStart?.();
-        await replyOptions?.onToolStart?.({ name: "exec", phase: "start" });
+        await emitToolStart(replyOptions, { name: "exec", phase: "start", toolCallId: "exec-2" });
         await dispatcherOptions.deliver({ text: "Done" }, { kind: "final" });
         return { queuedFinal: true };
       },
@@ -64,7 +67,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
         ctxPayload: { SessionKey: "s1" } as unknown as TelegramMessageContext["ctxPayload"],
       }),
       streamMode: "progress",
-      telegramCfg: { streaming: { mode: "progress" } },
+      telegramCfg: { streaming: { mode: "progress", progress: { toolProgress: true } } },
     });
 
     expect(answerDraftStream.clear).not.toHaveBeenCalled();
@@ -77,7 +80,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
       async ({ dispatcherOptions, replyOptions }) => {
-        await replyOptions?.onToolStart?.({ name: "exec", phase: "start" });
+        await emitToolStart(replyOptions, { name: "exec", phase: "start", toolCallId: "exec-1" });
         await dispatcherOptions.deliver(
           { text: "<think>hidden</think>", isReasoning: true },
           { kind: "block" },
@@ -93,7 +96,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
         ctxPayload: { SessionKey: "s1" } as unknown as TelegramMessageContext["ctxPayload"],
       }),
       streamMode: "progress",
-      telegramCfg: { streaming: { mode: "progress" } },
+      telegramCfg: { streaming: { mode: "progress", progress: { toolProgress: true } } },
     });
 
     expect(answerDraftStream.rotateToNewMessageDeferringDelete).not.toHaveBeenCalled();
@@ -105,9 +108,9 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
       async ({ dispatcherOptions, replyOptions }) => {
         await replyOptions?.onItemEvent?.({ kind: "preamble", itemId: "c1", progressText: "Look" });
-        await replyOptions?.onToolStart?.({ name: "exec", phase: "start" });
+        await emitToolStart(replyOptions, { name: "exec", phase: "start", toolCallId: "exec-1" });
         await replyOptions?.onItemEvent?.({ kind: "preamble", itemId: "c2", progressText: "Now" });
-        await replyOptions?.onToolStart?.({ name: "read", phase: "start" });
+        await emitToolStart(replyOptions, { name: "read", toolCallId: "read-1", phase: "start" });
         await dispatcherOptions.deliver({ text: "Final answer" }, { kind: "final" });
         return { queuedFinal: true };
       },
@@ -116,7 +119,9 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     await dispatchWithContext({
       context: createContext(),
       streamMode: "progress",
-      telegramCfg: { streaming: { mode: "progress", progress: { commentary: true } } },
+      telegramCfg: {
+        streaming: { mode: "progress", progress: { toolProgress: true, commentary: true } },
+      },
     });
 
     const windowMessageIds = new Set(
@@ -146,7 +151,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
             progressText: `Commentary ${index}`,
           });
         }
-        await replyOptions?.onToolStart?.({ name: "Bash", phase: "start" });
+        await emitToolStart(replyOptions, { name: "Bash", toolCallId: "bash-1", phase: "start" });
         await dispatcherOptions.deliver({ text: "TEST DONE" }, { kind: "final" });
         return { queuedFinal: true };
       },
@@ -155,7 +160,9 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     await dispatchWithContext({
       context: createContext(),
       streamMode: "progress",
-      telegramCfg: { streaming: { mode: "progress", progress: { commentary: true } } },
+      telegramCfg: {
+        streaming: { mode: "progress", progress: { toolProgress: true, commentary: true } },
+      },
     });
 
     const lastPreview = answerDraftStream.updatePreview.mock.calls.at(-1)?.[0].text ?? "";
@@ -173,7 +180,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
       async ({ dispatcherOptions, replyOptions }) => {
-        await replyOptions?.onToolStart?.({ name: "exec", phase: "start" });
+        await emitToolStart(replyOptions, { name: "exec", phase: "start", toolCallId: "exec-1" });
         // Intermediate assistant answer prose mid-turn.
         await dispatcherOptions.deliver({ text: "Interim answer prose" }, { kind: "block" });
         await dispatcherOptions.deliver({ text: "The real final answer." }, { kind: "final" });
@@ -184,7 +191,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     await dispatchWithContext({
       context: createContext(),
       streamMode: "progress",
-      telegramCfg: { streaming: { mode: "progress" } },
+      telegramCfg: { streaming: { mode: "progress", progress: { toolProgress: true } } },
     });
 
     // The interim block text never reached the window (neither update nor preview).
@@ -206,7 +213,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
       async ({ dispatcherOptions, replyOptions }) => {
         replyOptions?.onVerboseProgressVisibility?.(() => true);
-        await replyOptions?.onToolStart?.({ name: "exec", phase: "start" });
+        await emitToolStart(replyOptions, { name: "exec", phase: "start", toolCallId: "exec-1" });
         await dispatcherOptions.deliver({ text: "Done" }, { kind: "final" });
         return { queuedFinal: true };
       },
@@ -215,7 +222,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     await dispatchWithContext({
       context: createContext(),
       streamMode: "progress",
-      telegramCfg: { streaming: { mode: "progress" } },
+      telegramCfg: { streaming: { mode: "progress", progress: { toolProgress: true } } },
     });
 
     expect(answerDraftStream.updatePreview).not.toHaveBeenCalled();
@@ -248,7 +255,9 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
       await dispatchWithContext({
         context: createContext(),
         streamMode: "progress",
-        telegramCfg: { streaming: { mode: "progress", progress: { label: "Shelling" } } },
+        telegramCfg: {
+          streaming: { mode: "progress", progress: { toolProgress: true, label: "Shelling" } },
+        },
       });
 
       const lastUpdate = answerDraftStream.updatePreview.mock.calls.at(-1)?.[0];
@@ -266,7 +275,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
       async ({ dispatcherOptions, replyOptions }) => {
-        await replyOptions?.onToolStart?.({ name: "exec", phase: "start" });
+        await emitToolStart(replyOptions, { name: "exec", phase: "start", toolCallId: "exec-1" });
         await dispatcherOptions.deliver({ text: "Branch is up to date" }, { kind: "final" });
         await dispatcherOptions.deliver({ text: trailingFinalStatusText }, { kind: "final" });
         return { queuedFinal: true };
@@ -276,11 +285,16 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     await dispatchWithContext({
       context: createContext(),
       streamMode: "progress",
-      telegramCfg: { streaming: { mode: "progress", progress: { label: "Cracking" } } },
+      telegramCfg: {
+        streaming: { mode: "progress", progress: { toolProgress: true, label: "Cracking" } },
+      },
     });
 
     expect(answerDraftStream.updatePreview).toHaveBeenCalledWith(
-      telegramProgressPreview("Cracking\n\n🛠️ Exec", "<b>Cracking</b>\n<b>🛠️ Exec</b>"),
+      telegramProgressPreview(
+        "Cracking\n\n🛠️ Exec running",
+        "<b>Cracking</b>\n<b>🛠️ Exec</b> <i>running</i>",
+      ),
     );
     expect(answerDraftStream.update).toHaveBeenCalledTimes(1);
     expect(answerDraftStream.update).toHaveBeenNthCalledWith(
@@ -301,7 +315,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
       async ({ dispatcherOptions, replyOptions }) => {
-        await replyOptions?.onToolStart?.({ name: "exec", phase: "start" });
+        await emitToolStart(replyOptions, { name: "exec", phase: "start", toolCallId: "exec-1" });
         await dispatcherOptions.deliver(
           { text: "stdout line one\nstdout line two" },
           { kind: "tool" },
@@ -314,7 +328,9 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     await dispatchWithContext({
       context: createContext(),
       streamMode: "progress",
-      telegramCfg: { streaming: { mode: "progress", progress: { label: "Shelling" } } },
+      telegramCfg: {
+        streaming: { mode: "progress", progress: { toolProgress: true, label: "Shelling" } },
+      },
     });
 
     expect(answerDraftStream.updatePreview).not.toHaveBeenCalledWith(
@@ -323,7 +339,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     expect(answerDraftStream.updatePreview).toHaveBeenLastCalledWith(
       telegramProgressPreview(
         "Shelling\n\n🛠️ Exec\n🔎 Web Search: docs lookup",
-        "<b>Shelling</b>\n<b>🛠️ Exec</b>\n<b>🔎 Web Search</b> <code>docs lookup</code>",
+        "<b>Shelling</b>\n<b>🛠️ Exec</b> <i>running</i>\n<b>🔎 Web Search</b> docs lookup",
       ),
     );
     expect(deliverReplies).not.toHaveBeenCalled();
@@ -347,13 +363,15 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
       await dispatchWithContext({
         context: createContext(),
         streamMode: "progress",
-        telegramCfg: { streaming: { mode: "progress", progress: { label: "Shelling" } } },
+        telegramCfg: {
+          streaming: { mode: "progress", progress: { toolProgress: true, label: "Shelling" } },
+        },
       });
 
       expect(answerDraftStream.updatePreview).toHaveBeenLastCalledWith(
         telegramProgressPreview(
           "Shelling\n\n🌐 API: GET /v1/users\n🌐 API: POST /v1/jobs",
-          "<b>Shelling</b>\n<b>🌐 API</b> <code>GET /v1/users</code>\n<b>🌐 API</b> <code>POST /v1/jobs</code>",
+          "<b>Shelling</b>\n<b>🌐 API</b> GET /v1/users\n<b>🌐 API</b> POST /v1/jobs",
         ),
       );
       expect(deliverReplies).not.toHaveBeenCalled();

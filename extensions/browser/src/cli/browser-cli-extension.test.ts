@@ -29,6 +29,8 @@ const relayMocks = vi.hoisted(() => {
 const installMocks = vi.hoisted(() => ({
   browserExtensionStatus: vi.fn(),
   installChromeExtensionBootstrap: vi.fn(),
+  removeChromeStoreInstallRequests: vi.fn(),
+  repairChromeExtensionNativeHosts: vi.fn(),
   uninstallChromeExtensionNativeHosts: vi.fn(),
 }));
 
@@ -41,6 +43,8 @@ vi.mock("../browser/extension-install.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../browser/extension-install.js")>()),
   browserExtensionStatus: installMocks.browserExtensionStatus,
   installChromeExtensionBootstrap: installMocks.installChromeExtensionBootstrap,
+  removeChromeStoreInstallRequests: installMocks.removeChromeStoreInstallRequests,
+  repairChromeExtensionNativeHosts: installMocks.repairChromeExtensionNativeHosts,
   uninstallChromeExtensionNativeHosts: installMocks.uninstallChromeExtensionNativeHosts,
 }));
 
@@ -55,6 +59,7 @@ function createExtensionStatus() {
     approvedPaths: ["/stable/openclaw-extension"],
     discovered: [],
     storeDiscovered: [],
+    storeInstallRequests: [],
     registrations: [],
     manualSetupRequired: false,
     issues: [],
@@ -65,6 +70,7 @@ describe("browser extension pairing Gateway URL", () => {
   beforeEach(() => {
     installMocks.browserExtensionStatus.mockResolvedValue(createExtensionStatus());
     installMocks.installChromeExtensionBootstrap.mockResolvedValue(createExtensionStatus());
+    installMocks.removeChromeStoreInstallRequests.mockResolvedValue({ removed: [], refused: [] });
     installMocks.uninstallChromeExtensionNativeHosts.mockResolvedValue({
       removed: [],
       refused: [],
@@ -76,8 +82,42 @@ describe("browser extension pairing Gateway URL", () => {
     vi.restoreAllMocks();
     installMocks.browserExtensionStatus.mockReset();
     installMocks.installChromeExtensionBootstrap.mockReset();
+    installMocks.removeChromeStoreInstallRequests.mockReset();
+    installMocks.repairChromeExtensionNativeHosts.mockReset();
     installMocks.uninstallChromeExtensionNativeHosts.mockReset();
     resetRuntimeCapture();
+  });
+
+  it("repairs only the explicitly selected native target without profile discovery or pairing", async () => {
+    const report = {
+      changes: ["Repaired Google Chrome OpenClaw native messaging registration."],
+      warnings: [],
+      registrations: [],
+      retainedNativeHostPaths: ["/new/native-host-entry.js"],
+      retentionSafe: true,
+      manualRequired: false,
+    };
+    installMocks.repairChromeExtensionNativeHosts.mockResolvedValue(report);
+    const output = vi
+      .spyOn(cliCoreApiModule.defaultRuntime, "writeJson")
+      .mockImplementation(runtime.writeJson);
+    const { registerBrowserExtensionCommands } = await import("./browser-cli-extension.js");
+    const program = new Command().exitOverride();
+    registerBrowserExtensionCommands(program.command("browser"), () => ({}), "/new/browser");
+    await program.parseAsync(
+      ["browser", "extension", "repair", "--from", "/old/native-host-entry.js", "--json"],
+      { from: "user" },
+    );
+    expect(output).toHaveBeenCalledWith(report);
+    expect(installMocks.repairChromeExtensionNativeHosts).toHaveBeenCalledWith({
+      bundledDir: "/new/browser/chrome-extension",
+      pluginRoot: "/new/browser",
+      fromNativeHostPath: "/old/native-host-entry.js",
+      dryRun: false,
+    });
+    expect(installMocks.browserExtensionStatus).not.toHaveBeenCalled();
+    expect(installMocks.installChromeExtensionBootstrap).not.toHaveBeenCalled();
+    expect(relayMocks.ensureExtensionRelayToken).not.toHaveBeenCalled();
   });
 
   it("prints the Store CTA only after native pre-registration is ready", async () => {
@@ -105,6 +145,7 @@ describe("browser extension pairing Gateway URL", () => {
             },
           ],
           storeDiscovered: [],
+          storeInstallRequests: [],
           registrations: [],
           manualSetupRequired: false,
           issues: [],
@@ -126,6 +167,56 @@ describe("browser extension pairing Gateway URL", () => {
       output.findIndex((message) => message.includes("Chrome Web Store")),
     );
     expect(output.at(-1)).toContain("extension identity verified");
+  });
+
+  it("keeps development-only installation from requesting the Store extension", async () => {
+    vi.spyOn(cliCoreApiModule.defaultRuntime, "writeJson").mockImplementation(runtime.writeJson);
+    const { registerBrowserExtensionCommands } = await import("./browser-cli-extension.js");
+    const program = new Command();
+    registerBrowserExtensionCommands(program.command("browser"), () => ({}));
+    await program.parseAsync(["browser", "extension", "install", "--no-store", "--json"], {
+      from: "user",
+    });
+    expect(installMocks.installChromeExtensionBootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({ requestStoreInstall: false }),
+    );
+  });
+
+  it("reports Chrome approval as pending without claiming connection", async () => {
+    installMocks.installChromeExtensionBootstrap.mockResolvedValue({
+      ...createExtensionStatus(),
+      manualSetupRequired: true,
+      storeInstallRequests: [
+        {
+          browser: "Google Chrome",
+          path: "/chrome/External Extensions/openclaw.json",
+          state: "requested",
+        },
+      ],
+    });
+    const logSpy = vi.spyOn(cliCoreApiModule.defaultRuntime, "log").mockImplementation(runtime.log);
+    vi.spyOn(cliCoreApiModule.defaultRuntime, "exit").mockImplementation(runtime.exit);
+    const { registerBrowserExtensionCommands } = await import("./browser-cli-extension.js");
+    const program = new Command();
+    registerBrowserExtensionCommands(program.command("browser"), () => ({}));
+    await expect(
+      program.parseAsync(["browser", "extension", "install"], { from: "user" }),
+    ).rejects.toThrow("__exit__:1");
+    expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+      "approve Chrome's prompt",
+    );
+  });
+
+  it("removes Store requests without removing native hosts", async () => {
+    vi.spyOn(cliCoreApiModule.defaultRuntime, "writeJson").mockImplementation(runtime.writeJson);
+    const { registerBrowserExtensionCommands } = await import("./browser-cli-extension.js");
+    const program = new Command();
+    registerBrowserExtensionCommands(program.command("browser"), () => ({}));
+    await program.parseAsync(["browser", "extension", "uninstall-store", "--json"], {
+      from: "user",
+    });
+    expect(installMocks.removeChromeStoreInstallRequests).toHaveBeenCalledOnce();
+    expect(installMocks.uninstallChromeExtensionNativeHosts).not.toHaveBeenCalled();
   });
 
   it.each(["0x1000", "1e4", "+50000", " 50000", "50000 ", "50000\t"])(

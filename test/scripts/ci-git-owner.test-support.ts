@@ -60,6 +60,7 @@ const defaults: Record<string, string> = {
   FROZEN_TARGET: "false",
   HISTORICAL_TARGET: "false",
   FORMAT_CHECK: "false",
+  CHANGED_CORE_TEST_PATHS_JSON: "",
   RUN_CONTROL_UI_I18N: "false",
   RUN_UI_TESTS: "false",
   HOSTED_RUNNER_STRIPES: "false",
@@ -147,6 +148,7 @@ export async function runCiGitStep(options: {
   lsRemoteResults?: { output: string; code: number | "hang" | "cleanup-failure" }[];
   realClock?: boolean;
   realDrain?: boolean;
+  readyFetchClockAdvanceSeconds?: number;
   objects?: Record<string, { probe?: number; code?: number; text: string }>;
   cooperativeTrees?: boolean;
   cancelDuringBackoff?: boolean;
@@ -261,6 +263,7 @@ export async function runCiGitStep(options: {
         env.GITHUB_SHA = candidate;
         // Never let a caller's credential reach fixture command reports.
         env.OPENCLAW_DOCS_SYNC_TOKEN = "fixture-docs-token";
+        env.OPENCLAW_DOCS_MDX_CACHE = path.join(root, "docs-mdx-cache.json");
         mkdirSync(path.join(workspace, "clawhub-source/.git"), { recursive: true });
         const publish = path.join(workspace, "publish");
         if (options.publishPath === "file") {
@@ -548,6 +551,13 @@ ${run}`;
         : false;
       return {
         ...report,
+        ...(options.readyFetchClockAdvanceSeconds === undefined
+          ? {}
+          : {
+              fetchClockAdvancedSeconds:
+                options.readyFetchClockAdvanceSeconds *
+                readdirSync(root).filter((name) => /^fetch-tick-\d+\.json$/u.test(name)).length,
+            }),
         authHeaderPresent,
         initialBranch: publisherFixture?.initialBranch,
         publication: publisherFixture?.inspect(report.output, false),
@@ -569,8 +579,6 @@ ${run}`;
         ),
         rebases: report.commands.filter(({ tool, args }) => tool === "git" && args[0] === "rebase"),
         pushes: report.commands.filter(({ tool, args }) => tool === "git" && args[0] === "push"),
-        go: report.commands.filter(({ tool }) => tool === "go"),
-        crabbox: report.commands.filter(({ tool }) => tool === "crabbox"),
         checkouts: report.commands.filter(
           ({ tool, args }) => tool === "git" && args[0] === "checkout",
         ),

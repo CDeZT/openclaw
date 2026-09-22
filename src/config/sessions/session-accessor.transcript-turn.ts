@@ -219,7 +219,7 @@ export async function persistSessionTranscriptTurn(
 }
 
 async function appendTranscriptTurnMessages(
-  target: SessionTranscriptTurnWriteContext,
+  target: SessionTranscriptWriteScope,
   options: SessionTranscriptTurnPersistOptions,
 ): Promise<TranscriptMessageAppendResult<unknown>[]> {
   const selectedMessages = await selectAppendableTranscriptTurnMessages(target, options);
@@ -229,6 +229,7 @@ async function appendTranscriptTurnMessages(
     const result = await appendTranscriptMessage(
       {
         ...(target.agentId ? { agentId: target.agentId } : {}),
+        ...(target.env ? { env: target.env } : {}),
         ...(target.sessionId ? { sessionId: target.sessionId } : {}),
         ...(target.sessionKey ? { sessionKey: target.sessionKey } : {}),
         ...(target.storePath ? { storePath: target.storePath } : {}),
@@ -319,8 +320,8 @@ async function persistExpectedSessionTranscriptTurn(
       sessionKey: target.sessionKey,
       sessionTarget: target,
     },
-    async () => {
-      const committed = await appendExpectedSessionTranscriptTurn(
+    () =>
+      appendExpectedSessionTranscriptTurn(
         {
           agentId,
           // Incognito database identity needs env even with a concrete store locator.
@@ -346,18 +347,13 @@ async function persistExpectedSessionTranscriptTurn(
             ...append,
             message: attachSessionTranscriptRunId(append.message, options.runId),
           })),
+          onMessageCommitted: options.onMessageCommitted,
           sessionLifecyclePatch: options.sessionLifecyclePatch,
           sessionTurnMutation: options.sessionTurnMutation,
           sessionFile: target.sessionKey!,
           touchSessionEntry: options.touchSessionEntry,
         },
-      );
-      // Owned-write teardown can reject after commit; complete custody before that drain.
-      for (const message of committed.appendedMessages) {
-        options.onMessageCommitted?.(message);
-      }
-      return committed;
-    },
+      ),
   );
 
   if (turn.rejectedReason === "session-rebound") {
@@ -429,9 +425,9 @@ async function prepareTranscriptTurnTarget(
     sessionKey,
     storePath,
   });
-  // Keep the selected store locator for inherited writer-context matching;
-  // incognito routing remains owned by the scoped SQLite accessors.
-  return { ...runtimeTarget, storePath };
+  // Keep the selected locator for writer-context matching and the private env:
+  // incognito accessors resolve their owner from env even with a concrete locator.
+  return { ...runtimeTarget, storePath, ...(scope.env ? { env: scope.env } : {}) };
 }
 
 async function resolveTranscriptTurnTarget(
@@ -464,7 +460,7 @@ async function touchTranscriptTurnSessionEntry(params: {
     sessionEntry?: SessionEntry;
     sessionStore?: Record<string, SessionEntry>;
   };
-  target: SessionTranscriptTurnWriteContext & {
+  target: SessionTranscriptWriteScope & {
     sessionEntry: SessionEntry | undefined;
   };
   shouldTouch: boolean;
@@ -483,6 +479,7 @@ async function touchTranscriptTurnSessionEntry(params: {
       sessionKey: params.target.sessionKey,
       storePath: params.target.storePath,
       ...(params.target.agentId ? { agentId: params.target.agentId } : {}),
+      ...(params.target.env ? { env: params.target.env } : {}),
     },
     (current) =>
       current.sessionId === params.target.sessionId

@@ -56,26 +56,15 @@ class FailHangupProvider extends FakeProvider {
   }
 }
 
-function requireCall(
-  manager: Awaited<ReturnType<typeof createManagerHarness>>["manager"],
-  callId: string,
-) {
-  const call = manager.getCall(callId);
-  if (!call) {
-    throw new Error(`expected active call ${callId}`);
-  }
-  return call;
+function requireCall(manager: HarnessManager, callId: string) {
+  return expectDefined(manager.getCall(callId), `active call ${callId}`);
 }
 
-function requireMappedCall(
-  manager: Awaited<ReturnType<typeof createManagerHarness>>["manager"],
-  providerCallId: string,
-) {
-  const call = manager.getCallByProviderCallId(providerCallId);
-  if (!call) {
-    throw new Error(`expected mapped provider call ${providerCallId}`);
-  }
-  return call;
+function requireMappedCall(manager: HarnessManager, providerCallId: string) {
+  return expectDefined(
+    manager.getCallByProviderCallId(providerCallId),
+    `mapped provider call ${providerCallId}`,
+  );
 }
 
 function requireFirstPlayTtsCall(provider: FakeProvider) {
@@ -95,12 +84,6 @@ function requireSingleStartListeningCall(provider: FakeProvider) {
 
 type HarnessManager = Awaited<ReturnType<typeof createManagerHarness>>["manager"];
 
-async function waitForPlaybackDispatch() {
-  await new Promise<void>((resolve) => {
-    setImmediate(resolve);
-  });
-}
-
 async function initiateCallWithMessage(
   manager: HarnessManager,
   to: string,
@@ -118,14 +101,20 @@ async function answerCall(
   eventId: string,
   providerCallId = "call-uuid",
 ) {
-  manager.processEvent({
-    id: eventId,
-    type: "call.answered",
-    callId,
-    providerCallId,
-    timestamp: Date.now(),
-  });
-  await waitForPlaybackDispatch();
+  const initialMessage = vi.spyOn(manager, "speakInitialMessage");
+  try {
+    await manager.processEvent({
+      id: eventId,
+      type: "call.answered",
+      callId,
+      providerCallId,
+      timestamp: Date.now(),
+    });
+    // The answered event owns dispatch; its detached greeting owns persistence and playback.
+    await Promise.allSettled(initialMessage.mock.results.map((result) => result.value));
+  } finally {
+    initialMessage.mockRestore();
+  }
 }
 
 function expectFirstPlayTtsText(provider: FakeProvider, text: string) {
@@ -158,14 +147,7 @@ describe("CallManager notify and mapping", () => {
       );
       const callId = await initiateCallWithMessage(manager, "+15550000014", "Notify", "notify");
 
-      manager.processEvent({
-        id: "evt-notify-failed-hangup",
-        type: "call.answered",
-        callId,
-        providerCallId: "call-uuid",
-        timestamp: Date.now(),
-      });
-      await vi.advanceTimersByTimeAsync(0);
+      await answerCall(manager, callId, "evt-notify-failed-hangup");
       await vi.advanceTimersByTimeAsync(1_000);
 
       expect(provider.hangupCalls).toHaveLength(1);
@@ -189,7 +171,7 @@ describe("CallManager notify and mapping", () => {
     expect(requireCall(manager, callId).providerCallId).toBe("request-uuid");
     expect(requireMappedCall(manager, "request-uuid").callId).toBe(callId);
 
-    manager.processEvent({
+    await manager.processEvent({
       id: "evt-1",
       type: "call.answered",
       callId,
@@ -425,8 +407,9 @@ describe("CallManager notify and mapping", () => {
       await provider.playTtsStartedPromise;
       expect(provider.playTtsStarted).toHaveBeenCalledTimes(1);
 
-      playbacks.push(manager.speakInitialMessage("call-uuid"));
-      await waitForPlaybackDispatch();
+      const repeated = manager.speakInitialMessage("call-uuid");
+      playbacks.push(repeated);
+      await repeated;
       expect(provider.playTtsCalls).toHaveLength(1);
     } finally {
       provider.releaseCurrentPlayback();

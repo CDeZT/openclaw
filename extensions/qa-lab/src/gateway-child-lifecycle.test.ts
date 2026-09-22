@@ -189,6 +189,49 @@ describe.skipIf(process.platform === "win32")("QA gateway lifetime ownership", (
     expect(pids().every((pid) => !isQaPosixProcessGroupAlive(pid))).toBe(true);
   });
 
+  it.each([
+    { failedWork: false, label: "successful" },
+    { failedWork: true, label: "failed" },
+  ])("cleans retained fixture roots after $label stopped work", async ({ failedWork }) => {
+    const { params } = await fixture();
+    const owner = own({
+      ...params,
+      command: { ...params.command, usePackagedPlugins: false },
+    });
+    const gateway = await owner.start();
+    const stagedRoot = resolveQaStagedBundledPluginsRoot({
+      repoRoot: params.repoRoot,
+      tempRoot: gateway.tempRoot,
+    });
+    await expect(owner.stop({ keepTemp: true })).resolves.toEqual({
+      process: "confirmed-stopped",
+      errors: [],
+    });
+    await expect(fs.stat(gateway.tempRoot)).resolves.toBeDefined();
+    await expect(fs.stat(stagedRoot)).resolves.toBeDefined();
+
+    const failure = new Error("stopped probe failed");
+    const stoppedWork = async () => {
+      try {
+        if (failedWork) {
+          throw failure;
+        }
+      } finally {
+        await expect(owner.stop({ keepTemp: false })).resolves.toEqual({
+          process: "confirmed-stopped",
+          errors: [],
+        });
+      }
+    };
+    if (failedWork) {
+      await expect(stoppedWork()).rejects.toBe(failure);
+    } else {
+      await expect(stoppedWork()).resolves.toBeUndefined();
+    }
+    await expect(fs.stat(gateway.tempRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(stagedRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("owns an unaccepted launcher and separates boundary diagnostics from termination", async () => {
     const { params } = await fixture();
     const rejected = new Error("verified acceptance failed");
@@ -515,6 +558,7 @@ describe.skipIf(process.platform === "win32")("QA gateway lifetime ownership", (
     }));
     const owner = own({
       ...params,
+      runtimePreloads: ["file:///adapter-first.mjs", "qa-second-preload"],
       command: {
         ...params.command,
         processBoundary: {
@@ -523,13 +567,29 @@ describe.skipIf(process.platform === "win32")("QA gateway lifetime ownership", (
           expectedGid: 1,
           expectedUid: 1,
           forwardedEnvKeys: [],
-          runtimeArgsPrefix: [],
+          runtimeArgsPrefix: ["--import", "/tmp/boundary-preload.mjs", "/tmp/index.js"],
           runtimeExecutablePath: process.execPath,
           terminationRetryTimeoutMs: 45_000,
         },
       },
     });
     const gateway = await owner.start();
+    expect(boundary.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          runtimeArgsPrefix: [
+            "--import",
+            "file:///adapter-first.mjs",
+            "--import",
+            "qa-second-preload",
+            "--import",
+            "/tmp/boundary-preload.mjs",
+            "/tmp/index.js",
+          ],
+        }),
+      }),
+    );
+    expect(gateway.cliCommand).toBeUndefined();
     pids();
     const denied = vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
       if (target === gateway.tempRoot) {

@@ -7,6 +7,7 @@ import type { ScopeUpgradeState } from "../app/device-scope-upgrade-availability
 import type { ExecApprovalDecision, ExecApprovalRequest } from "../app/exec-approval.ts";
 import type { UpdateProgress } from "../app/update-confirmation.ts";
 import { t } from "../i18n/index.ts";
+import { registerSidebarAttentionEnglish } from "../i18n/locales/en-sidebar-attention.ts";
 import { formatDateTimeMs, formatRelativeTimestamp } from "../lib/format.ts";
 import { canCallGatewayMethod } from "../lib/gateway-methods.ts";
 import { shouldHandleNavigationClick } from "../lib/navigation-click.ts";
@@ -18,6 +19,8 @@ import { icons } from "./icons.ts";
 import type { SidebarAttentionItem } from "./sidebar-attention-entries.ts";
 import "./sidebar-update-card.ts";
 import "./viewer-facepile.ts";
+
+registerSidebarAttentionEnglish();
 
 type SidebarIssueItemHandlers = {
   basePath: string;
@@ -173,7 +176,7 @@ export function renderSidebarApprovalItem(params: {
 }
 
 export function renderSidebarUpdateSurface(params: {
-  context: ApplicationContext | undefined;
+  context: Pick<ApplicationContext, "gateway" | "overlays"> | undefined;
   onDismiss?: () => void;
   onNavigate: () => void;
   visible: boolean;
@@ -193,6 +196,11 @@ export function renderSidebarUpdateSurface(params: {
     .updateSchedule=${snapshot.updateSchedule}
     .heldUpdateCampaignId=${snapshot.heldUpdateCampaignId}
     .updateBusy=${snapshot.updateRunning || snapshot.updateReconciliationPending}
+    .updateRun=${snapshot.updateRun}
+    .updateRunAcknowledged=${snapshot.updateRunAcknowledged}
+    .connected=${gateway.phase === "connected"}
+    .onAcknowledge=${() => context.overlays.acknowledgeUpdateRun()}
+    .onCheckStatus=${() => context.overlays.refreshUpdateStatus()}
     .statusBanner=${snapshot.updateStatusBanner}
     .watchUpdateProgress=${params.watchUpdateProgress}
     .canUpdate=${canCallGatewayMethod(gateway, "update.run", "operator.admin")}

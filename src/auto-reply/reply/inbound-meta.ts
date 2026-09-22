@@ -17,10 +17,10 @@ import {
   formatContextJsonBlock,
   MAX_CONTEXT_JSON_STRING_CHARS,
   neutralizeMarkdownFences,
+  selectInboundHistoryContext,
 } from "./channel-prompt-context.js";
 import { markInboundContextLabel } from "./inbound-context-marker.js";
 
-const MAX_UNTRUSTED_HISTORY_ENTRIES = 20;
 const MAX_UNTRUSTED_TRANSCRIPT_FIELD_CHARS = 500;
 const MAX_ACTIVE_GOAL_OBJECTIVE_CHARS = 200;
 const ACTIVE_GOAL_CONTEXT_PREFIX = "Active goal: ";
@@ -379,7 +379,7 @@ function collectChatWindowMessageIds(
 function isChatWindowHistoryContext(
   entry: NonNullable<TemplateContext["ChannelStructuredContext"]>[number],
 ): boolean {
-  if (!isChatWindowStructuredContext(entry)) {
+  if (!isChatWindowStructuredContext(entry) || entry.sessionTranscriptMode === "preserve") {
     return false;
   }
   const relation = normalizePromptMetadataString(entry.payload["relation"]);
@@ -560,7 +560,7 @@ function resolveInboundFormattingHints(
 export function buildInboundMetaSystemPrompt(
   ctx: TemplateContext,
   cfg: OpenClawConfig,
-  options?: { includeFormattingHints?: boolean; formattingHintsCtx?: TemplateContext },
+  options?: { includeFormattingHints?: boolean },
 ): string {
   const chatType = normalizeChatType(ctx.ChatType);
   const isDirect = !chatType || chatType === "direct";
@@ -583,13 +583,11 @@ export function buildInboundMetaSystemPrompt(
     provider: normalizePromptMetadataString(ctx.Provider),
     surface: normalizePromptMetadataString(ctx.Surface),
     chat_type: chatType ?? (isDirect ? "direct" : undefined),
-    // Authoring hints follow the reply delivery channel, not the inbound event:
-    // system-event turns (heartbeat/cron) carry the persisted channel/account in
-    // formattingHintsCtx while ctx still identifies the system provider.
+    // Every conversation field uses the same prepared context, including formatting.
     response_format:
       options?.includeFormattingHints === false
         ? undefined
-        : resolveInboundFormattingHints(options?.formattingHintsCtx ?? ctx, cfg),
+        : resolveInboundFormattingHints(ctx, cfg),
   };
 
   // Keep the instructions local to the payload so the meaning survives prompt overrides.
@@ -627,8 +625,7 @@ export function buildInboundUserContextPrefix(
   const messageIdFull = normalizePromptMetadataString(ctx.MessageSidFull);
   const resolvedMessageId = messageId ?? messageIdFull;
   const timestampStr = formatConversationTimestamp(ctx.Timestamp, envelope);
-  const inboundHistory = Array.isArray(ctx.InboundHistory) ? ctx.InboundHistory : [];
-  const boundedHistory = inboundHistory.slice(-MAX_UNTRUSTED_HISTORY_ENTRIES);
+  const { boundedHistory, historyLabel, truncated } = selectInboundHistoryContext(ctx);
   const replyChainPayload = buildReplyChainPayload(ctx, envelope);
   const structuredContext = Array.isArray(ctx.ChannelStructuredContext)
     ? ctx.ChannelStructuredContext
@@ -686,7 +683,7 @@ export function buildInboundUserContextPrefix(
     is_forum: ctx.IsForum === true ? true : undefined,
     ...buildConversationMentionMetadataPayload(ctx, isDirect),
     history_count: boundedHistory.length > 0 ? boundedHistory.length : undefined,
-    history_truncated: inboundHistory.length > MAX_UNTRUSTED_HISTORY_ENTRIES ? true : undefined,
+    history_truncated: truncated ? true : undefined,
   };
   if (Object.values(conversationInfo).some((v) => v !== undefined)) {
     blocks.push(
@@ -792,9 +789,7 @@ export function buildInboundUserContextPrefix(
       return line ? [line] : [];
     });
     if (historyLines.length > 0) {
-      blocks.push(
-        [markInboundContextLabel("Chat history since last reply:"), ...historyLines].join("\n"),
-      );
+      blocks.push([markInboundContextLabel(historyLabel), ...historyLines].join("\n"));
     }
   }
 

@@ -1,5 +1,8 @@
 import type { Message } from "grammy/types";
-import { isAbortRequestText } from "openclaw/plugin-sdk/command-primitives-runtime";
+import {
+  isAbortRequestText,
+  isBtwRequestText,
+} from "openclaw/plugin-sdk/command-primitives-runtime";
 import type {
   DmPolicy,
   OpenClawConfig,
@@ -46,6 +49,7 @@ import {
 import type { TelegramContext } from "./bot/types.js";
 import { resolveTelegramCommandIngressAuthorization } from "./ingress.js";
 import type { TelegramMessageDispatchReplayClaim } from "./message-dispatch-dedupe.js";
+import { isTelegramControlLaneText } from "./sequential-key.js";
 
 export interface TelegramInboundProcessing {
   processInboundMessage: (params: TelegramInboundMessage) => Promise<TelegramInboundDisposition>;
@@ -99,12 +103,13 @@ export function createTelegramInboundProcessing({
     createSpooledReplayParticipantForBufferedWork,
   } = message;
   const {
+    cancelPending,
     inboundDebouncer,
     resolveTelegramDebounceEntryMs,
     shouldDebounceTelegramEntry,
     resolveTelegramDebounceLane,
     handleTextFragment,
-  } = createTelegramInboundBuffers({ params: { cfg, bot, runtime, opts }, message });
+  } = createTelegramInboundBuffers({ params: { cfg, accountId, bot, runtime, opts }, message });
 
   const { handleMediaGroup, resolveUnaddressedGroupMediaDisposition } = createTelegramInboundMedia({
     params: {
@@ -152,6 +157,9 @@ export function createTelegramInboundProcessing({
     const messageText = getTelegramTextParts(msg).text;
     const botUsername = ctx.me?.username;
     const isAbortControlMessage = isAbortRequestText(messageText, { botUsername });
+    const bypassTextBuffer =
+      isTelegramControlLaneText({ rawText: messageText, botUsername }) ||
+      isBtwRequestText(messageText, { botUsername });
     let abortControlAuthorized: Promise<boolean> | undefined;
     const isAuthorizedAbortControlMessage = () => {
       if (!isAbortControlMessage || !senderId) {
@@ -167,7 +175,6 @@ export function createTelegramInboundProcessing({
         senderId,
         effectiveDmAllow,
         effectiveGroupAllow,
-        ownerAccess: { ownerList: [], senderIsOwner: false },
         eventKind: "message",
         allowTextCommands: true,
         hasControlCommand: true,
@@ -177,20 +184,24 @@ export function createTelegramInboundProcessing({
       return abortControlAuthorized;
     };
 
+    if (await isAuthorizedAbortControlMessage()) {
+      cancelPending({ chatId, threadSpec, senderId });
+    }
+
     if (
-      await handleTextFragment({
+      !bypassTextBuffer &&
+      (await handleTextFragment({
         ctx,
         msg,
         chatId,
         threadSpec,
         storeAllowFrom,
         isAbortControlMessage,
-        isAuthorizedAbortControlMessage,
         promptContextMinTimestampMs,
         promptContextAmbientWatermark,
         dispatchDedupeClaims,
         channelIngressResolver,
-      })
+      }))
     ) {
       return { kind: "buffered", buffer: "text-fragment" };
     }
@@ -342,25 +353,14 @@ export function createTelegramInboundProcessing({
           debounceLane,
         })
       : null;
-    if (senderId && (await isAuthorizedAbortControlMessage())) {
-      for (const lane of ["default", "forward"] as const) {
-        inboundDebouncer.cancelKey(
-          buildTelegramInboundDebounceKey({
-            accountId,
-            conversationKey,
-            senderId,
-            debounceLane: lane,
-          }),
-        );
-      }
-    }
     const debounceEntry: TelegramDebounceEntry = {
       ctx,
       msg,
       allMedia,
       storeAllowFrom,
       receivedAtMs: Date.now(),
-      debounceKey: isAbortControlMessage ? null : debounceKey,
+      // Waiting here would hold the shared control lane and block /stop in other topics.
+      debounceKey: bypassTextBuffer ? null : debounceKey,
       debounceLane,
       botUsername,
       threadSpec,

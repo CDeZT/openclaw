@@ -31,6 +31,9 @@ export async function applyMixedDirectives(params: {
   senderIsOwner?: boolean;
   gatewayClientScopes?: string[];
   directives?: InlineDirectives;
+  resolveDefaultThinkingLevel?: Parameters<
+    typeof applyInlineDirectiveOverrides
+  >[0]["modelState"]["resolveDefaultThinkingLevel"];
 }) {
   const cfg =
     params.cfg ?? ({ commands: { text: true }, agents: { defaults: {} } } as OpenClawConfig);
@@ -63,9 +66,8 @@ export async function applyMixedDirectives(params: {
     policyAliasIndex: aliasIndex,
     resetModelOverride: false,
     resolveThinkingCatalog: async () => allowedModels,
-    resolveDefaultThinkingLevel: async () => "off",
+    resolveDefaultThinkingLevel: params.resolveDefaultThinkingLevel ?? (async () => "off"),
     resolveDefaultReasoningLevel: async () => "off",
-    needsModelCatalog: false,
   };
   const typing = {
     onReplyStart: async () => {},

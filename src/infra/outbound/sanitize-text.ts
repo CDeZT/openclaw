@@ -38,8 +38,8 @@ function convertHtmlOutsideCode(text: string, options: { style?: "markdown" }): 
   // Remove inner elements first so an empty nested tree cannot synthesize markers.
   const converted = removeMatchesUntilStable(
     text
-      // Preserve angle-bracket autolinks as plain URLs before tag stripping.
-      .replace(/<((?:https?:\/\/|mailto:)[^<>\s]+)>/gi, "$1")
+      // `|` ends the autolink URL so `<url|Label>` reaches the label projection.
+      .replace(/<((?:https?:\/\/|mailto:)[^<>\s|]+)>/gi, "$1")
       // Raw channel link syntax is not an input dialect; retain only its visible label.
       .replace(LABELED_ANGLE_LINK_RE, "$1")
       // Normalize attributes once; conversions below only need exact bare tag names.
@@ -69,11 +69,10 @@ function convertHtmlOutsideCode(text: string, options: { style?: "markdown" }): 
  */
 export function sanitizeForPlainText(text: string, options: { style?: "markdown" } = {}): string {
   const prepared = flattenMarkdownDetails(stripInternalRuntimeScaffolding(text));
-  const conversionCanChangeCode = prepared.includes("<") || prepared.includes("\n\n\n");
-  const codeRegions =
-    conversionCanChangeCode && MAY_CONTAIN_MARKDOWN_CODE_RE.test(prepared)
-      ? findCodeRegions(prepared)
-      : [];
+  if (!prepared.includes("<") && !prepared.includes("\n\n\n")) {
+    return prepared;
+  }
+  const codeRegions = MAY_CONTAIN_MARKDOWN_CODE_RE.test(prepared) ? findCodeRegions(prepared) : [];
   if (codeRegions.length === 0) {
     return convertHtmlOutsideCode(prepared, options);
   }

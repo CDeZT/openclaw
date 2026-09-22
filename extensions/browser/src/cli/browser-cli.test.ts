@@ -33,7 +33,9 @@ describe("Browser CLI import boundary", () => {
     expect(browser.commands[0]?.commands.map((command) => command.name())).toEqual([
       "path",
       "install",
+      "repair",
       "status",
+      "uninstall-store",
       "uninstall-host",
       "pair",
       "cdp",

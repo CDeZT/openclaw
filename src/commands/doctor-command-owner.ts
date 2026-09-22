@@ -2,10 +2,36 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { note } from "../../packages/terminal-core/src/note.js";
+import { normalizeChatChannelId } from "../channels/ids.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PairingChannel } from "../pairing/pairing-store.types.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel-constants.js";
+
+/** Persist legacy channel-qualified owners before runtime compares native sender IDs. */
+export function migrateLegacyCommandOwners(cfg: OpenClawConfig, changes: string[]): OpenClawConfig {
+  const owners = cfg.commands?.ownerAllowFrom;
+  if (!Array.isArray(owners)) {
+    return cfg;
+  }
+  let changed = false;
+  const ownerAllowFrom = owners.map((entry, index) => {
+    // Only the old channel:user:id envelope is unambiguous. Keep native IDs containing
+    // colons (for example Matrix and workspace-qualified Slack IDs) untouched.
+    const legacy =
+      typeof entry === "string" ? /^([^:]+):user:([^:\s*]+)$/i.exec(entry.trim()) : null;
+    const channel = legacy && normalizeChatChannelId(legacy[1]);
+    if (!channel || !legacy) {
+      return entry;
+    }
+    changed = true;
+    changes.push(
+      `Normalized commands.ownerAllowFrom[${index}] from ${channel}:user:id to ${channel}:id.`,
+    );
+    return `${channel}:${legacy[2]}`;
+  });
+  return changed ? { ...cfg, commands: { ...cfg.commands, ownerAllowFrom } } : cfg;
+}
 
 function resolveConfiguredCommandOwners(cfg: OpenClawConfig): string[] {
   const owners = cfg.commands?.ownerAllowFrom;
@@ -75,8 +101,9 @@ export function noteCommandOwnerHealth(cfg: OpenClawConfig): void {
   note(
     [
       "No command owner is configured.",
-      "A command owner is the human operator account allowed to run owner-only commands and approve dangerous actions, including /diagnostics, /export-session, /export-trajectory, /config, and exec approvals.",
-      "CLI pairing approval records the first command owner. Control UI approval has an owner checkbox; otherwise set commands.ownerAllowFrom.",
+      "A command owner is your trusted human operator account, allowed to update OpenClaw with /update, restart the Gateway, change configuration, and approve commands. Chat allowlists do not grant this authority.",
+      `Run ${formatCliCommand("openclaw channels add")} and complete a channel's setup to choose your operator account, including servers and groups without DM pairing.`,
+      "CLI pairing approval records the first command owner. Control UI pairing approval has a separate owner checkbox.",
       `Fix: set commands.ownerAllowFrom to your channel user id, for example ${formatCliCommand("openclaw config set commands.ownerAllowFrom '[\"telegram:123456789\"]'")}`,
       "Restart the gateway after changing this if it is already running.",
     ].join("\n"),

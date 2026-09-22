@@ -14,7 +14,7 @@ import {
   anyChatOutboxPaneMatches,
   isDurableQueuedMessage,
   readQueuedMessageById,
-  removeVisibleOrScopedQueuedMessageWithoutReleasing,
+  removeQueuedMessageWithoutReleasing,
   type ChatQueueScopedSessionHost,
 } from "./chat-queue.ts";
 import { storedChatOutboxScopeKey } from "./composer-persistence.ts";
@@ -98,7 +98,10 @@ export function activeQueuedMessageEdit(host: QueuedMessageEditHost): QueuedMess
  * drain lane, so a hold that only its own pane could see would let the other one
  * deliver the text an operator is visibly rewriting.
  */
-export function isQueuedMessageBeingEdited(host: QueuedMessageEditHost, id: string): boolean {
+export function isQueuedMessageBeingEdited(
+  host: ChatQueueScopedSessionHost & Pick<QueuedMessageEditHost, "chatQueuedEdit">,
+  id: string,
+): boolean {
   // Credentials fence edit actions, but a pane still on the captured conversation
   // holds its source against a peer drain until the correction is released.
   const gatewayOwner = storageTargetForGateway(host.settings?.gatewayUrl).gatewayOwner;
@@ -214,7 +217,7 @@ export function retireEditedQueuedMessageSource(
     }
   }
   host.chatQueuedEdit = null;
-  removeVisibleOrScopedQueuedMessageWithoutReleasing(host, edit.id, edit.sessionKey);
+  removeQueuedMessageWithoutReleasing(host, edit.id);
   // Images the operator dropped during the edit lose their last owner here; the
   // ones the replacement still carries must survive, so release only the rest.
   // The payloads come from the token: a successful write already retired the row

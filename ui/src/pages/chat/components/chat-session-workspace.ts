@@ -1,4 +1,6 @@
 import type { SessionsDiffResult } from "../../../../../packages/gateway-protocol/src/index.js";
+import { formatFencedCodeBlock } from "../../../../../src/shared/markdown-code.js";
+import { downloadArtifact, isHttpArtifactDownloadUrl } from "../../../api/artifact-download.ts";
 import { GatewayRequestError } from "../../../api/gateway.ts";
 import type { ArtifactDownloadResult, SessionWorkspaceGetResult } from "../../../api/types.ts";
 import { hasOperatorAdminAccess } from "../../../app/operator-access.ts";
@@ -6,6 +8,8 @@ import { patchSettings, type ChatWorkspaceDock } from "../../../app/settings.ts"
 import { t } from "../../../i18n/index.ts";
 import { formatUiError } from "../../../lib/format-error.ts";
 import { isGatewayMethodAdvertised } from "../../../lib/gateway-methods.ts";
+import { sessionWorkspaceFileKey } from "../../../lib/sessions/workspace.ts";
+import { openWorkspaceItem } from "./chat-session-workspace-preview.ts";
 import {
   clearWorkspaceTimer,
   getSessionWorkspace,
@@ -119,29 +123,43 @@ function artifactSidebarContent(params: {
   mimeType: string;
   title: string;
   url?: string;
+  text?: string;
+  imageSource?: string;
+  download?: (signal: AbortSignal) => Promise<Blob | null>;
 }): SidebarContent {
-  const { data, encoding, mimeType, title, url } = params;
-  if (encoding === "base64" && data && mimeType.startsWith("image/")) {
+  const { data, encoding, mimeType, title, url, imageSource } = params;
+  let { text } = params;
+  if (imageSource || (encoding === "base64" && data && mimeType.startsWith("image/"))) {
     return {
       kind: "image",
       title,
-      src: `data:${mimeType};base64,${data}`,
+      src: imageSource ?? `data:${mimeType};base64,${data}`,
       mimeType,
       rawText: url ?? null,
     };
   }
-  if (
-    encoding === "base64" &&
-    data &&
-    (mimeType === "application/json" || mimeType.startsWith("text/"))
-  ) {
-    const bytes = Uint8Array.from(globalThis.atob(data), (char) => char.charCodeAt(0));
-    const decoded = new TextDecoder().decode(bytes);
+  if (mimeType === "application/json" || mimeType.startsWith("text/")) {
+    if (text === undefined && encoding === "base64" && data) {
+      text = new TextDecoder().decode(
+        Uint8Array.from(globalThis.atob(data), (char) => char.charCodeAt(0)),
+      );
+    }
+  }
+  if (text !== undefined) {
     const language = mimeType === "application/json" ? "json" : "";
     return {
       kind: "markdown",
-      content: `# ${title}\n\n\`\`\`${language}\n${decoded}\n\`\`\``,
-      rawText: decoded,
+      content: `# ${title}\n\n${formatFencedCodeBlock(text, language)}`,
+      rawText: text,
+    };
+  }
+  if (params.download) {
+    return {
+      kind: "attachment",
+      attachmentKind: "document",
+      title,
+      mimeType,
+      download: params.download,
     };
   }
   if (url) {
@@ -152,75 +170,59 @@ function artifactSidebarContent(params: {
   return { kind: "markdown", content, rawText: content };
 }
 
+async function loadArtifactSidebarContent(
+  result: ArtifactDownloadResult & { blob?: Blob },
+  download: (signal: AbortSignal) => Promise<Blob | null>,
+  resourceBasePath?: string,
+): Promise<SidebarContent> {
+  const params = {
+    data: result.data,
+    encoding: result.encoding,
+    mimeType: result.artifact.mimeType ?? "",
+    title: result.artifact.title,
+    url: result.url,
+    download:
+      result.encoding === "base64" ||
+      (result.url && isHttpArtifactDownloadUrl(result.url, resourceBasePath))
+        ? download
+        : undefined,
+  };
+  if (!result.blob) {
+    return artifactSidebarContent(params);
+  }
+  if (!params.mimeType.startsWith("image/")) {
+    return artifactSidebarContent({ ...params, text: await result.blob.text() });
+  }
+  const blob = result.blob;
+  // Workspace previews outlive the ticket. Retain the fetched image in the
+  // preview's existing data URL representation without a second Blob URL owner.
+  const imageSource = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener(
+      "load",
+      () => {
+        if (typeof reader.result === "string") {
+          resolve(reader.result);
+        } else {
+          reject(new Error("Artifact image could not be decoded"));
+        }
+      },
+      { once: true },
+    );
+    reader.addEventListener(
+      "error",
+      () => reject(reader.error ?? new Error("Artifact image could not be decoded")),
+      { once: true },
+    );
+    reader.readAsDataURL(blob);
+  });
+  return artifactSidebarContent({ ...params, imageSource });
+}
+
 export function refreshSessionWorkspace(state: SessionWorkspaceHost, refreshFiles: boolean) {
   if (refreshSessionWorkspaceState(state, refreshFiles)) {
     state.handleOpenSidebar(resolveSessionDiffSidebarContent(state));
   }
-}
-
-function beginWorkspaceOpenRequest(workspace: SessionWorkspaceState, itemId: string): object {
-  workspace.activeId = itemId;
-  return (workspace.openRequest = {});
-}
-
-function isCurrentWorkspaceOpenRequest(
-  state: SessionWorkspaceHost,
-  workspace: SessionWorkspaceState,
-  request: object,
-  itemId: string,
-): boolean {
-  return (
-    workspace.openRequest === request &&
-    isCurrentSessionWorkspace(state, workspace) &&
-    workspace.activeId === itemId
-  );
-}
-
-export function isSessionWorkspaceItemLoading(state: SessionWorkspaceHost): boolean {
-  const workspace = state.sessionWorkspaceState;
-  return Boolean(
-    workspace && isCurrentSessionWorkspace(state, workspace) && workspace.openRequest !== undefined,
-  );
-}
-
-function openWorkspaceItem<T>(
-  state: SessionWorkspaceHost,
-  workspace: SessionWorkspaceState,
-  itemId: string,
-  load: () => Promise<T | null | undefined>,
-  render: (result: T) => SidebarContent | null,
-  missingMessage: string,
-) {
-  if (!state.client || !state.connected) {
-    return;
-  }
-  const request = beginWorkspaceOpenRequest(workspace, itemId);
-  void (async () => {
-    state.handleOpenSidebar(null);
-    workspace.error = null;
-    try {
-      const result = await load();
-      const content = result == null ? null : render(result);
-      if (!content) {
-        if (isCurrentWorkspaceOpenRequest(state, workspace, request, itemId)) {
-          workspace.error = missingMessage;
-        }
-        return;
-      }
-      if (isCurrentWorkspaceOpenRequest(state, workspace, request, itemId)) {
-        openSessionCheckoutSidebar(state, content);
-      }
-    } catch (error) {
-      if (isCurrentWorkspaceOpenRequest(state, workspace, request, itemId)) {
-        workspace.error = formatUiError(error);
-      }
-    } finally {
-      if (workspace.openRequest === request) {
-        delete workspace.openRequest;
-      }
-      requestWorkspaceUpdate(state);
-    }
-  })();
 }
 
 function openFile(
@@ -233,7 +235,7 @@ function openFile(
   openWorkspaceItem(
     state,
     workspace,
-    `file:${path}`,
+    `file:${requestPath}`,
     () =>
       state.sessions.getFile(workspace.sessionKey, requestPath, {
         agentId: workspace.agentId,
@@ -360,6 +362,7 @@ function openFile(
           file.workspacePath || file.path || path,
         ].join("\u0000"),
         root: result.root ?? null,
+        mimeType: file.mimeType,
         language: languageForFile(name),
         line: opts.line ?? null,
         rawText: file.content,
@@ -367,6 +370,16 @@ function openFile(
       };
     },
     `Failed to load ${path}`,
+    {
+      line: opts.line,
+      label: basenameForPath(path),
+      revalidate: true,
+      resolveLabel: (result) => result.file?.name,
+      resolveKey: (result) => {
+        const canonicalPath = result.file?.workspacePath || result.file?.path;
+        return canonicalPath ? sessionWorkspaceFileKey(result.root, canonicalPath) : undefined;
+      },
+    },
   );
 }
 
@@ -406,6 +419,7 @@ export function revealSessionWorkspaceFile(state: SessionWorkspaceHost, path: st
   workspace.collapsed = false;
   workspace.browserPath = separator > 0 ? normalizedPath.slice(0, separator) : "";
   workspace.browserSearch = "";
+  workspace.filter = "all";
   workspace.activeId = `file:${path}`;
   loadSessionWorkspace(state, workspace, true);
   requestWorkspaceUpdate(state);
@@ -416,27 +430,64 @@ function openArtifact(
   workspace: SessionWorkspaceState,
   artifactId: string,
 ) {
+  const query = {
+    sessionKey: workspace.sessionKey,
+    artifactId,
+    ...(workspace.agentId ? { agentId: workspace.agentId } : {}),
+  };
+  const readDownload = async (signal: AbortSignal): Promise<Blob | null> => {
+    const currentWorkspace = getSessionWorkspace(state);
+    if (
+      currentWorkspace.sessionKey !== query.sessionKey ||
+      currentWorkspace.agentId !== workspace.agentId
+    ) {
+      return null;
+    }
+    // Cached preview actions bind a fresh connection on click; an in-flight
+    // transfer must never follow a reconnect to a replacement Gateway.
+    const client = state.client;
+    const connectionEpoch = state.connectionEpoch;
+    const result = await downloadArtifact(state, query, signal, { readBinary: true });
+    if (
+      signal.aborted ||
+      !state.connected ||
+      state.client !== client ||
+      state.connectionEpoch !== connectionEpoch ||
+      !isCurrentSessionWorkspace(state, currentWorkspace)
+    ) {
+      return null;
+    }
+    if (result?.blob) {
+      return result.blob;
+    }
+    if (result?.encoding !== "base64" || result.data === undefined) {
+      return null;
+    }
+    return new Blob([Uint8Array.from(atob(result.data), (char) => char.charCodeAt(0))], {
+      type: result.artifact.mimeType ?? "application/octet-stream",
+    });
+  };
   openWorkspaceItem(
     state,
     workspace,
     `artifact:${artifactId}`,
-    () =>
-      state.client!.request<ArtifactDownloadResult | null>("artifacts.download", {
-        sessionKey: workspace.sessionKey,
-        artifactId,
-        ...(workspace.agentId ? { agentId: workspace.agentId } : {}),
-      }),
-    (result) =>
-      !result.artifact
-        ? null
-        : artifactSidebarContent({
-            data: result.data,
-            encoding: result.encoding,
-            mimeType: result.artifact.mimeType ?? "",
-            title: result.artifact.title,
-            url: result.url,
-          }),
+    async () => {
+      const result = await downloadArtifact(state, query);
+      return result?.artifact
+        ? {
+            artifact: result.artifact,
+            content: await loadArtifactSidebarContent(result, readDownload, state.resourceBasePath),
+          }
+        : null;
+    },
+    (result) => result.content,
     `Failed to load artifact ${artifactId}`,
+    {
+      label:
+        workspace.list?.artifacts?.find((artifact) => artifact.id === artifactId)?.title ||
+        t("chat.workspaceFiles.artifacts"),
+      resolveLabel: (result) => result.artifact?.title,
+    },
   );
 }
 
@@ -464,6 +515,7 @@ export function createSessionWorkspaceProps(
     state.connected &&
     state.agentsList &&
     !workspace.loading &&
+    !workspace.browserSearchTimer &&
     (!workspace.error || workspace.pendingReload) &&
     (workspace.pendingReload || workspace.list?.sessionKey !== state.sessionKey)
   ) {
@@ -479,6 +531,13 @@ export function createSessionWorkspaceProps(
     activeId: workspace.activeId,
     dock: workspace.dock,
     narrowLayout: options?.narrowLayout === true,
+    filter: workspace.filter,
+    browserPath: workspace.browserPath,
+    browserSearch: workspace.browserSearch,
+    onSetFilter: (filter) => {
+      workspace.filter = filter;
+      requestWorkspaceUpdate(state);
+    },
     onToggleCollapsed: () => toggleSessionWorkspace(state),
     onSetDock: (dock) => setSessionWorkspaceDock(state, dock),
     onRefresh: () => loadSessionWorkspace(state, workspace, true),
@@ -499,6 +558,7 @@ export function createSessionWorkspaceProps(
     },
     onSearch: (search) => {
       workspace.browserSearch = search;
+      requestWorkspaceUpdate(state);
       clearWorkspaceTimer(workspace);
       workspace.browserSearchTimer = globalThis.setTimeout(() => {
         workspace.browserSearchTimer = null;

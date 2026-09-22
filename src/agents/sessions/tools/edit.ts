@@ -11,8 +11,10 @@ import {
   writeFile as fsWriteFile,
 } from "node:fs/promises";
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { repairJson } from "@openclaw/ai/internal/runtime";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { Type } from "typebox";
+import { captureAgentToolSourceExecutionGuard } from "../../agent-tool-source-execution-guard.js";
 import { normalizeToLF } from "../../line-endings.js";
 import { renderDiff } from "../../modes/interactive/components/diff.js";
 import type { AgentTool } from "../../runtime/index.js";
@@ -149,10 +151,11 @@ function prepareEditArguments(input: unknown): EditToolInput {
 
   const args = { ...(input as Record<string, unknown>) };
 
-  // Some models (Opus 4.6, GLM-5.1) send edits as a JSON string instead of an array
+  // Serialized replacements contain literal file text, so valid JSON escapes must
+  // survive rather than being reinterpreted by the repair owner's path heuristic.
   if (typeof args.edits === "string") {
     try {
-      const parsed = JSON.parse(args.edits);
+      const parsed = JSON.parse(repairJson(args.edits, { preserveValidControlEscapes: true }));
       if (Array.isArray(parsed)) {
         args.edits = parsed;
       }
@@ -411,6 +414,7 @@ export function createEditToolDefinition(
       void toolCallId;
       void onUpdate;
       void ctx;
+      const assertCurrent = captureAgentToolSourceExecutionGuard();
       const { path, edits: originalEdits } = validateEditInput(input);
       const absolutePath = resolvePath(path, cwd);
       const queueKey = resolveFileMutationQueueKey(absolutePath, ops.resolveQueueKey, signal);
@@ -419,6 +423,7 @@ export function createEditToolDefinition(
         if (signal?.aborted) {
           throw new Error("Operation aborted");
         }
+        assertCurrent();
 
         let realEdits: Edit[] = [];
         let expectedContent: string | undefined;
@@ -441,6 +446,7 @@ export function createEditToolDefinition(
           if (signal?.aborted) {
             throw new Error("Operation aborted");
           }
+          assertCurrent();
 
           const { bom, text: content } = stripBom(rawContent);
           const normalizedContent = normalizeToLF(content);
@@ -466,12 +472,14 @@ export function createEditToolDefinition(
           if (signal?.aborted) {
             throw new Error("Operation aborted");
           }
+          assertCurrent();
           if (!(await verifyPersistedUtf8File(absolutePath, expectedContent, ops))) {
             throw new Error(
               `Edit verification failed for ${path}: the persisted regular file does not match the requested content. Inspect the target and retry.`,
             );
           }
 
+          assertCurrent();
           const diffResult = generateDiffString(baseContent, newContent);
           const patch = generateUnifiedPatch(path, baseContent, newContent);
           return {
@@ -491,6 +499,7 @@ export function createEditToolDefinition(
             },
           };
         } catch (error: unknown) {
+          assertCurrent();
           const normalizedError = error instanceof Error ? error : new Error(String(error));
           const currentContent = await ops
             .readFile(absolutePath)
@@ -500,6 +509,7 @@ export function createEditToolDefinition(
             expectedContent !== undefined &&
             (await verifyPersistedUtf8File(absolutePath, expectedContent, ops))
           ) {
+            assertCurrent();
             return {
               content: [
                 {

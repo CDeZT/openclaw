@@ -36,7 +36,7 @@ type ContextSessionNavigationTargetParams<TRouteId extends string> = {
   sessionKey: string;
   agentId?: string;
   fallbackAgentId?: never;
-  basePath?: never;
+  basePath?: string;
   row?: never;
   mainKey?: never;
   shortIdLength?: number;
@@ -68,6 +68,11 @@ type SessionNavigationTarget = {
   href: string;
   options: ApplicationNavigationOptions & { pathname: string };
 };
+
+export function isSessionKeyAddressable(sessionKey: string, globalScope: boolean): boolean {
+  // Home addresses raw global only in global scope; raw unknown has no exact URL.
+  return sessionKey !== "unknown" && (sessionKey !== "global" || globalScope);
+}
 
 export function resolveSessionPreferredFace(
   row: Pick<GatewaySessionRow, "boardFace"> | null | undefined,
@@ -133,7 +138,7 @@ export function sessionNavigationTarget<TRouteId extends string>(
       hello: context.gateway.snapshot.hello,
     };
     fallbackAgentId = resolveSessionNavigationAgentId(context, params.agentId);
-    basePath = context.basePath;
+    basePath = params.basePath ?? context.basePath;
     mainKey = resolveUiConfiguredMainKey(defaults);
     row = findUiSessionRow(context, sessionKey, fallbackAgentId);
   } else {

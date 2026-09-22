@@ -72,28 +72,32 @@ describe("gateway connection state", () => {
         };
         state.clients.add(peer.client);
       }
-      const recipientOnline = () => {
-        const result = state.mentionInbox.mentionable(requester.client, {
-          agentId: "main",
-          visibility: "shared",
-        });
-        if (!result.ok) {
-          throw new Error(result.error.message);
-        }
-        return result.value.users.find(
-          (user) => user.profileId === recipient.client.authenticatedUserProfile?.profileId,
-        )?.online;
+      const recipientOnline = async () => {
+        let online: boolean | undefined;
+        await state.mentionInbox.mentionable(
+          requester.client,
+          { agentId: "main", visibility: "shared" },
+          (result) => {
+            if (!result.ok) {
+              throw new Error(result.error.message);
+            }
+            online = result.value.users.find(
+              (user) => user.profileId === recipient.client.authenticatedUserProfile?.profileId,
+            )?.online;
+          },
+        );
+        return online;
       };
 
-      expect(recipientOnline()).toBe(true);
+      expect(await recipientOnline()).toBe(true);
       recipient.socket.readyState = WebSocket.CLOSING;
-      expect(recipientOnline()).toBe(false);
+      expect(await recipientOnline()).toBe(false);
       recipient.socket.readyState = WebSocket.OPEN;
       recipient.client.connect.role = "node";
-      expect(recipientOnline()).toBe(false);
+      expect(await recipientOnline()).toBe(false);
       recipient.client.connect.role = "operator";
       recipient.client.invalidated = true;
-      expect(recipientOnline()).toBe(false);
+      expect(await recipientOnline()).toBe(false);
     });
   });
 
@@ -114,6 +118,7 @@ describe("gateway connection state", () => {
     state.broadcastToConnIds("tick", { ts: 1 }, new Set(["target"]));
 
     expect(target.send).toHaveBeenCalledTimes(1);
+    expect(state.getBufferedAmount("target")).toBe(0);
     expect(reads.count).toBe(0);
 
     target.socket.readyState = WebSocket.CLOSING;
@@ -122,11 +127,19 @@ describe("gateway connection state", () => {
     expect(target.send).toHaveBeenCalledTimes(1);
 
     reads.count = 0;
-    expect(state.getBufferedAmount("target")).toBe(0);
+    expect(state.getBufferedAmount("target")).toBeUndefined();
     expect(state.isConnectionActive("target")).toBe(true);
     expect(reads.count).toBe(0);
 
+    const firstRequest = state.clients.retainRequest(target.client);
+    const secondRequest = state.clients.retainRequest(target.client);
     state.clients.delete(target.client);
+    expect(
+      [...state.clients.authorityClients].filter((client) => client === target.client),
+    ).toHaveLength(1);
+    firstRequest();
+    firstRequest();
+    expect([...state.clients.authorityClients]).toContain(target.client);
     reads.count = 0;
     state.broadcastToConnIds("tick", { ts: 3 }, new Set(["target"]));
 
@@ -135,6 +148,8 @@ describe("gateway connection state", () => {
     expect(state.isConnectionActive("target")).toBe(false);
     expect(reads.count).toBe(0);
 
+    secondRequest();
+    expect([...state.clients.authorityClients]).not.toContain(target.client);
     state.clients.add(target.client);
     state.clients.clear();
     reads.count = 0;

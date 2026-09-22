@@ -16,6 +16,10 @@ import {
   type PersonActivityRouting,
 } from "./person-activity-link.ts";
 import { renderSessionColorDot } from "./session-color.ts";
+import {
+  renderSessionHovercardContext,
+  type SessionHovercardContextInput,
+} from "./session-hovercard-context.ts";
 import { sessionOwnerInitials, type SessionCreatedActor } from "./session-owner-chip.ts";
 import { progressCardHeadsUp, renderProgressCardMarkdown } from "./session-progress-card.ts";
 import "./session-hovercard.css";
@@ -47,8 +51,7 @@ type SessionHovercardAvatarAuth = {
   authReady: boolean;
 };
 
-type SessionHovercardInput = {
-  row?: SidebarSessionHovercardRow;
+type SessionHovercardInput = SessionHovercardContextInput & {
   selfUserId?: string;
   avatarAuth?: SessionHovercardAvatarAuth;
   personActivity?: PersonActivityRouting;
@@ -396,13 +399,37 @@ function renderSessionAttribution({
 
 function renderHeader(input: SessionHovercardInput) {
   const row = input.row!;
+  const channel = row.channelPresentation;
+  const details = channel
+    ? [
+        ...new Set(
+          [channel.conversation, channel.address].filter((value) => value && value !== row.label),
+        ),
+      ]
+    : [];
   const hasCreatedAt = typeof row.createdAt === "number" && Number.isFinite(row.createdAt);
   const created = hasCreatedAt ? formatSessionAge(row.createdAt, true) : "";
   const age = hasCreatedAt ? formatSessionAge(row.createdAt, false) : "";
   return html`<header class="session-hovercard__header">
     <span class="session-hovercard__heading">
+      ${
+        channel
+          ? html`<span class="session-hovercard__channel"
+              ><span aria-hidden="true">${icons.link}</span
+              >${t("sessionHovercard.linkedChannel", { channel: channel.channelLabel })}</span
+            >`
+          : nothing
+      }
       <span class="session-hovercard__title">${renderSessionColorDot(row.color)}${row.label}</span>
-      ${renderSessionAttribution(input)}
+      ${
+        channel
+          ? html`<span class="session-hovercard__conversation">
+              ${channel.kind ? html`<span>${channel.topicId ? t("sessionHovercard.topicNumber", { id: channel.topicId }) : t(`sessionHovercard.chatKinds.${channel.kind}`)}</span>` : nothing}
+              ${details.map((detail) => html`<span>${detail}</span>`)}
+              ${channel.account ? html`<span>${t("sessionHovercard.viaAccount", { account: channel.account })}</span>` : nothing}
+            </span>`
+          : renderSessionAttribution(input)
+      }
     </span>
     ${
       age
@@ -410,133 +437,6 @@ function renderHeader(input: SessionHovercardInput) {
         : nothing
     }
   </header>`;
-}
-
-function renderProgressHeadsUp(
-  card: ProgressCard | null | undefined,
-  sessionStatus: SidebarSessionHovercardRow["status"],
-) {
-  const headsUp = progressCardHeadsUp(card, sessionStatus);
-  if (!headsUp) {
-    return nothing;
-  }
-  const statusLabel = t(
-    headsUp.step.status === "in_progress"
-      ? "sessionProgressCard.status.inProgress"
-      : "sessionProgressCard.status.pending",
-  );
-  return html`<div
-    class="session-hovercard__context-row session-hovercard__plan-row"
-    aria-label=${t("sessionProgressCard.stepLabel", {
-      status: statusLabel,
-      step: headsUp.step.step,
-    })}
-    title=${headsUp.step.step}
-  >
-    <span class="session-hovercard__context-icon" aria-hidden="true"
-      >${
-        headsUp.step.status === "in_progress"
-          ? html`<span class="session-run-spinner"></span>`
-          : icons.clock
-      }</span
-    >
-    <span class="session-hovercard__context-value session-hovercard__plan-step"
-      >${headsUp.step.step}</span
-    >
-    <span class="session-hovercard__plan-count">${headsUp.completed}/${headsUp.total}</span>
-  </div>`;
-}
-
-function renderSessionContext({ row, progressCard }: SessionHovercardInput) {
-  const context = row?.workContext;
-  const placementIdentity =
-    row?.placementProviderId && row.placementProfileId
-      ? {
-          label: `${row.placementProviderId} · ${row.placementProfileId}`,
-          title: t("sessionHovercard.runsOn", {
-            providerId: row.placementProviderId,
-            profileId: row.placementProfileId,
-          }),
-        }
-      : undefined;
-  if (
-    !context &&
-    !placementIdentity &&
-    row?.boardFace !== "dashboard" &&
-    row?.hasAutomation !== true &&
-    !progressCardHeadsUp(progressCard, row?.status)
-  ) {
-    return nothing;
-  }
-  return html`<div class="session-hovercard__context">
-    ${
-      context
-        ? html`<div
-            class="session-hovercard__context-row"
-            aria-label=${`${t(
-              context.kind === "project"
-                ? "sessionHovercard.projectLabel"
-                : "sessionHovercard.workspaceLabel",
-            )}: ${context.name}`}
-            title=${`${t(
-              context.kind === "project"
-                ? "sessionHovercard.projectLabel"
-                : "sessionHovercard.workspaceLabel",
-            )}: ${context.path}`}
-          >
-            <span class="session-hovercard__context-icon" aria-hidden="true">${icons.folder}</span>
-            <span
-              class="session-hovercard__context-value session-hovercard__context-text"
-              title=${context.path}
-              >${context.name}</span
-            >
-          </div>`
-        : nothing
-    }
-    ${
-      placementIdentity
-        ? html`<div
-            class="session-hovercard__context-row"
-            aria-label=${placementIdentity.title}
-            title=${placementIdentity.title}
-          >
-            <span class="session-hovercard__context-icon" aria-hidden="true">${icons.server}</span>
-            <span class="session-hovercard__context-value session-hovercard__context-text"
-              >${placementIdentity.label}</span
-            >
-          </div>`
-        : nothing
-    }
-    ${
-      row?.boardFace === "dashboard"
-        ? html`<div
-            class="session-hovercard__context-row"
-            aria-label=${t("sessionsView.opensAsDashboard")}
-          >
-            <span class="session-hovercard__context-icon" aria-hidden="true"
-              >${icons.layoutDashboard}</span
-            >
-            <span class="session-hovercard__context-value session-hovercard__context-text"
-              >${t("sessionsView.opensAsDashboard")}</span
-            >
-          </div>`
-        : nothing
-    }
-    ${
-      row?.hasAutomation === true
-        ? html`<div
-            class="session-hovercard__context-row"
-            aria-label=${t("sessionsView.automationAttached")}
-          >
-            <span class="session-hovercard__context-icon" aria-hidden="true">${icons.clock}</span>
-            <span class="session-hovercard__context-value session-hovercard__context-text"
-              >${t("sessionsView.automationAttached")}</span
-            >
-          </div>`
-        : nothing
-    }
-    ${renderProgressHeadsUp(progressCard, row?.status)}
-  </div>`;
 }
 
 function renderAgentNotepad(card: ProgressCard | null | undefined) {
@@ -631,15 +531,27 @@ function renderPullRequestDetails(snapshot: ControlUiSessionPullRequestSnapshot 
 }
 
 export function renderSessionHovercard(input: SessionHovercardInput) {
+  const channelAttribution = input.row?.channelPresentation
+    ? renderSessionAttribution(input)
+    : nothing;
+  const headsUp = progressCardHeadsUp(
+    input.progressCard,
+    input.row?.status,
+    input.row?.startedAt,
+    input.row?.hasActiveRun ?? false,
+  );
   const hasPullRequestDetails = Boolean(
-    input.pullRequests && (input.pullRequests.pullRequests.length > 0 || input.pullRequests.branch),
+    input.pullRequests &&
+    (input.pullRequests.pullRequests.length > 0 ||
+      input.pullRequests.branch ||
+      input.pullRequests.status !== "ready"),
   );
   const hasContext = Boolean(
     input.row?.workContext ||
     (input.row?.placementProviderId && input.row.placementProfileId) ||
     input.row?.boardFace === "dashboard" ||
-    input.row?.hasAutomation === true ||
-    progressCardHeadsUp(input.progressCard, input.row?.status),
+    (input.row?.hasAutomation && input.automationLink) ||
+    headsUp,
   );
   const lastMessagePreview = input.progressCard
     ? undefined
@@ -658,7 +570,7 @@ export function renderSessionHovercard(input: SessionHovercardInput) {
     ${
       hasContext
         ? html`<section class="session-hovercard__section session-hovercard__section--metadata">
-            ${renderSessionContext(input)}
+            ${renderSessionHovercardContext(input, headsUp)}
           </section>`
         : nothing
     }
@@ -666,6 +578,17 @@ export function renderSessionHovercard(input: SessionHovercardInput) {
       hasPullRequestDetails
         ? html`<section class="session-hovercard__section session-hovercard__section--prs">
             ${renderPullRequestDetails(input.pullRequests)}
+            ${
+              input.pullRequests?.status !== "ready"
+                ? html`<div class="session-hovercard__more" role="status">
+                    ${t(
+                      input.pullRequests?.status === "rate-limited"
+                        ? "chat.pullRequests.rateLimited"
+                        : "chat.pullRequests.unavailable",
+                    )}
+                  </div>`
+                : nothing
+            }
           </section>`
         : nothing
     }
@@ -677,5 +600,18 @@ export function renderSessionHovercard(input: SessionHovercardInput) {
         : nothing
     }
     ${renderAgentNotepad(input.progressCard)}
+    ${
+      channelAttribution !== nothing
+        ? html`<section
+            class="session-hovercard__section session-hovercard__section--attribution"
+            aria-label=${t("sessionHovercard.sessionParticipants")}
+          >
+            <div class="session-hovercard__attribution-label">
+              ${t("sessionHovercard.sessionParticipants")}
+            </div>
+            ${channelAttribution}
+          </section>`
+        : nothing
+    }
   </div>`;
 }

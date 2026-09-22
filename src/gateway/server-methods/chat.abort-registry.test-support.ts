@@ -12,12 +12,7 @@ import { testing as schedulerTesting } from "../../agents/subagents/swarm/swarm-
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../config/config.js";
 import { LegacyContextEngine } from "../../context-engine/legacy.js";
 import { resetTaskFlowRegistryForTests } from "../../tasks/task-flow-registry.test-support.js";
-import * as taskControlRuntime from "../../tasks/task-registry-control.runtime.js";
-import {
-  resetTaskRegistryForTests,
-  setTaskRegistryControlRuntimeForTests,
-  resetTaskRegistryControlRuntimeForTests,
-} from "../../tasks/task-registry.test-support.js";
+import { resetTaskRegistryForTests } from "../../tasks/task-registry.test-support.js";
 import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 
@@ -30,13 +25,16 @@ export function useChatAbortRegistryFixture() {
     setTestEnvValue("OPENCLAW_CONFIG_PATH", path.join(stateDir, "openclaw.json"));
     await writeFile(
       path.join(stateDir, "openclaw.json"),
-      JSON.stringify({ agents: { defaults: { workspace: stateDir } } }),
+      JSON.stringify({
+        agents: { defaults: { workspace: stateDir } },
+        browser: { enabled: false },
+      }),
     );
     clearConfigCache();
     clearRuntimeConfigSnapshot();
-    // Supply the real ESM owner through the existing CJS runtime seam.
-    setTaskRegistryControlRuntimeForTests(taskControlRuntime);
     testing.setDepsForTest({
+      // These cancellation fixtures own no browser sessions; browser cleanup has its own tests.
+      cleanupBrowserSessionsForLifecycleEnd: async () => {},
       loadAgentRuntimePluginRegistryHandle: () => undefined,
       resolveContextEngine: async () => new LegacyContextEngine(),
       callGateway: async ({ method }) => {
@@ -54,7 +52,6 @@ export function useChatAbortRegistryFixture() {
       resetTaskRegistryForTests({ persist: false });
       resetTaskFlowRegistryForTests({ persist: false });
       schedulerTesting.reset();
-      resetTaskRegistryControlRuntimeForTests();
       await cleanupSessionStateForTest({ stateDir });
       testing.setDepsForTest();
       clearConfigCache();

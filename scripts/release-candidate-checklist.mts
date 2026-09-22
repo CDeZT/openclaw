@@ -13,12 +13,20 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { parse as parseYaml } from "yaml";
+import {
+  normalizePublicationIntent,
+  publicationAdmissionContract,
+  publicationDispatchEnvelope,
+  publicationSourceContract,
+  type PublicationSelection,
+} from "./full-release-publication-contract.mjs";
 import {
   booleanFlag,
   parseFlagArgs,
@@ -27,7 +35,11 @@ import {
   stripLeadingPackageManagerSeparator,
 } from "./lib/arg-utils.mts";
 import { readBoundedResponseText } from "./lib/bounded-response.mjs";
+import { parsePluginReleaseSelection } from "./lib/plugin-npm-release.ts";
+import { loadChangelogCollection, loadReleaseChangelog } from "./lib/release-changelog.mjs";
 import { releaseBranchForTag } from "./lib/release-context.mjs";
+import { formatReleasePublishPreflight } from "./lib/release-publish-preflight-interface.mts";
+import { classifyReleaseTrain, parseReleaseVersion } from "./lib/release-version.mjs";
 import {
   downloadFullReleaseNpmPreflight,
   verifyNpmPreflightProducer,
@@ -35,12 +47,14 @@ import {
 } from "./npm-preflight-tooling-identity.mjs";
 import { validateNpmPreflightDistTag } from "./openclaw-npm-extended-stable-release.mjs";
 import { validatePluginSdkApiReleaseEvidence } from "./plugin-sdk-api-release-evidence.mjs";
+import { runReleasePublishPreflight } from "./release-publish-preflight.mts";
 import { verifyReleaseToolingIdentity } from "./release-tooling-identity.mjs";
 import {
   dedicatedSectionVersionForTag,
   extractChangelogReleaseSections,
   extractChangelogSection,
   formatShippedBaselineExclusions,
+  loadReleaseNotesForTag,
   parseContributionRecordProvenance,
   parseShippedBaselineExclusions,
   releaseNotesSectionForTag,
@@ -49,8 +63,7 @@ import {
 } from "./render-github-release-notes.mts";
 import {
   isShaPinnedReleaseValidationBranch,
-  runStrictReleaseEvidenceValidation,
-  validateFullReleaseValidationEvidence,
+  authenticateFullReleaseValidationEvidence,
 } from "./validate-full-release-validation-evidence.mjs";
 
 type JsonRecord = Record<string, unknown>;
@@ -144,13 +157,16 @@ function usage() {
 
 Dispatches or consumes release validation runs, validates the prepared npm tarball,
 builds plugin publish plans, writes a green evidence bundle, then prints the exact
-OpenClaw Release Publish command only after everything is green.
+selected publication command. --publication-route prepared selects the
+prepare-once release button for complete regular beta/stable releases.
 
 Options:
   --tag <tag>                         Planned release tag. The tag must not exist yet.
   --target-sha <sha>                  Frozen release SHA. Defaults to the current HEAD.
   --workflow-ref <ref>                Trusted workflow ref. Default: main; matching Tideclaw branch required for alpha.
   --publish-workflow-ref <tag>         Protected publication tooling tag matching the trusted helper checkout.
+  --publication-route <normal|prepared>
+                                      Intended publication route. Default: normal; not inferred from a protected ref.
   --repo <owner/repo>                 GitHub repo. Default: ${DEFAULT_REPO}
   --full-release-run <id>             Reuse successful Full Release Validation run.
   --npm-preflight-run <id>            Reuse successful OpenClaw NPM Release preflight run.
@@ -206,6 +222,7 @@ export function parseArgs(argv: string[]) {
     targetSha: "",
     workflowRef: "",
     publishWorkflowRef: "",
+    publicationRoute: "normal",
     fullReleaseRunId: "",
     npmPreflightRunId: "",
     pluginSdkApiAcknowledgement: "",
@@ -224,6 +241,7 @@ export function parseArgs(argv: string[]) {
           ["--target-sha", "targetSha"],
           ["--workflow-ref", "workflowRef"],
           ["--publish-workflow-ref", "publishWorkflowRef"],
+          ["--publication-route", "publicationRoute"],
           ["--repo", "repo"],
           ["--full-release-run", "fullReleaseRunId"],
           ["--npm-preflight-run", "npmPreflightRunId"],
@@ -264,6 +282,21 @@ export function parseArgs(argv: string[]) {
   }
   if (!options.tag) {
     throw new Error("--tag is required");
+  }
+  if (!["normal", "prepared"].includes(options.publicationRoute)) {
+    throw new Error("--publication-route must be normal or prepared");
+  }
+  if (
+    options.publicationRoute === "prepared" &&
+    (options.tag.includes("-alpha.") ||
+      options.npmDistTag === "extended-stable" ||
+      options.pluginPublishScope !== "all-publishable" ||
+      options.plugins.trim() ||
+      !/^release-publish\/[a-f0-9]{12}-[1-9][0-9]*$/u.test(options.publishWorkflowRef))
+  ) {
+    throw new Error(
+      "Prepared publication requires a protected tooling tag and a complete regular-release roster.",
+    );
   }
   if (options.targetSha && !/^[a-f0-9]{40}$/u.test(options.targetSha)) {
     throw new Error("--target-sha must be a full lowercase commit SHA");
@@ -456,6 +489,7 @@ export function buildReleaseCandidateState(
     toolingSha,
     workflowRef: options.workflowRef,
     publishWorkflowRef: options.publishWorkflowRef,
+    publicationRoute: options.publicationRoute,
     provider: options.provider,
     mode: options.mode,
     releaseProfile: options.releaseProfile,
@@ -478,6 +512,11 @@ export function reconcileReleaseCandidateState(saved: unknown, expected: Candida
   }
   if (!isRecord(saved) || saved.version !== RELEASE_CANDIDATE_STATE_VERSION) {
     throw new Error("release candidate state has an unsupported schema");
+  }
+  // Historical state emitted the normal command by default. It did not record
+  // source admission, and cannot silently become a newly selected prepared route.
+  if ((saved.publicationRoute ?? "normal") !== expected.publicationRoute) {
+    throw new Error("release candidate state mismatch for publicationRoute");
   }
   for (const key of RELEASE_CANDIDATE_STATE_KEYS) {
     if (!isDeepStrictEqual(saved[key], expected[key])) {
@@ -684,9 +723,23 @@ function runFromTrustedTooling(
       cwd: targetRoot,
     });
     worktreeAdded = true;
+    // The tooling worktree installs its own frozen graph: borrowing the target's
+    // node_modules would resolve workspace package links back into the target
+    // checkout and let candidate code run inside the trusted helper.
+    run("pnpm", ["install", "--frozen-lockfile", "--ignore-scripts", "--prefer-offline"], {
+      cwd: toolingRoot,
+    });
+    const tsxLoader = pathToFileURL(
+      createRequire(join(toolingRoot, "package.json")).resolve("tsx"),
+    ).href;
     const result = spawnSync(
       process.execPath,
-      ["--import", "tsx", join(toolingRoot, "scripts/release-candidate-checklist.mts"), ...argv],
+      [
+        "--import",
+        tsxLoader,
+        join(toolingRoot, "scripts/release-candidate-checklist.mts"),
+        ...argv,
+      ],
       {
         cwd: targetRoot,
         env: { ...process.env, [TRUSTED_TOOLING_SHA_ENV]: trustedToolingSha },
@@ -972,13 +1025,14 @@ function requireString(value: unknown, label: string) {
   return value;
 }
 
-function loadCandidateShippedBaseline(ref: string) {
+export function loadCandidateShippedBaseline(ref: string, rootDir = process.cwd()) {
   const tagRef = `refs/tags/${ref}`;
-  gitRevParse(`${tagRef}^{commit}`);
-  const changelog = run("git", ["show", `${tagRef}:CHANGELOG.md`], { capture: true });
+  gitRevParse(`${tagRef}^{commit}`, rootDir);
+  const changelog = loadChangelogCollection({ rootDir, ref: tagRef, recordsOnly: true });
   const version = requireString(releaseNotesVersionForTag(ref), "release notes version");
+  const source = loadReleaseChangelog({ rootDir, ref: tagRef, version });
   candidateContributionRecordPullRequests(
-    requireString(extractChangelogSection(changelog, version), "changelog section"),
+    source.record ?? source.section,
     `shipped baseline ${ref}`,
   );
   const pullRequests = candidateCumulativeShippedPullRequests(changelog, `shipped baseline ${ref}`);
@@ -989,12 +1043,14 @@ export function validateCandidateReleaseNotes({
   changelog,
   repository,
   tag,
-}: StringFields<"changelog" | "repository" | "tag">) {
+  contributionRecordPath,
+}: StringFields<"changelog" | "repository" | "tag"> & { contributionRecordPath?: string }) {
   const rendered = renderGithubReleaseNotes({
     changelog,
     version: releaseNotesVersionForTag(tag),
     tag,
     repository,
+    contributionRecordPath,
   });
   return {
     status: "passed",
@@ -1256,10 +1312,12 @@ export function fullReleaseTrustedWorkflowFields({
   workflowRef,
   workflowSha,
   workflowSource,
+  publicationIntent,
 }: {
   workflowRef: string;
   workflowSha: string;
   workflowSource: string;
+  publicationIntent?: import("./full-release-publication-contract.mjs").PublicationIntent;
 }) {
   const workflow: unknown = parseYaml(workflowSource);
   const env = isRecord(workflow) && isRecord(workflow.env) ? workflow.env : undefined;
@@ -1284,13 +1342,14 @@ export function fullReleaseTrustedWorkflowFields({
   if (!/^[a-f0-9]{40}$/u.test(workflowSha)) {
     throw new Error("Full Release Validation trusted workflow SHA must be a full lowercase SHA");
   }
-  return {
-    trusted_workflow_json: JSON.stringify({
-      ref: workflowRef,
-      fullRef: `refs/heads/${workflowRef}`,
-      sha: workflowSha,
-    }),
-  };
+  const identity = { ref: workflowRef, fullRef: `refs/heads/${workflowRef}`, sha: workflowSha };
+  if (publicationSourceContract(workflowSource) === "1") {
+    if (!publicationIntent) {
+      throw new Error("Fresh FRV dispatch requires explicit source intent");
+    }
+    return { trusted_workflow_json: publicationDispatchEnvelope(identity, publicationIntent) };
+  }
+  return { trusted_workflow_json: JSON.stringify(identity) };
 }
 
 async function wait(ms: number) {
@@ -1510,6 +1569,30 @@ function shellQuote(value: unknown) {
   return `'${String(value).replace(/'/gu, "'\\''")}'`;
 }
 
+function publicationSelectionForChecklist(
+  options: ReturnType<typeof parseArgs>,
+): PublicationSelection {
+  const selection = {
+    route:
+      options.npmDistTag === "extended-stable"
+        ? "extended-stable"
+        : options.tag.includes("-alpha.")
+          ? "alpha"
+          : options.publicationRoute,
+    npmDistTag: options.npmDistTag,
+    publishOpenclawNpm: true,
+    pluginPublishScope: options.pluginPublishScope,
+    plugins: parsePluginReleaseSelection(options.plugins),
+    ...(options.windowsNodeTag
+      ? {
+          windowsNodeTag: options.windowsNodeTag,
+          windowsNodeInstallerDigests: JSON.parse(options.windowsNodeInstallerDigests),
+        }
+      : {}),
+  };
+  return normalizePublicationIntent("publish", JSON.stringify(selection)).publicationSelection!;
+}
+
 /**
  * Builds the final release publish workflow command once validation evidence is ready.
  */
@@ -1519,14 +1602,18 @@ export function buildPublishCommand(
     npmTelegramRunId?: string;
   },
   npmPreflightSource?: Awaited<ReturnType<typeof validateNpmPreflightRunSource>>,
+  mode: "publish" | "prepare" = "publish",
 ) {
   const workflowRef =
-    options.publishWorkflowRef ||
-    npmPreflightSource?.workflowRef ||
-    (options.tag.includes("-alpha.") ? options.workflowRef : "main");
-  if (options.tag.includes("-alpha.") && !TIDECLAW_ALPHA_WORKFLOW_REF_PATTERN.test(workflowRef)) {
+    options.publishWorkflowRef || npmPreflightSource?.workflowRef || options.workflowRef;
+  const publishRefPattern = options.tag.includes("-alpha.")
+    ? TIDECLAW_ALPHA_WORKFLOW_REF_PATTERN
+    : /^release-publish\/[a-f0-9]{12}-[1-9][0-9]*$/u;
+  if (!publishRefPattern.test(workflowRef)) {
     throw new Error(
-      "alpha release publish requires a matching tideclaw/alpha/YYYY-MM-DD-HHMMZ workflow ref",
+      options.tag.includes("-alpha.")
+        ? "alpha release publish requires a matching tideclaw/alpha/YYYY-MM-DD-HHMMZ workflow ref"
+        : "regular release publish requires protected tooling; supply --publish-workflow-ref release-publish/<sha12>-<epoch> after creating and pushing the tag at the trusted tooling SHA",
     );
   }
   const fields: Array<[string, string | number | undefined]> = [
@@ -1553,16 +1640,38 @@ export function buildPublishCommand(
   if (options.plugins.trim()) {
     fields.push(["plugins", options.plugins]);
   }
+  if (
+    mode === "prepare" &&
+    (!/^release-publish\/[a-f0-9]{12}-[1-9][0-9]*$/u.test(workflowRef) ||
+      options.pluginPublishScope !== "all-publishable" ||
+      options.tag.includes("-alpha.") ||
+      options.npmDistTag === "extended-stable")
+  ) {
+    throw new Error(
+      "Prepared publication requires a protected tooling tag and the complete regular-release plugin roster.",
+    );
+  }
+  if (mode === "prepare") {
+    const version = parseReleaseVersion(options.tag.slice(1));
+    if (!version || !["beta", "stable"].includes(classifyReleaseTrain(version))) {
+      throw new Error("Prepared publication requires a regular beta or stable release train.");
+    }
+  }
   return [
     "gh",
     "workflow",
     "run",
-    "openclaw-release-publish.yml",
+    mode === "prepare" ? "openclaw-release-prepare.yml" : "openclaw-release-publish.yml",
     "--repo",
     options.repo,
     "--ref",
     workflowRef,
-    ...fields.flatMap(([key, value]) => ["-f", `${key}=${String(value)}`]),
+    ...(mode === "prepare"
+      ? [
+          "-f",
+          `publish_inputs=${JSON.stringify(Object.fromEntries(fields.filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)])))}`,
+        ]
+      : fields.flatMap(([key, value]) => ["-f", `${key}=${String(value)}`])),
   ]
     .map(shellQuote)
     .join(" ");
@@ -1738,11 +1847,6 @@ async function runParallelsIfNeeded(
   if (options.skipParallels) {
     return { status: "skipped", reason: options.parallelsSkipReason };
   }
-  // This function runs inside trusted tooling, not the frozen target checkout.
-  // Prepare its isolated dependencies here before importing the Parallels harness.
-  run("pnpm", ["install", "--frozen-lockfile", "--ignore-scripts", "--prefer-offline"], {
-    cwd: TOOLING_ROOT,
-  });
   const timeoutBin = run("bash", ["-lc", "command -v gtimeout || command -v timeout"], {
     capture: true,
   }).trim();
@@ -1853,6 +1957,30 @@ async function runTelegramIfNeeded(
   };
 }
 
+function checkCandidateAndroidVersion(targetSha: string, tag: string) {
+  const release = parseReleaseVersion(tag.replace(/^v/u, ""));
+  if (release?.channel !== "stable") {
+    return undefined;
+  }
+  const manifest: unknown = JSON.parse(
+    run("git", ["show", `${targetSha}:apps/android/version.json`], { capture: true }),
+  );
+  const androidVersion = requireString(
+    isRecord(manifest) ? manifest.version : undefined,
+    "Android version",
+  );
+  const targetVersion = release.baseVersion;
+  const matches = androidVersion === targetVersion;
+  return {
+    status: matches ? "passed" : "warning",
+    androidVersion,
+    targetVersion,
+    message: matches
+      ? `PASS: Android version ${androidVersion} matches release train ${targetVersion}.`
+      : `WARNING: Android version ${androidVersion} does not match release train ${targetVersion}; run node --import tsx scripts/mobile-release-version.ts --prepare --version ${targetVersion} --write before tagging, or accept that Android will not ship for this release.`,
+  };
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const targetRoot = gitTopLevel(process.cwd());
@@ -1915,16 +2043,52 @@ async function main() {
   );
   options.fullReleaseRunId = candidateState.fullReleaseRunId;
   options.npmPreflightRunId = candidateState.npmPreflightRunId;
+  if (!options.fullReleaseRunId && !options.skipDispatch) {
+    const workflowSource = readFileSync(
+      join(TOOLING_ROOT, ".github/workflows/full-release-validation.yml"),
+      "utf8",
+    );
+    if (
+      publicationSourceContract(workflowSource) !== "1" ||
+      publicationAdmissionContract(workflowSource) !== "1"
+    ) {
+      throw new Error(
+        "Fresh checklist dispatch requires source and registry admission in frozen tooling; existing run recovery is unchanged.",
+      );
+    }
+    const version = parseReleaseVersion(options.tag.replace(/^v/u, ""));
+    const train = version && classifyReleaseTrain(version);
+    if (train === "unsupported-extended-stable-correction") {
+      throw new Error(
+        `Extended-stable correction suffixes are invalid (${options.tag}); use a new monthly maintenance patch. See the monthly Gateway extended-stable procedure in docs/reference/RELEASING.md.`,
+      );
+    }
+    if (options.npmDistTag === "extended-stable" || train === "extended-stable") {
+      throw new Error(
+        "Fresh extended-stable checklist launches are not supported. Use the monthly Gateway extended-stable procedure in docs/reference/RELEASING.md: Full Release Validation, then the separate plugin npm and core npm publication owners.",
+      );
+    }
+  }
   writeReleaseCandidateState(statePath, candidateState);
-  const releaseChangelog = run("git", ["show", `${targetSha}:CHANGELOG.md`], { capture: true });
+  const androidVersionCheck = checkCandidateAndroidVersion(targetSha, options.tag);
+  if (androidVersionCheck) {
+    console.log(androidVersionCheck.message);
+  }
   const releaseNotesVersion = releaseNotesVersionForTag(options.tag);
+  const releaseChangelog = loadReleaseNotesForTag({
+    rootDir: targetRoot,
+    ref: targetSha,
+    tag: options.tag,
+    version: releaseNotesVersion,
+  });
   const releaseNotesCheck = validateCandidateReleaseNotes({
-    changelog: releaseChangelog,
+    changelog: releaseChangelog.section,
     repository: options.repo,
     tag: options.tag,
+    contributionRecordPath: releaseChangelog.recordPath ?? undefined,
   });
   const releaseNotesProvenance = validateCandidateChangelogProvenance({
-    changelog: releaseChangelog,
+    changelog: releaseChangelog.record ?? releaseChangelog.section,
     version: releaseNotesVersion,
     tag: options.tag,
     targetSha,
@@ -1951,6 +2115,10 @@ async function main() {
         join(TOOLING_ROOT, ".github", "workflows", workflowFile),
         "utf8",
       ),
+      publicationIntent: {
+        validationPurpose: "publish",
+        publicationSelection: publicationSelectionForChecklist(options),
+      },
     });
     options.fullReleaseRunId = dispatchWorkflow(options.repo, workflowFile, options.workflowRef, {
       ref: targetSha,
@@ -2014,21 +2182,33 @@ async function main() {
   run("git", ["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
     capture: true,
   });
-  const fullValidationEvidence = validateFullReleaseValidationEvidence({
+  const fullValidationEvidence = await authenticateFullReleaseValidationEvidence({
     run: fullRun,
     manifest: fullManifest,
     expectedRepository: options.repo,
     expectedRunId: options.fullReleaseRunId,
+    expectedRunAttempt: fullRun.runAttempt,
     expectedTargetSha: targetSha,
     expectedReleaseTag: options.tag,
     expectedWorkflowBranch: options.workflowRef,
+    expectedPublicationSelection: () => publicationSelectionForChecklist(options),
     isTrustedMainAncestor: (sha: string) => gitIsAncestor(sha, "refs/remotes/origin/main"),
-    validateEvidenceReuseStrictly: ({ repository, runId }: { repository: string; runId: string }) =>
-      runStrictReleaseEvidenceValidation({ repository, runId }),
+    manifestPath: join(fullDir, "full-release-validation-manifest.json"),
+    verifierSourceSha: toolingSha,
+    verifierSourceContent: readFileSync(join(TOOLING_ROOT, "scripts/release-ci-summary.mjs")),
   });
   if (fullValidationEvidence.source === "direct" && fullRun.headSha !== targetSha) {
     throw new Error(`run SHA mismatch: tag=${targetSha} full=${fullRun.headSha}`);
   }
+  // Only exact historical producers retain local, non-authoritative planning.
+  // B recovery consumes its original hosted observations without another sweep.
+  const publicationAdmission = fullValidationEvidence.publicationAdmission;
+  const pluginNpmPlan = publicationAdmission
+    ? publicationAdmission.observations.plans.npm
+    : await collectPluginPlanWithRetry("scripts/plugin-npm-release-plan.ts", options);
+  const pluginClawHubPlan = publicationAdmission
+    ? publicationAdmission.observations.plans.clawhub
+    : await collectPluginPlanWithRetry("scripts/plugin-clawhub-release-plan.ts", options);
   if (npmUsesFullRun) {
     rmSync(npmDir, { recursive: true, force: true });
   }
@@ -2177,28 +2357,68 @@ async function main() {
     targetSha,
     fullValidationEvidence.coveragePolicy,
   );
-  const pluginNpmPlan = await collectPluginPlanWithRetry(
-    "scripts/plugin-npm-release-plan.ts",
-    options,
-  );
-  const pluginClawHubPlan = await collectPluginPlanWithRetry(
-    "scripts/plugin-clawhub-release-plan.ts",
-    options,
-  );
-  const publishCommand = buildPublishCommand(
+  const publicationOptions = {
+    ...options,
+    fullReleaseRunAttempt: fullRun.runAttempt,
+    npmTelegramRunId: npmTelegram.runId,
+  };
+  const publicationSelection = publicationSelectionForChecklist(options);
+  const publishPreflight = await runReleasePublishPreflight(
     {
-      ...options,
-      fullReleaseRunAttempt: fullRun.runAttempt,
-      npmTelegramRunId: npmTelegram.runId,
+      repo: options.repo,
+      tag: options.tag,
+      fullReleaseValidationRunId: options.fullReleaseRunId,
+      fullReleaseValidationRunAttempt: fullRun.runAttempt,
+      preflightRunId: options.npmPreflightRunId,
+      npmDistTag: options.npmDistTag,
+      pluginPublishScope: publicationSelection.pluginPublishScope,
+      plugins: options.plugins,
+      stableSoakWaiver: "",
+      workflowRef:
+        options.publishWorkflowRef || npmPreflightSource?.workflowRef || options.workflowRef,
+      releaseProfile: "from-validation",
+      publicationRoute: publicationSelection.route === "prepared" ? "prepared" : "normal",
+      publishOpenclawNpm: true,
+      openclawNpmResumeRunId: "",
+      pluginSdkApiAcknowledgement: options.pluginSdkApiAcknowledgement,
+      windowsNodeTag: options.windowsNodeTag,
+      windowsNodeInstallerDigests: options.windowsNodeInstallerDigests,
+      npmTelegramRunId: npmTelegram.runId ?? "",
     },
-    npmPreflightSource,
+    {
+      manifest: fullManifest,
+      manifestPath: join(fullDir, "full-release-validation-manifest.json"),
+      run: fullRun,
+      targetSha,
+      toolingSha,
+      allowPlannedTag: true,
+      npmManifest,
+      npmManifestPath: join(npmDir, "preflight-manifest.json"),
+      npmPreflightRun: npmRun,
+      fullValidationEvidence,
+    },
   );
+  const publishPreflightTable = formatReleasePublishPreflight(publishPreflight, {
+    includeCommand: false,
+  });
+  const publishCommand =
+    options.publicationRoute === "normal" ? publishPreflight.command : undefined;
+  const prepareCommand =
+    options.publicationRoute === "prepared"
+      ? buildPublishCommand(publicationOptions, npmPreflightSource, "prepare")
+      : undefined;
+  if (prepareCommand) {
+    publishPreflight.command = prepareCommand;
+  }
   const evidence = {
     version: 1,
     tag: options.tag,
     targetSha,
     workflowRef: options.workflowRef,
     publishWorkflowIdentity,
+    publicationRoute: options.publicationRoute,
+    sourceAdmission: fullManifest.sourceAdmission ?? null,
+    publicationAdmission,
     npmDistTag: options.npmDistTag,
     fullReleaseValidationRunId: options.fullReleaseRunId,
     fullReleaseValidationRunAttempt: fullRun.runAttempt,
@@ -2219,6 +2439,7 @@ async function main() {
     },
     releaseNotesCheck,
     releaseNotesProvenance,
+    androidVersionCheck,
     localGeneratedCheck,
     tarball: {
       name: basename(tarballPath),
@@ -2230,7 +2451,9 @@ async function main() {
     npmTelegram,
     pluginNpmPlan,
     pluginClawHubPlan,
+    publishPreflight,
     publishCommand,
+    prepareCommand,
   };
   mkdirSync(options.outputDir, { recursive: true });
   const evidencePath = join(options.outputDir, "release-candidate-evidence.json");
@@ -2242,6 +2465,7 @@ async function main() {
       `# ${options.tag} release candidate evidence`,
       "",
       `- target SHA: ${targetSha}`,
+      ...(androidVersionCheck ? [`- **${androidVersionCheck.message}**`] : []),
       `- full release validation: ${options.fullReleaseRunId} ${fullRun.url}`,
       `- npm preflight: ${npmProducerRunId} ${npmRun.url}`,
       ...(windowsNodeSourceRelease
@@ -2271,6 +2495,10 @@ async function main() {
       `- tarball: ${basename(tarballPath)}`,
       `- tarball sha256: ${actualTarballSha}`,
       `- npm dist-tag: ${options.npmDistTag}`,
+      `- intended publication route: ${options.publicationRoute}`,
+      publicationAdmission
+        ? "- FRV registry observations are authenticated retained admission evidence, not publication authority. Pending owner actions and final publisher checks remain required."
+        : "- Historical FRV source admission and local registry plans are not registry eligibility or publication authority.",
       ...formatPluginPlanSummary("plugin npm plan", pluginNpmPlan),
       ...formatPluginPlanSummary("ClawHub plan", pluginClawHubPlan),
       `- Parallels: ${parallels.status}${parallels.reason ? ` (${parallels.reason})` : ""}`,
@@ -2278,20 +2506,43 @@ async function main() {
         npmTelegram.runId ? ` ${npmTelegram.runId} ${npmTelegram.url}` : ""
       }`,
       "",
-      "Publish command:",
+      publishPreflightTable,
       "",
-      "```bash",
-      publishCommand,
-      "```",
-      "",
+      ...(prepareCommand
+        ? [
+            "Prepare once for the release button (after creating the frozen release tag):",
+            "",
+            "```bash",
+            prepareCommand,
+            "```",
+            "",
+            "When preparation succeeds, its summary supplies the single input for OpenClaw Release Button.",
+            "",
+          ]
+        : []),
+      ...(publishCommand
+        ? ["Direct publication / recovery command:", "", "```bash", publishCommand, "```", ""]
+        : []),
     ].join("\n"),
   );
-  updateReleaseCandidateState(statePath, candidateState, "completed");
-
   console.log(`release candidate evidence: ${evidencePath}`);
   console.log(`release candidate summary: ${evidenceMarkdownPath}`);
-  console.log("publish command:");
-  console.log(publishCommand);
+  console.log(publishPreflightTable);
+  if (publishPreflight.failed) {
+    throw new Error("Publish preflight failed; resolve the reported gates before publication.");
+  }
+  updateReleaseCandidateState(statePath, candidateState, "completed");
+  if (androidVersionCheck) {
+    console.log(androidVersionCheck.message);
+  }
+  if (prepareCommand) {
+    console.log("prepare once for the release button (after creating the frozen release tag):");
+    console.log(prepareCommand);
+  }
+  if (publishCommand) {
+    console.log("direct publication / recovery command:");
+    console.log(publishCommand);
+  }
 }
 
 if (isDirectReleaseCandidateExecution(process.argv[1], fileURLToPath(import.meta.url))) {

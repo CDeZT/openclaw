@@ -17,10 +17,9 @@ import { emitAgentEvent } from "../../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import * as sessionLifecycle from "../../sessions/session-lifecycle-admission.js";
-import {
-  closeOpenClawAgentDatabaseByPath,
-  listOpenClawAgentDatabasesForTest,
-} from "../../state/openclaw-agent-db.js";
+import { observeSessionWorkAdmissionDrain } from "../../sessions/session-lifecycle-admission.test-support.js";
+import { closeOpenClawAgentDatabaseByPath } from "../../state/openclaw-agent-db.js";
+import { listOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.test-support.js";
 import { handleChatAbortRequestWithLifecycle } from "./chat-abort-handler.js";
 import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.js";
 import {
@@ -110,26 +109,42 @@ it.each([false, true].flatMap((reset) => [true, false].map((completed) => ({ res
     expect(subagentRuns.get("ended")).toBe(ended);
     const entered = createDeferred();
     const resume = createDeferred();
+    const endedMutationEntered = createDeferred();
+    const resumeEndedMutation = createDeferred();
     const admission = await sessionLifecycle.beginSessionWorkAdmission({
       scope: storePath,
       identities: [activeKey, "active-session"],
       assertAllowed: () => {},
       onInterrupt: () => admission.release(),
     });
-    const interruptAdmissions = sessionLifecycle.interruptSessionWorkAdmissions;
-    const drain = vi
-      .spyOn(sessionLifecycle, "interruptSessionWorkAdmissions")
+    const mutateSession = sessionLifecycle.runExclusiveSessionLifecycleMutation;
+    let holdEndedMutation = !completed;
+    const mutation = vi
+      .spyOn(sessionLifecycle, "runExclusiveSessionLifecycleMutation")
       .mockImplementation(async (params) => {
-        const released = await interruptAdmissions(params);
-        if (params.scope === storePath && Array.from(params.identities).includes(activeKey)) {
-          expect(released).toBe(true);
-          // Keep the captured kill scope pending after the real drain. A cold
-          // sibling reset must not consume the active admission's deadline.
-          entered.resolve();
-          await resume.promise;
+        if (
+          holdEndedMutation &&
+          "scope" in params &&
+          params.scope === storePath &&
+          Array.from(params.identities).includes(endedKey)
+        ) {
+          holdEndedMutation = false;
+          // Preserve the reset/admission-before-Stop race at the actual mutation
+          // entry. Completed ancestors remain ungated late-discovery coverage.
+          endedMutationEntered.resolve();
+          await resumeEndedMutation.promise;
         }
-        return released;
+        return await mutateSession(params);
       });
+    const restoreDrain = observeSessionWorkAdmissionDrain(async (params, released) => {
+      if (params.scope === storePath && Array.from(params.identities).includes(activeKey)) {
+        expect(released).toBe(true);
+        // Keep the captured kill scope pending after the real drain. A cold
+        // sibling reset must not consume the active admission's deadline.
+        entered.resolve();
+        await resume.promise;
+      }
+    });
     const abort = abortParent();
     const dispatch = vi.fn(async () => {});
     const interrupted = vi.fn();
@@ -145,6 +160,9 @@ it.each([false, true].flatMap((reset) => [true, false].map((completed) => ({ res
       ]);
       expect(abort.parent.controller.signal.aborted).toBe(true);
       expect(sessionLifecycle.isSessionWorkAdmissionActive(storePath, [activeKey])).toBe(false);
+      if (!completed) {
+        await endedMutationEntered.promise;
+      }
       if (reset) {
         const respond = vi.fn();
         await sessionMutationHandlers["sessions.reset"]!({
@@ -198,6 +216,7 @@ it.each([false, true].flatMap((reset) => [true, false].map((completed) => ({ res
         onStartFailure: () => true,
       });
       resume.resolve();
+      resumeEndedMutation.resolve();
       const respond = await abort.pending;
       expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ aborted: true }));
       expect(subagentRuns.get("active")?.endedReason).toBe("subagent-killed");
@@ -216,11 +235,13 @@ it.each([false, true].flatMap((reset) => [true, false].map((completed) => ({ res
     } finally {
       newAdmission?.release();
       resume.resolve();
+      resumeEndedMutation.resolve();
       admission.release();
       try {
         await abort.pending;
       } finally {
-        drain.mockRestore();
+        restoreDrain();
+        mutation.mockRestore();
         releaseSwarmRun("capacity");
         releaseSwarmRun("grandchild");
       }

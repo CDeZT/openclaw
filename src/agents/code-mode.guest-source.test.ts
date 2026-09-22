@@ -2,7 +2,6 @@
 
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveCodeModeConfig } from "./code-mode-runtime.js";
 import { prepareSource } from "./code-mode-source.js";
 import { applyCodeModeCatalog } from "./code-mode.js";
 import {
@@ -13,8 +12,6 @@ import {
   runUntilCompleted,
   testing,
 } from "./code-mode.test-support.js";
-
-const sourceValidationConfig = resolveCodeModeConfig({ tools: { codeMode: true } } as never);
 
 function createSourceValidationTools() {
   const { config, catalogRef, tools } = createCodeModeHarness();
@@ -34,9 +31,9 @@ describe("Code Mode guest source validation", () => {
     vi.useRealTimers();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
-    resetCodeModeTestState();
+    await resetCodeModeTestState();
   });
 
   it("accepts command as an exec-compatible code alias", async () => {
@@ -119,6 +116,7 @@ describe("Code Mode guest source validation", () => {
     { code: "NODE_ENV=test\nnpm test" },
     { code: "FOO=bar ./gradlew test" },
     { command: 'GREETING="hello world" npm test' },
+    { code: String.raw`A="\\" ls "file" argument` },
     { command: "whoami" },
     { code: "set -euo pipefail" },
     { command: "exit" },
@@ -154,7 +152,7 @@ describe("Code Mode guest source validation", () => {
 
     expect(details.status).toBe("failed");
     expect(details.code).toBe("invalid_input");
-    expect(details.error).toMatch(/JavaScript or TypeScript, not shell commands/);
+    expect(details.error).toMatch(/JavaScript, not shell commands/);
     expect(testing.activeRuns.size).toBe(0);
   });
 
@@ -193,7 +191,7 @@ describe("Code Mode guest source validation", () => {
     "preserves valid shell-like JavaScript without false rejection: %j",
     async ({ code, value, realGuest }) => {
       if (!realGuest) {
-        await expect(prepareSource({ code, config: sourceValidationConfig })).resolves.toBe(code);
+        expect(prepareSource(code)).toBe(code);
         return;
       }
       const tools = createSourceValidationTools();
@@ -281,7 +279,7 @@ describe("Code Mode guest source validation", () => {
     },
   ])("preserves harmless $name in source validation", async ({ code, value, realGuest }) => {
     if (!realGuest) {
-      await expect(prepareSource({ code, config: sourceValidationConfig })).resolves.toBe(code);
+      expect(prepareSource(code)).toBe(code);
       return;
     }
     const tools = createSourceValidationTools();

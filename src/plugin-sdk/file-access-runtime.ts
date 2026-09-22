@@ -21,13 +21,24 @@ export {
   statRegularFileSync,
   writeFileWithinRoot,
 } from "../infra/fs-safe.js";
-export { assertNoSymlinkParents, assertNoSymlinkParentsSync } from "../infra/fs-safe-advanced.js";
+export {
+  assertNoSymlinkParents,
+  assertNoSymlinkParentsSync,
+  readFileHandleBounded,
+  resolvePathPrefixSync,
+} from "../infra/fs-safe-advanced.js";
+export { readFileWindowFully } from "../infra/file-read.js";
+export { writeFileWindowFully } from "../infra/file-descriptor.js";
+export { openRootFile } from "../infra/boundary-file-read.js";
 export {
   ensureDurableDirectory,
+  sha256File,
   syncDirectory,
   type DirectorySyncOutcome,
 } from "../infra/directory-durability.js";
 export { removePathWithinRoot } from "../infra/fs-safe-remove.js";
 export { basenameFromMediaSource, safeFileURLToPath } from "../infra/local-file-access.js";
 export { isPathInside, isPathStrictlyInside } from "../infra/path-guards.js";
+export { getFileWatchCapacityCode } from "../infra/fs-watch-errors.js";
 export { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
+export { readFileRangeAsync } from "../config/sessions/file-range.js";

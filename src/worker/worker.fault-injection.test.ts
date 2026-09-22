@@ -100,20 +100,20 @@ describe("cloud worker milestone 2 fault injection", () => {
     ["success", "standalone", "credential", "completed", "stop"],
     ["success", "managed", "credential", "completed", "stop"],
   ] as const)(
-    "settles %s through the %s command with real EACCES deleting %s files",
+    "settles %s through the %s command with real permission failures deleting %s files",
     async (outcome, mode, deniedOwner, expectedStatus, stopReason) => {
       const skillDir = path.join(harness.root, "skills", "cleanup");
       await fs.mkdir(skillDir, { recursive: true });
       const markdown = "---\nname: cleanup\ndescription: Cleanup proof\n---\n# Instructions\n";
       await fs.writeFile(path.join(skillDir, "SKILL.md"), markdown);
-      const descriptor = harness.createDescriptor();
+      const descriptor = await harness.createDescriptor();
       descriptor.assignment.github = {
         login: "worker-cleanup-fixture",
         token: "synthetic-worker-cleanup-token",
         branch: "openclaw/cleanup-fixture",
       };
       descriptor.assignment.skillResources = await prepareSkillResourceDelivery(
-        buildSkillSnapshot(harness.root, {
+        await buildSkillSnapshot(harness.root, {
           entries: loadWorkspaceSkills(harness.root, { workspaceOnly: true }),
         }),
         () => {},
@@ -221,7 +221,12 @@ describe("cloud worker milestone 2 fault injection", () => {
         );
         finishingGate.release.resolve();
         if (deniedOwner === "credential") {
-          await expect.soft(command).rejects.toMatchObject({ code: "EACCES" });
+          // Bun reports the containing directory's ENOTEMPTY until oven-sh/bun#42446 lands.
+          await expect.soft(command).rejects.toMatchObject({
+            code: process.versions.bun
+              ? expect.stringMatching(/^(?:EACCES|ENOTEMPTY)$/u)
+              : "EACCES",
+          });
         } else {
           await expect.soft(command).resolves.toBeUndefined();
         }
@@ -267,7 +272,7 @@ describe("cloud worker milestone 2 fault injection", () => {
           await expect.soft(fs.stat(hostsPath)).rejects.toMatchObject({ code: "ENOENT" });
           expect.soft(warning).toContain("Materialized skill cleanup failed");
           expect.soft(warning).toContain(turnDirectory);
-          expect.soft(warning).toContain("EACCES");
+          expect.soft(warning).toMatch(process.versions.bun ? /EACCES|ENOTEMPTY/u : /EACCES/u);
         } else {
           expect(await fs.readFile(hostsPath, "utf8")).toContain(
             descriptor.assignment.github.token,
@@ -333,7 +338,7 @@ describe("cloud worker milestone 2 fault injection", () => {
         text: "preview reply",
       };
       let settled = false;
-      const result = runWorkerDescriptor(harness.createDescriptor()).finally(() => {
+      const result = runWorkerDescriptor(await harness.createDescriptor()).finally(() => {
         settled = true;
       });
       void result.catch(() => undefined);
@@ -370,7 +375,7 @@ describe("cloud worker milestone 2 fault injection", () => {
   );
 
   it("survives repeated tunnel partitions without transcript duplication, live replay, or rebilling", async () => {
-    const current = harness.createClients();
+    const current = await harness.createClients();
     clients.push(current);
     const firstRelease = createDeferred();
     const secondRelease = createDeferred();
@@ -430,7 +435,7 @@ describe("cloud worker milestone 2 fault injection", () => {
   });
 
   it("fences restart-inherited authority and recovers durable state on a fresh claim", async () => {
-    const current = harness.createClients();
+    const current = await harness.createClients();
     clients.push(current);
     const providerRelease = createDeferred<WorkerInferenceTerminalOutcome>();
     const providerStarted = createDeferred();
@@ -500,10 +505,10 @@ describe("cloud worker milestone 2 fault injection", () => {
 
     const recoveryRunId = "restart-recovery-run";
     const oldEpoch = harness.epoch;
-    const freshEpoch = harness.reclaimWithCredential(REPLACEMENT_CREDENTIAL, recoveryRunId);
+    const freshEpoch = await harness.reclaimWithCredential(REPLACEMENT_CREDENTIAL, recoveryRunId);
     expect(freshEpoch).toBeGreaterThan(oldEpoch);
     providerRelease.resolve(doneOutcome("late stale provider result"));
-    const fresh = harness.createClients({
+    const fresh = await harness.createClients({
       admissionProof: REPLACEMENT_CREDENTIAL,
       epoch: freshEpoch,
       runId: recoveryRunId,
@@ -532,7 +537,7 @@ describe("cloud worker milestone 2 fault injection", () => {
   });
 
   it("fences a dead worker and admits a fresh owner at a higher epoch", async () => {
-    const old = harness.createClients();
+    const old = await harness.createClients();
     clients.push(old);
     await old.connection.start();
     const oldCommit = await old.transcript.commit([transcriptMessage("old owner")]);
@@ -547,7 +552,7 @@ describe("cloud worker milestone 2 fault injection", () => {
     await pendingStarted.promise;
 
     const oldEpoch = harness.epoch;
-    const newEpoch = harness.reclaimWithCredential(REPLACEMENT_CREDENTIAL, "fresh-run");
+    const newEpoch = await harness.reclaimWithCredential(REPLACEMENT_CREDENTIAL, "fresh-run");
     expect(newEpoch).toBeGreaterThan(oldEpoch);
     const rejected = old.transcript.commit([transcriptMessage("late old owner")]);
     await expect(rejected).rejects.toMatchObject({
@@ -561,7 +566,7 @@ describe("cloud worker milestone 2 fault injection", () => {
     harness.providerPlan = { kind: "immediate", text: "new owner reply" };
     // Milestone-3 admission binds the worker to a single run; the fresh owner
     // must be admitted for the run it executes.
-    const fresh = harness.createClients({
+    const fresh = await harness.createClients({
       admissionProof: REPLACEMENT_CREDENTIAL,
       epoch: newEpoch,
       baseLeafId: oldCommit.newLeafId,
@@ -599,7 +604,7 @@ describe("cloud worker milestone 2 fault injection", () => {
   });
 
   it("fail-stops a reconnected commit whose base changes while application is in flight", async () => {
-    const current = harness.createClients();
+    const current = await harness.createClients();
     clients.push(current);
     const entered = createDeferred();
     const release = createDeferred();
@@ -624,7 +629,7 @@ describe("cloud worker milestone 2 fault injection", () => {
   });
 
   it("advances a worker live stream whose run context is dispatch-owned and visible", async () => {
-    const current = harness.createClients();
+    const current = await harness.createClients();
     clients.push(current);
     // A visible turn's run context is claimed by the gateway dispatch before the
     // turn hands off to the worker. The worker's first live event must adopt that
@@ -661,7 +666,7 @@ describe("cloud worker milestone 2 fault injection", () => {
   });
 
   it("settles stop during an in-flight commit without retrying or spinning", async () => {
-    const current = harness.createClients();
+    const current = await harness.createClients();
     clients.push(current);
     const entered = createDeferred();
     const release = createDeferred();

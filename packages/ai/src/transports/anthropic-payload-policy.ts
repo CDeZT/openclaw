@@ -1,14 +1,18 @@
 import type { BetaContextManagementConfig } from "@anthropic-ai/sdk/resources/beta/messages/messages.js";
+import type { TextBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
 import type { Model } from "@openclaw/llm-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { getAiTransportHost } from "../host.js";
 import type { AnthropicContextManagementOptions } from "../provider-options.js";
 import { isAnthropicOAuthApiKey } from "../providers/anthropic-auth-headers.js";
+import { ANTHROPIC_CLAUDE_CODE_VERSION } from "../providers/anthropic-model-contract.js";
 import { resolveCacheRetention } from "../providers/cache-retention.js";
+import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import {
   splitSystemPromptCacheBoundary,
   stripSystemPromptCacheBoundary,
+  stripSystemPromptRelocatableBoundary,
 } from "../utils/system-prompt-cache-boundary.js";
 /**
  * Anthropic-family request payload policy helpers.
@@ -170,6 +174,87 @@ export function resolveAnthropicEphemeralCacheControl(
   return { type: "ephemeral", ...(ttl ? { ttl } : {}) };
 }
 
+export function resolveAnthropicCacheOptions(
+  model: Model<"anthropic-messages">,
+  cacheRetention?: "short" | "long" | "none",
+) {
+  const supportsLongCacheRetention =
+    model.compat?.supportsLongCacheRetention ?? model.provider !== "fireworks";
+  const baseUrl =
+    model.baseUrl?.trim() || process.env.ANTHROPIC_BASE_URL?.trim() || "https://api.anthropic.com";
+  const cacheControl = resolveAnthropicEphemeralCacheControl(baseUrl, cacheRetention);
+  return {
+    cacheControl:
+      cacheControl && !supportsLongCacheRetention ? { type: "ephemeral" as const } : cacheControl,
+    supportsCacheControlOnTools:
+      model.compat?.supportsCacheControlOnTools ?? model.provider !== "fireworks",
+  };
+}
+
+export function buildAnthropicSystemBlocks(
+  systemPrompt: string | undefined,
+  isOAuthToken: boolean,
+  cacheControl: AnthropicEphemeralCacheControl | undefined,
+  claudeCodeVersion = ANTHROPIC_CLAUDE_CODE_VERSION,
+): TextBlockParam[] | undefined {
+  const blocks: TextBlockParam[] = systemPrompt
+    ? [{ type: "text", text: sanitizeSurrogates(systemPrompt) }]
+    : [];
+  if (cacheControl) {
+    applyAnthropicCacheControlToSystem(blocks, cacheControl);
+  } else {
+    stripAnthropicSystemPromptBoundary(blocks);
+  }
+  if (systemPrompt && blocks.length === 0) {
+    blocks.push({ type: "text", text: "" });
+  }
+  if (isOAuthToken) {
+    // The stable application prompt covers the OAuth preamble too; keep slots for history.
+    const identityCacheControl = blocks.some((block) => block.cache_control)
+      ? undefined
+      : cacheControl;
+    blocks.unshift(
+      {
+        type: "text",
+        text: `x-anthropic-billing-header: cc_version=${claudeCodeVersion}; cc_entrypoint=sdk-cli;`,
+      },
+      {
+        type: "text",
+        text: "You are Claude Code, Anthropic's official CLI for Claude.",
+        ...(identityCacheControl ? { cache_control: identityCacheControl } : {}),
+      },
+    );
+  }
+  return blocks.length > 0 ? blocks : undefined;
+}
+
+/** Allocate tool and history checkpoints around the prepared stable system blocks. */
+export function applyAnthropicRequestCacheControl(
+  payload: { system?: unknown; tools?: unknown; messages?: unknown },
+  cacheControl: AnthropicEphemeralCacheControl | undefined,
+  supportsCacheControlOnTools: boolean,
+  cacheBreakpointOptOutMessageIndexes: ReadonlySet<number> = new Set(),
+): void {
+  if (!cacheControl) {
+    return;
+  }
+  if (supportsCacheControlOnTools && Array.isArray(payload.tools)) {
+    const lastTool = payload.tools.at(-1);
+    if (isRecord(lastTool)) {
+      lastTool.cache_control = cacheControl;
+    }
+  }
+  const usedMarkers =
+    countAnthropicCacheControlMarkers(payload.system) +
+    countAnthropicCacheControlMarkers(payload.tools);
+  applyAnthropicCacheControlToMessages(
+    payload.messages,
+    cacheControl,
+    ANTHROPIC_CACHE_CONTROL_LIMIT - usedMarkers,
+    cacheBreakpointOptOutMessageIndexes,
+  );
+}
+
 function applyAnthropicCacheControlToSystem(
   system: unknown,
   cacheControl: AnthropicEphemeralCacheControl,
@@ -185,11 +270,16 @@ function applyAnthropicCacheControlToSystem(
       continue;
     }
     const record = block as Record<string, unknown>;
-    if (record.type !== "text" || typeof record.text !== "string") {
+    const blockText = record.text;
+    if (record.type !== "text" || typeof blockText !== "string") {
       normalizedBlocks.push(block);
       continue;
     }
-    const split = splitSystemPromptCacheBoundary(record.text);
+    // This transport relocates nothing, so the relocatable marker must not
+    // survive into the payload; the cache boundary stays for the breakpoint.
+    const text = stripSystemPromptRelocatableBoundary(blockText);
+    record.text = text;
+    const split = splitSystemPromptCacheBoundary(text);
     if (!split) {
       if (record.cache_control === undefined) {
         record.cache_control = cacheControl;
@@ -234,7 +324,7 @@ function stripAnthropicSystemPromptBoundary(system: unknown): void {
 }
 
 /** Apply one shared deepest-stable-message cache breakpoint policy. */
-export function applyAnthropicCacheControlToMessages(
+function applyAnthropicCacheControlToMessages(
   messages: unknown,
   cacheControl: AnthropicEphemeralCacheControl,
   markerLimit: number,
@@ -400,17 +490,14 @@ function resolveToolClearingExclusions(
   const excluded = new Set(
     filter?.deny?.map((name) => name.trim()).filter((name) => name && !name.includes("*")),
   );
-  const exposed = new Set<string>();
+  const candidates = new Set<string>();
   for (const tool of Array.isArray(payload.tools) ? payload.tools : []) {
     if (isRecord(tool) && typeof tool.name === "string") {
-      exposed.add(tool.name);
+      candidates.add(tool.name);
     }
   }
-  const candidates = new Set(exposed);
-  // Denied historical tools stay protected even after disappearing from the exposed tool set.
-  for (const message of deny.length > 0 && Array.isArray(payload.messages)
-    ? payload.messages
-    : []) {
+  // Pruning filters apply to history too: removing a tool must not make its results clearable.
+  for (const message of Array.isArray(payload.messages) ? payload.messages : []) {
     if (!isRecord(message) || !Array.isArray(message.content)) {
       continue;
     }
@@ -424,7 +511,7 @@ function resolveToolClearingExclusions(
     const name = toolName.trim().toLowerCase();
     if (
       deny.some((pattern) => pattern.test(name)) ||
-      (exposed.has(toolName) && allow.length > 0 && !allow.some((pattern) => pattern.test(name)))
+      (allow.length > 0 && !allow.some((pattern) => pattern.test(name)))
     ) {
       excluded.add(toolName);
     }
@@ -567,17 +654,10 @@ export function applyAnthropicPayloadPolicyToParams(
 
   applyAnthropicContextManagementEdits(payloadObj, policy);
 
-  if (!policy.cacheControl) {
-    return;
-  }
-
-  const usedMarkers =
-    countAnthropicCacheControlMarkers(payloadObj.system) +
-    countAnthropicCacheControlMarkers(payloadObj.tools);
-  applyAnthropicCacheControlToMessages(
-    payloadObj.messages,
+  applyAnthropicRequestCacheControl(
+    payloadObj,
     policy.cacheControl,
-    ANTHROPIC_CACHE_CONTROL_LIMIT - usedMarkers,
+    false,
     cacheBreakpointOptOutMessageIndexes,
   );
 }

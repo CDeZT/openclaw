@@ -44,6 +44,8 @@ export type CliTerminalInterruption = {
 /** Normalized result from a CLI-backed model provider turn. */
 export type CliOutput = {
   text: string;
+  /** Completed result boundaries, retained for independent delivery and retry. */
+  textParts?: string[];
   rawText?: string;
   sessionId?: string;
   /** Backend-owned assistant boundary that can safely anchor a later resumed fork. */
@@ -62,6 +64,7 @@ export type CliOutput = {
   finalPromptText?: string;
   didSendViaMessagingTool?: boolean;
   didDeliverSourceReplyViaMessageTool?: boolean;
+  sourceReplyDelivered?: true;
   messagingToolSentTexts?: string[];
   messagingToolSentMediaUrls?: string[];
   messagingToolSentTargets?: MessagingToolSend[];
@@ -125,6 +128,7 @@ export type CliJsonlStreamingParserOptions = {
   parseJsonlEvent?: CliBackendParseJsonlEvent;
   parseJsonlLifecycleEvent?: CliBackendParseJsonlLifecycleEvent;
   onAssistantDelta: (delta: CliStreamingDelta) => void;
+  onCompletedReply?: (text: string, assistantMessageIndex: number) => void;
   onThinkingDelta?: (delta: CliThinkingDelta) => void;
   onThinkingProgress?: (progress: CliThinkingProgress) => void;
   onCompaction?: (delta: CliCompactionDelta) => void;
@@ -134,6 +138,8 @@ export type CliJsonlStreamingParserOptions = {
   onDisplayToolResult?: (delta: CliToolResultDelta) => void;
   onCommentaryText?: (text: string) => void;
   onSessionId?: (sessionId: string) => void;
+  /** Parent initialization fact; its authority owner validates the raw tool list. */
+  onNativeTools?: (tools: unknown) => void;
   onAssistantMessage?: (message: unknown) => void;
   onUsage?: (usage: CliUsage, terminal: boolean) => void;
 };

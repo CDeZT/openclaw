@@ -33,6 +33,7 @@ vi.mock("./http-common.js", () => ({
   sendGatewayAuthFailure: vi.fn(),
   sendJson: vi.fn(),
   sendMissingScopeForbidden: vi.fn(),
+  sendUnauthorized: vi.fn(),
 }));
 
 const { authorizeHttpGatewayConnect } = await import("./auth.js");
@@ -102,6 +103,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           trustedProxies: ["127.0.0.1"],
         }),
       ).resolves.toEqual({
+        hasCurrentClientAuthority: expect.any(Function),
+        assertCurrent: expect.any(Function),
+        revalidate: expect.any(Function),
         authMethod: method,
         trustDeclaredOperatorScopes: false,
         authenticatedUserProfile: ownerProfile,
@@ -170,6 +174,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
             },
           }),
         ).resolves.toEqual({
+          hasCurrentClientAuthority: expect.any(Function),
+          assertCurrent: expect.any(Function),
+          revalidate: expect.any(Function),
           authMethod: "trusted-proxy",
           user: "guest@example.test",
           trustDeclaredOperatorScopes: true,
@@ -238,6 +245,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           });
         } else {
           expect(result).toEqual({
+            hasCurrentClientAuthority: expect.any(Function),
+            assertCurrent: expect.any(Function),
+            revalidate: expect.any(Function),
             authMethod: "trusted-proxy",
             user: "guest@example.test",
             trustDeclaredOperatorScopes: true,
@@ -278,6 +288,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
         },
       }),
     ).resolves.toEqual({
+      hasCurrentClientAuthority: expect.any(Function),
+      assertCurrent: expect.any(Function),
+      revalidate: expect.any(Function),
       authMethod: "trusted-proxy",
       user: "guest@example.test",
       trustDeclaredOperatorScopes: true,
@@ -330,25 +343,6 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
         gateway: { controlUi: { allowedOrigins: ["https://control.example.com"] } },
       });
     }
-  });
-
-  it("preserves legacy device-token auth when no operator roles are configured", async () => {
-    vi.mocked(authorizeHttpGatewayConnect).mockResolvedValue({
-      ok: true,
-      method: "device-token",
-    });
-
-    await expect(
-      authorizeGatewayHttpRequestOrReply({
-        req: createReq(),
-        res: {} as ServerResponse,
-        auth: { mode: "token", allowTailscale: false, token: "shared-secret" },
-      }),
-    ).resolves.toEqual({
-      authMethod: "device-token",
-      trustDeclaredOperatorScopes: true,
-      authenticatedUserProfile: ownerProfile,
-    });
   });
 
   it.each(["trusted-proxy", "tailscale", "bootstrap-token"] as const)(
@@ -416,6 +410,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           auth: { mode: "token", allowTailscale: false, token: "shared-secret" },
         }),
       ).resolves.toEqual({
+        hasCurrentClientAuthority: expect.any(Function),
+        assertCurrent: expect.any(Function),
+        revalidate: expect.any(Function),
         authMethod: "token",
         trustDeclaredOperatorScopes: false,
         authenticatedUserProfile: ownerProfile,

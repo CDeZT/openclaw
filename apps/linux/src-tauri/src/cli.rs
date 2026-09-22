@@ -39,25 +39,27 @@ impl std::error::Error for CliError {}
 
 impl OpenClawCli {
     pub fn discover() -> Result<Self, CliError> {
+        let cli = Self::locate()?;
+        match cli.verify() {
+            Ok(()) => Ok(cli),
+            Err(_) if cli.executable == PathBuf::from("openclaw") => Err(CliError::Missing),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Resolve the executable for an owner that supplies cancellable process supervision.
+    pub(crate) fn locate() -> Result<Self, CliError> {
         let home = openclaw_home()?;
         if let Some(override_path) = env::var_os("OPENCLAW_DESKTOP_CLI") {
-            let cli = Self::new(PathBuf::from(override_path), home);
-            cli.verify()?;
-            return Ok(cli);
+            return Ok(Self::new(PathBuf::from(override_path), home));
         }
 
         let managed = home.join("bin/openclaw");
         if managed.is_file() {
-            let cli = Self::new(managed, home);
-            cli.verify()?;
-            return Ok(cli);
+            return Ok(Self::new(managed, home));
         }
 
-        let cli = Self::new(PathBuf::from("openclaw"), home);
-        match cli.verify() {
-            Ok(()) => Ok(cli),
-            Err(_) => Err(CliError::Missing),
-        }
+        Ok(Self::new(PathBuf::from("openclaw"), home))
     }
 
     fn new(executable: PathBuf, openclaw_home: PathBuf) -> Self {
@@ -111,7 +113,7 @@ impl OpenClawCli {
         })
     }
 
-    pub fn json<T, I, S>(&self, args: I) -> Result<(T, Output), CliError>
+    pub fn json<T, I, S>(&self, args: I) -> Result<T, CliError>
     where
         T: DeserializeOwned,
         I: IntoIterator<Item = S>,
@@ -126,10 +128,9 @@ impl OpenClawCli {
                 .unwrap_or_else(|| format!("OpenClaw CLI exited with {}", output.status));
             return Err(CliError::CommandFailed(message));
         }
-        let value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        serde_json::from_slice(&output.stdout).map_err(|error| {
             CliError::InvalidJson(format!("OpenClaw CLI returned invalid JSON: {error}"))
-        })?;
-        Ok((value, output))
+        })
     }
 
     fn command_path(&self) -> Result<OsString, CliError> {
@@ -147,14 +148,12 @@ impl OpenClawCli {
 
 pub(crate) fn output_tail(output: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(output);
-    let mut lines: Vec<&str> = Vec::new();
-    for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        // The CLI repeats identical progress lines while waiting; one occurrence
-        // carries the same information in a user-facing failure message.
-        if lines.last() != Some(&line) {
-            lines.push(line);
-        }
-    }
+    let mut lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    // Repeated progress lines carry no additional failure context.
+    lines.dedup();
     let start = lines.len().saturating_sub(12);
     let tail = &lines[start..];
     (!tail.is_empty()).then(|| tail.join("\n"))
@@ -189,6 +188,10 @@ mod tests {
 
         assert_eq!(output_tail(output.as_bytes()), Some(expected));
         assert_eq!(output_tail(b"\n  \n"), None);
+        assert_eq!(
+            output_tail(b"waiting\n\nwaiting\nfailed\nwaiting"),
+            Some("waiting\nfailed\nwaiting".into())
+        );
     }
 
     #[test]

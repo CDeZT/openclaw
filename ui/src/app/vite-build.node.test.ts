@@ -39,7 +39,7 @@ describe("Control UI Vite build", () => {
     captureLogs("silent");
     await fs.writeFile(
       path.join(root, "index.html"),
-      '<button>Load</button><script type="module" src="./main.js"></script>',
+      '<script>globalThis.fixtureBooted = true;</script><button>Load</button><script type="module" src="./main.js"></script>',
     );
     await fs.writeFile(
       path.join(root, "main.js"),
@@ -57,6 +57,7 @@ describe("Control UI Vite build", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -140,7 +141,30 @@ describe("Control UI Vite build", () => {
     await expect(fs.stat(path.join(outDir, "asset-manifest.json"))).resolves.toBeDefined();
   });
 
-  it("inventories final emitted bytes and compressed variants, excluding source maps", async () => {
+  it.each(
+    (["configured", "absolute override", "relative override", "output override"] as const).flatMap(
+      (output) => [false, true].map((release) => ({ output, release })),
+    ),
+  )("finalizes $output assets and maps (release=$release)", async ({ output, release }) => {
+    vi.stubEnv("OPENCLAW_CONTROL_UI_RELEASE_BUILD", release ? "1" : undefined);
+    config = { ...config, ...controlUiViteConfig({ outDir }) };
+    const configuredOutDir = outDir;
+    if (output !== "configured") {
+      outDir = path.join(root, "overridden-output");
+      config.build =
+        output === "output override"
+          ? {
+              ...config.build,
+              rolldownOptions: {
+                ...config.build?.rolldownOptions,
+                output: { dir: outDir },
+              },
+            }
+          : {
+              ...config.build,
+              outDir: output === "relative override" ? path.relative(root, outDir) : outDir,
+            };
+    }
     config.publicDir = fileURLToPath(new URL("../../public", import.meta.url));
     await fs.writeFile(
       path.join(root, "index.html"),
@@ -148,6 +172,9 @@ describe("Control UI Vite build", () => {
     );
     await build(config);
     expect(info).not.toHaveBeenCalled();
+    if (output !== "configured") {
+      await expect(fs.stat(configuredOutDir)).rejects.toMatchObject({ code: "ENOENT" });
+    }
 
     const manifest: ControlUiAssetManifest = JSON.parse(
       await fs.readFile(path.join(outDir, "asset-manifest.json"), "utf8"),
@@ -165,6 +192,7 @@ describe("Control UI Vite build", () => {
 
     const scripts = emitted.filter((name) => name.endsWith(".js"));
     expect(scripts.length).toBeGreaterThan(1);
+    expect(scripts.some((name) => emitted.includes(`${name}.map`))).toBe(true);
     expect(emitted.some((name) => name.endsWith(".css"))).toBe(true);
     for (const name of emitted.filter((fileName) => /\.(js|css)$/u.test(fileName))) {
       const source = await fs.readFile(path.join(outDir, "assets", name));
@@ -172,6 +200,11 @@ describe("Control UI Vite build", () => {
       const gzip = await fs.readFile(path.join(outDir, "assets", `${name}.gz`));
       expect(brotliDecompressSync(brotli)).toEqual(source);
       expect(gunzipSync(gzip)).toEqual(source);
+      if (name.endsWith(".js")) {
+        expect(source.toString("utf8").includes("sourceMappingURL="), name).toBe(
+          !release && emitted.includes(`${name}.map`),
+        );
+      }
     }
     const serviceWorker = await fs.readFile(path.join(outDir, "sw.js"), "utf8");
     const embeddedBuildId = /const EMBEDDED_CACHE_VERSION = "([^"]+)"/u.exec(serviceWorker)?.[1];
@@ -233,6 +266,17 @@ describe("Control UI Vite build", () => {
       expect(/const EMBEDDED_CACHE_VERSION = "([^"]+)"/u.exec(worker)?.[1]).toBe(buildInfo.buildId);
     }
     expect(cacheIds[0]).not.toBe(cacheIds[1]);
+  });
+
+  it("carries the Cloudflare Rocket Loader bypass on every emitted script tag", async () => {
+    await build(config);
+
+    const html = await fs.readFile(path.join(outDir, "index.html"), "utf8");
+    const scriptTags = html.match(/<script\b[^>]*>/gu) ?? [];
+    expect(scriptTags.length).toBeGreaterThan(0);
+    for (const tag of scriptTags) {
+      expect(tag).toMatch(/^<script data-cfasync="false"(?:\s|>)/u);
+    }
   });
 
   it("fails when a completed build emits outside the required assets directory", async () => {

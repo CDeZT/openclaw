@@ -221,6 +221,30 @@ export function summarizeNumbers(values: number[]): SummaryStats | null {
   };
 }
 
+export function summarizeTraceStats<T>(
+  samples: readonly T[],
+  readTrace: (sample: T) => Record<string, number>,
+): Record<string, SummaryStats> {
+  const traceKeys = new Set<string>();
+  for (const sample of samples) {
+    for (const key of Object.keys(readTrace(sample))) {
+      traceKeys.add(key);
+    }
+  }
+  const trace: Record<string, SummaryStats> = {};
+  for (const key of [...traceKeys].toSorted()) {
+    const stats = summarizeNumbers(
+      samples
+        .map((sample) => readTrace(sample)[key])
+        .filter((value): value is number => typeof value === "number"),
+    );
+    if (stats) {
+      trace[key] = stats;
+    }
+  }
+  return trace;
+}
+
 export function formatMs(value: number | null): string {
   return value == null ? "n/a" : `${value.toFixed(1)}ms`;
 }
@@ -229,11 +253,14 @@ export function formatMb(value: number | null): string {
   return value == null ? "n/a" : `${value.toFixed(1)}MB`;
 }
 
-export function formatStats(stats: SummaryStats | null | undefined): string {
+export function formatStats(
+  stats: SummaryStats | null | undefined,
+  formatValue: (value: number) => string = formatMs,
+): string {
   if (!stats) {
     return "n/a";
   }
-  return `p50=${formatMs(stats.p50)} avg=${formatMs(stats.avg)} min=${formatMs(stats.min)} max=${formatMs(stats.max)}`;
+  return `p50=${formatValue(stats.p50)} avg=${formatValue(stats.avg)} min=${formatValue(stats.min)} max=${formatValue(stats.max)}`;
 }
 
 export function createGatewayBenchEnv(
@@ -242,6 +269,7 @@ export function createGatewayBenchEnv(
   options: {
     caseEnv?: Record<string, string> | undefined;
     restartTrace?: boolean | undefined;
+    startupTrace?: boolean | undefined;
   },
 ): NodeJS.ProcessEnv {
   return {
@@ -257,7 +285,7 @@ export function createGatewayBenchEnv(
     npm_config_update_notifier: "false",
     OPENCLAW_CONFIG_PATH: configPath,
     ...(options.restartTrace ? { OPENCLAW_GATEWAY_RESTART_TRACE: "1" } : {}),
-    OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
+    ...(options.startupTrace !== false ? { OPENCLAW_GATEWAY_STARTUP_TRACE: "1" } : {}),
     OPENCLAW_HOME: root,
     OPENCLAW_NO_RESPAWN: "1",
     OPENCLAW_STATE_DIR: path.join(root, "state"),

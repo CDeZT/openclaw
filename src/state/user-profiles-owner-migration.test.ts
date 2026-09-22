@@ -5,13 +5,15 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
 } from "./openclaw-state-db.js";
+import { readUserProfileAliasRevision } from "./user-profile-events.js";
+import { listUserProfilesSync } from "./user-profile-list.js";
 import { repairMergedGatewayOwnerProfile } from "./user-profiles-owner-migration.js";
 import { mergeOwnerIntoPerson, profileState } from "./user-profiles-owner.test-support.js";
 import {
   ensureGatewayOwnerProfile,
   ensureProfileForTailscaleIdentity,
-  listProfiles,
   readUserProfileAliases,
   syncGitHubIdentity,
 } from "./user-profiles.js";
@@ -49,8 +51,11 @@ describe("Doctor gateway owner repair", () => {
       } else if (identityTarget === "missing") {
         db.prepare("DELETE FROM user_profile_identities WHERE provider = 'gateway.local'").run();
       }
-      const personBefore = listProfiles(options).find((profile) => profile.id === person.id);
+      const personBefore = listUserProfilesSync(options).find(
+        (profile) => profile.id === person.id,
+      );
       const before = profileState(options);
+      const aliasRevision = readUserProfileAliasRevision();
       expect(readUserProfileAliases(owner.id, options)).toEqual(new Set([owner.id, person.id]));
       expect(readUserProfileAliases(person.id, options)).toEqual(new Set([owner.id, person.id]));
 
@@ -60,12 +65,25 @@ describe("Doctor gateway owner repair", () => {
         warnings: [expect.stringContaining("openclaw doctor --fix")],
       });
       expect(profileState(options)).toEqual(before);
+      expect(readUserProfileAliasRevision()).toBe(aliasRevision);
+      expect(() =>
+        runOpenClawStateWriteTransaction(() => {
+          expect(repairMergedGatewayOwnerProfile({ ...options, shouldRepair: true }).repaired).toBe(
+            true,
+          );
+          expect(readUserProfileAliasRevision()).toBe(aliasRevision);
+          throw new Error("rollback owner repair");
+        }, options),
+      ).toThrow("rollback owner repair");
+      expect(readUserProfileAliasRevision()).toBe(aliasRevision);
+      expect(profileState(options)).toEqual(before);
       expect(repairMergedGatewayOwnerProfile({ ...options, shouldRepair: true })).toMatchObject({
         repaired: true,
         changes: [expect.stringContaining("gateway-owner")],
         warnings: [],
       });
       expect(readUserProfileAliases(owner.id, options)).toEqual(new Set([owner.id]));
+      expect(readUserProfileAliasRevision()).toBe(aliasRevision + 1);
       expect(readUserProfileAliases(person.id, options)).toEqual(new Set([person.id]));
       const restored = ensureGatewayOwnerProfile("Host Renamed", options);
       expect(restored).toMatchObject({
@@ -74,7 +92,7 @@ describe("Doctor gateway owner repair", () => {
         displayName: "Local Owner",
       });
       expect(restored.updatedAt).toBeGreaterThan(1);
-      expect(listProfiles(options).find((profile) => profile.id === person.id)).toEqual(
+      expect(listUserProfilesSync(options).find((profile) => profile.id === person.id)).toEqual(
         personBefore,
       );
       expect(
@@ -90,6 +108,7 @@ describe("Doctor gateway owner repair", () => {
         changes: [],
         warnings: [],
       });
+      expect(readUserProfileAliasRevision()).toBe(aliasRevision + 1);
       closeOpenClawStateDatabaseForTest();
       expect(profileState(options)).toEqual(repairedState);
     },
@@ -108,6 +127,7 @@ describe("Doctor gateway owner repair", () => {
         "INSERT INTO user_profile_identities (provider, subject, profile_id, created_at) VALUES ('gateway.local', 'owner', ?, 1)",
       ).run(legacy.id);
       const before = profileState(options);
+      const aliasRevision = readUserProfileAliasRevision();
       expect(repairMergedGatewayOwnerProfile({ ...options, shouldRepair: true }).repaired).toBe(
         merged,
       );
@@ -123,6 +143,7 @@ describe("Doctor gateway owner repair", () => {
       expect(ensureGatewayOwnerProfile("Local Owner", options).id).toBe(
         merged ? "gateway-owner" : legacy.id,
       );
+      expect(readUserProfileAliasRevision()).toBe(aliasRevision);
     },
   );
 
@@ -130,12 +151,14 @@ describe("Doctor gateway owner repair", () => {
     "does not create profile state on an unused Gateway (fix: %s)",
     (shouldRepair) => {
       const options = stateOptions();
+      const aliasRevision = readUserProfileAliasRevision();
       expect(repairMergedGatewayOwnerProfile({ ...options, shouldRepair })).toEqual({
         repaired: false,
         changes: [],
         warnings: [],
       });
       expect(existsSync(options.path)).toBe(false);
+      expect(readUserProfileAliasRevision()).toBe(aliasRevision);
     },
   );
 });

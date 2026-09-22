@@ -1,6 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
-import { selectAgentHarness } from "../../agents/harness/selection.js";
+import { resolveAgentHarnessDeliveryDefaults } from "../../agents/harness/selection-decision.js";
 import {
   buildModelAliasIndex,
   resolveDefaultModelForAgent,
@@ -18,7 +18,7 @@ import { resolveStoredModelOverride } from "../../sessions/stored-model-override
 import {
   sessionDeliveryChannel,
   sessionDeliveryOrigin,
-} from "../../utils/delivery-context.shared.js";
+} from "../../utils/delivery-context.read.js";
 import { isNativeCommandTurn, resolveCommandTurnContext } from "../command-turn-context.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import { normalizeVerboseLevel } from "../thinking.js";
@@ -26,6 +26,7 @@ import {
   loadSessionStoreEntry,
   resolveSessionStorePathCore,
 } from "./dispatch-from-config.runtime.js";
+import type { ReplyRunVerbosity } from "./get-reply.types.js";
 
 type HarnessSourceVisibleRepliesDefault = "automatic" | "message_tool";
 
@@ -41,6 +42,7 @@ export function createShouldEmitVerboseProgress(params: {
   initialExplicitLevel?: string;
   fallbackLevel: string;
 }) {
+  let runVerbosity: ReplyRunVerbosity | undefined;
   const resolveCurrentExplicitLevel = () => {
     if (params.sessionKey && params.storePath) {
       try {
@@ -58,14 +60,17 @@ export function createShouldEmitVerboseProgress(params: {
     }
     return normalizeVerboseLevel(params.initialExplicitLevel ?? "");
   };
-  const resolveLevel = () => {
-    const explicitLevel = resolveCurrentExplicitLevel();
-    if (explicitLevel) {
-      return explicitLevel;
-    }
-    return normalizeVerboseLevel(params.fallbackLevel) ?? "off";
-  };
+  const resolveLevel = () =>
+    runVerbosity?.verboseLevelOverride ??
+    resolveCurrentExplicitLevel() ??
+    runVerbosity?.resolvedVerboseLevel ??
+    normalizeVerboseLevel(params.fallbackLevel) ??
+    "off";
   return {
+    noteRunVerbosity: (settings: ReplyRunVerbosity) => {
+      // A reused queued dispatcher must clear the previous turn's explicit choice.
+      runVerbosity = settings;
+    },
     shouldEmit: () => resolveLevel() !== "off",
     shouldEmitFull: () => resolveLevel() === "full",
   };
@@ -296,7 +301,7 @@ function resolveHarnessSourceVisibleRepliesDefault(params: {
         entry: params.entry,
         cfg: params.cfg,
       });
-      const harness = selectAgentHarness({
+      const defaults = resolveAgentHarnessDeliveryDefaults({
         provider: candidate.provider,
         modelId: candidate.model,
         config: params.cfg,
@@ -305,9 +310,7 @@ function resolveHarnessSourceVisibleRepliesDefault(params: {
         agentHarnessId: resolveSessionPinnedHarnessId(params.entry),
         agentHarnessRuntimeOverride,
       });
-      return (
-        harness.deliveryDefaults?.visibleReplies ?? harness.deliveryDefaults?.sourceVisibleReplies
-      );
+      return defaults?.visibleReplies ?? defaults?.sourceVisibleReplies;
     };
     const selectedModelCandidate =
       turnModelCandidate ?? storedModelCandidate ?? channelModelCandidate;

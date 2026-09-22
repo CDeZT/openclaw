@@ -7,10 +7,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { toErrorObject as toLintErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanPackedOpenClawTarballs } from "../../scripts/lib/packed-openclaw-tarballs.mts";
 import {
   assertExpectedSha256ForTest,
   cleanupPackageSourceWorktreeForTest,
-  cleanPackedOpenClawTarballsForTest,
   downloadUrl,
   findSingleTarballForTest,
   loadTrustedPackageSource,
@@ -23,6 +23,7 @@ import {
   runCommandForTest,
   validateOpenClawPackageSpec,
 } from "../../scripts/resolve-openclaw-package-candidate.mts";
+import { killPidIfAlive } from "../../src/test-utils/process-tree.js";
 import {
   isProcessAlive,
   waitForChildClose,
@@ -493,7 +494,7 @@ printf '[{"filename":"openclaw-%s.tgz"}]\\n' "$version"
     await writeFile(path.join(dir, "openclaw-9999.1.1.tgz"), "stale");
     await writeFile(path.join(dir, "openclaw-C:evil.tgz"), "unsafe");
 
-    await cleanPackedOpenClawTarballsForTest(dir);
+    await cleanPackedOpenClawTarballs(dir);
     await writeFile(path.join(dir, "openclaw-2026.6.17.tgz"), "current");
 
     await expect(
@@ -581,8 +582,8 @@ printf '[{"filename":"openclaw-%s.tgz"}]\\n' "$version"
         await releaseAndWait();
       } finally {
         killSpy.mockRestore();
-        if (childPid !== undefined && isProcessAlive(childPid)) {
-          process.kill(childPid, "SIGKILL");
+        if (childPid !== undefined) {
+          killPidIfAlive(childPid);
           await waitForDead(childPid, 2_000);
         }
       }
@@ -623,8 +624,8 @@ printf '[{"filename":"openclaw-%s.tgz"}]\\n' "$version"
       try {
         await releaseAndWait();
       } finally {
-        if (childPid !== undefined && isProcessAlive(childPid)) {
-          process.kill(childPid, "SIGKILL");
+        if (childPid !== undefined) {
+          killPidIfAlive(childPid);
           await waitForDead(childPid, 2_000);
         }
       }
@@ -674,8 +675,8 @@ printf '[{"filename":"openclaw-%s.tgz"}]\\n' "$version"
       try {
         await releaseAndWait();
       } finally {
-        if (childPid !== undefined && isProcessAlive(childPid)) {
-          process.kill(childPid, "SIGKILL");
+        if (childPid !== undefined) {
+          killPidIfAlive(childPid);
           await waitForDead(childPid, 2_000);
         }
       }
@@ -743,8 +744,8 @@ printf '[{"filename":"openclaw-%s.tgz"}]\\n' "$version"
           }
         }
       } finally {
-        if (childPid !== undefined && isProcessAlive(childPid)) {
-          process.kill(childPid, "SIGKILL");
+        if (childPid !== undefined) {
+          killPidIfAlive(childPid);
           await waitForDead(childPid, 2_000);
         }
       }

@@ -1,0 +1,568 @@
+import { createServer, type IncomingHttpHeaders, type IncomingMessage } from "node:http";
+import { Writable } from "node:stream";
+import { promisify } from "node:util";
+import { zstdCompress, zstdDecompress } from "node:zlib";
+import { createPermitPool } from "openclaw/plugin-sdk/concurrency-runtime";
+import { createNodeProxyAgent } from "openclaw/plugin-sdk/fetch-runtime";
+import { generateSecureToken } from "openclaw/plugin-sdk/secure-random-runtime";
+import {
+  fetchWithSsrFGuard,
+  isBlockedHostnameOrIp,
+  resolvePinnedHostnameWithPolicy,
+} from "openclaw/plugin-sdk/ssrf-runtime";
+import {
+  type RawData,
+  rejectWebSocketUpgrade,
+  WebSocket,
+  WebSocketServer,
+} from "openclaw/plugin-sdk/websocket-runtime";
+import { createCodexInferenceContext } from "./inference-context.js";
+import { isJsonObject } from "./protocol.js";
+
+const MAX_BODY_BYTES = 32 * 1024 * 1024;
+const MAX_ERROR_BODY_BYTES = 1024 * 1024;
+const MAX_REQUESTS = 16;
+const MAX_WEBSOCKETS = 64;
+// One extra request batch absorbs bursts while retaining TCP room for busy replies.
+const MAX_PENDING_REQUESTS = MAX_REQUESTS;
+const REQUEST_TIMEOUT_MS = 30_000;
+const HANDSHAKE_TIMEOUT_MS = 10_000;
+const IDLE_WEBSOCKET_MS = 60_000;
+const OVERLOADED = "Codex inference relay is busy; retry on a fresh connection.";
+const OVERLOAD_HEADERS = { "content-type": "application/json", "retry-after": "1" };
+const OVERLOAD_BODY = JSON.stringify({
+  type: "error",
+  status: 503,
+  // Native treats backend server_is_overloaded as terminal; local saturation must retry.
+  error: { type: "server_error", code: "inference_relay_busy", message: OVERLOADED },
+  headers: { "retry-after": "1" },
+});
+const compress = promisify(zstdCompress);
+const decompress = promisify(zstdDecompress);
+const HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "host",
+  "content-length",
+]);
+const FAILURE = "Codex parent-local inference transport failed; retry on a fresh connection.";
+
+/** Private, fixed-destination relay. No upstream credentials or model content are retained. */
+export async function createCodexInferenceProxy(params: {
+  upstream: URL;
+  assertCurrent: () => void;
+}) {
+  const upstream = new URL(params.upstream);
+  if (upstream.protocol !== "https:" || upstream.username || upstream.password || upstream.hash) {
+    throw new Error("Codex inference requires a credential-free HTTPS upstream URL");
+  }
+  const lifetime = new AbortController();
+  const assertCurrent = () => {
+    lifetime.signal.throwIfAborted();
+    params.assertCurrent();
+  };
+  const context = createCodexInferenceContext(assertCurrent);
+  // Keep the native backend suffix; Codex uses it to select Guardian/backend surfaces.
+  const pathPrefix =
+    "/" + generateSecureToken({ bytes: 32, redact: true }) + upstream.pathname.replace(/\/$/, "");
+  const permits = createPermitPool(MAX_REQUESTS);
+  let pendingCount = 0;
+  let pendingBytes = 0;
+  // Queue only bounded work, not whole turns: a parent may be waiting on children
+  // that need this same pool. HTTP waits before reading its body; WS frames own bytes.
+  const acquire = async (signal: AbortSignal, deadlineAtMs: number, bytes = 0) => {
+    if (pendingCount >= MAX_PENDING_REQUESTS || pendingBytes + bytes > MAX_BODY_BYTES) {
+      return null;
+    }
+    pendingCount++;
+    pendingBytes += bytes;
+    try {
+      return await permits.acquire({ signal, deadlineAtMs });
+    } finally {
+      pendingCount--;
+      pendingBytes -= bytes;
+    }
+  };
+  const sockets = new Set<WebSocket>();
+  const connections = new Set<() => void>();
+  const idleConnections = new Set<() => void>();
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_BODY_BYTES,
+    perMessageDeflate: false,
+  });
+  const handshakeHeaders = new WeakMap<IncomingMessage, Record<string, string>>();
+  wss.on("headers", (headers, request) => {
+    for (const [key, value] of Object.entries(handshakeHeaders.get(request) ?? {})) {
+      if (!key.startsWith("sec-websocket-")) {
+        headers.push(key + ": " + value);
+      }
+    }
+    handshakeHeaders.delete(request);
+  });
+  const resolveTarget = (request: IncomingMessage) => {
+    assertCurrent();
+    if (
+      request.headers.origin ||
+      !request.url?.startsWith(pathPrefix + "/") ||
+      isBlockedHostnameOrIp(upstream.hostname)
+    ) {
+      throw new Error(FAILURE);
+    }
+    // Raw prefix comparison authenticates the private route; URL normalization never broadens it.
+    const suffix = request.url.slice(pathPrefix.length);
+    if (
+      suffix.startsWith("//") ||
+      suffix.includes("\\") ||
+      /%2e|%2f|%5c|(?:^|\/)\.\.?(?:\/|\?|$)/i.test(suffix)
+    ) {
+      throw new Error(FAILURE);
+    }
+    const target = new URL(upstream);
+    const incoming = new URL(suffix, "http://localhost");
+    target.pathname = upstream.pathname.replace(/\/$/, "") + incoming.pathname;
+    for (const [key, value] of incoming.searchParams) {
+      target.searchParams.append(key, value);
+    }
+    return { target, sampling: incoming.pathname === "/responses" };
+  };
+  const prepare = (bytes: Buffer, sampling: boolean) => {
+    assertCurrent();
+    if (!sampling) {
+      return { bytes, assertCurrent, signal: undefined };
+    }
+    const value: unknown = JSON.parse(bytes.toString("utf8"));
+    if (!isJsonObject(value)) {
+      throw new Error(FAILURE);
+    }
+    const prepared = context.prepare(value);
+    const rewritten = Buffer.from(JSON.stringify(prepared.body));
+    if (rewritten.length > MAX_BODY_BYTES) {
+      throw new Error(FAILURE);
+    }
+    return { ...prepared, bytes: rewritten };
+  };
+  const server = createServer((req, res) => {
+    const controller = new AbortController();
+    const signal = AbortSignal.any([lifetime.signal, controller.signal]);
+    const deadlineAtMs = Date.now() + REQUEST_TIMEOUT_MS;
+    let releasePermit: (() => void) | null = null;
+    let guarded: Awaited<ReturnType<typeof fetchWithSsrFGuard>> | undefined;
+    const abort = () => controller.abort();
+    req.once("aborted", abort);
+    res.once("close", abort);
+    void (async () => {
+      try {
+        const { target, sampling } = resolveTarget(req);
+        if (req.method !== "POST") {
+          throw new Error(FAILURE);
+        }
+        releasePermit = await acquire(signal, deadlineAtMs);
+        signal.throwIfAborted();
+        assertCurrent();
+        if (!releasePermit) {
+          res.writeHead(503, { ...OVERLOAD_HEADERS, connection: "close" }).end(OVERLOAD_BODY);
+          return;
+        }
+        const wire = await readProxyBody(req, MAX_BODY_BYTES);
+        const encoding = req.headers["content-encoding"];
+        if (encoding && encoding !== "identity" && encoding !== "zstd") {
+          throw new Error(FAILURE);
+        }
+        const decoded =
+          encoding === "zstd" ? await decompress(wire, { maxOutputLength: MAX_BODY_BYTES }) : wire;
+        assertCurrent();
+        const prepared = prepare(decoded, sampling);
+        // Materialize ArrayBuffer-backed bytes for the web Fetch body contract.
+        const body = Buffer.from(
+          encoding === "zstd" ? await compress(prepared.bytes) : prepared.bytes,
+        );
+        prepared.assertCurrent();
+        const requestSignal = AbortSignal.any([
+          signal,
+          ...(prepared.signal ? [prepared.signal] : []),
+        ]);
+        guarded = await fetchWithSsrFGuard({
+          url: target.toString(),
+          init: { method: "POST", headers: relayHeaders(req.headers), body, signal: requestSignal },
+          signal: requestSignal,
+          beforeRequest: prepared.assertCurrent,
+          requireHttps: true,
+          maxRedirects: 0,
+          capture: false,
+          mode: "trusted_env_proxy",
+          auditContext: "codex-parent-local-inference",
+        });
+        prepared.assertCurrent();
+        // fetch decodes response content encodings. Never forward stale encoding/length headers.
+        const headers = Object.fromEntries(guarded.response.headers);
+        delete headers["content-encoding"];
+        res.writeHead(guarded.response.status, relayHeaders(headers));
+        if (!guarded.response.body) {
+          res.end();
+        } else {
+          await guarded.response.body.pipeTo(Writable.toWeb(res), { signal: requestSignal });
+        }
+      } catch {
+        // Errors can contain headers, bodies, or the private URL: never log/reflect them.
+        if (!res.headersSent && !res.destroyed) {
+          res.writeHead(502, { "content-type": "text/plain" }).end(FAILURE);
+        } else {
+          res.destroy();
+        }
+      } finally {
+        releasePermit?.();
+        req.off("aborted", abort);
+        res.off("close", abort);
+        await guarded?.release().catch(() => undefined);
+      }
+    })();
+  });
+  // Leave HTTP/failure-response headroom beyond the separately bounded WS pool.
+  // This last-resort TCP ceiling must not be the normal inference admission limit.
+  server.maxConnections = MAX_WEBSOCKETS + MAX_REQUESTS * 4;
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
+  server.headersTimeout = HANDSHAKE_TIMEOUT_MS;
+  server.on("upgrade", (req, socket, head) => {
+    void (async () => {
+      let remote: WebSocket | undefined;
+      let local: WebSocket | undefined;
+      let proxyAgent: ReturnType<typeof createNodeProxyAgent>;
+      const controller = new AbortController();
+      const deadlineAtMs = Date.now() + HANDSHAKE_TIMEOUT_MS;
+      let releasePermit: (() => void) | null = null;
+      let framePending = false;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
+      const close = () => {
+        clearTimeout(idleTimer);
+        clearTimeout(handshakeTimer);
+        socket.off("end", close);
+        connections.delete(close);
+        idleConnections.delete(close);
+        controller.abort();
+        releasePermit?.();
+        releasePermit = null;
+        remote?.terminate();
+        local?.terminate();
+        proxyAgent?.destroy();
+        if (remote) {
+          sockets.delete(remote);
+        }
+        if (local) {
+          sockets.delete(local);
+        }
+        socket.destroy();
+      };
+      try {
+        const { target, sampling } = resolveTarget(req);
+        if (!sampling) {
+          throw new Error(FAILURE);
+        }
+        if (connections.size >= MAX_WEBSOCKETS) {
+          // Prefer reclaiming the oldest proven-idle transport to rejecting new work.
+          idleConnections.values().next().value?.();
+        }
+        if (connections.size >= MAX_WEBSOCKETS) {
+          rejectWebSocketUpgrade(socket, {
+            status: 503,
+            headers: { "Retry-After": "1" },
+            body: { contentType: "application/json", text: OVERLOAD_BODY },
+          });
+          return;
+        }
+        connections.add(close);
+        socket.once("close", close);
+        socket.once("error", close);
+        // Raw HTTP upgrades stay half-open after FIN until ws owns the socket.
+        // Cancel pending admission before it can dial for a disconnected caller.
+        socket.once("end", close);
+        const signal = AbortSignal.any([lifetime.signal, controller.signal]);
+        // Admission precedes the upstream dial. Complete the real upstream handshake
+        // before local 101 so native auth errors and negotiated headers stay intact.
+        releasePermit = await acquire(signal, deadlineAtMs);
+        signal.throwIfAborted();
+        assertCurrent();
+        if (!releasePermit) {
+          rejectWebSocketUpgrade(socket, {
+            status: 503,
+            headers: { "Retry-After": "1" },
+            body: { contentType: "application/json", text: OVERLOAD_BODY },
+          });
+          return;
+        }
+        // Queueing, DNS and the remote handshake share one native-compatible deadline.
+        handshakeTimer = setTimeout(close, Math.max(1, deadlineAtMs - Date.now()));
+        handshakeTimer.unref();
+        const assertHandshakeCurrent = () => {
+          assertCurrent();
+          signal.throwIfAborted();
+          if (Date.now() >= deadlineAtMs) {
+            throw new Error(FAILURE);
+          }
+        };
+        // Trusted proxies own destination DNS; direct connections retain DNS pinning.
+        proxyAgent = createNodeProxyAgent({ mode: "env", targetUrl: target.href });
+        const lookup = proxyAgent
+          ? undefined
+          : (await resolvePinnedHostnameWithPolicy(target.hostname, { signal })).lookup;
+        assertHandshakeCurrent();
+        target.protocol = "wss:";
+        const headers = relayHeaders(req.headers);
+        for (const key of Object.keys(headers)) {
+          if (key.startsWith("sec-websocket-")) {
+            delete headers[key];
+          }
+        }
+        remote = new WebSocket(target, {
+          headers,
+          ...(proxyAgent ? { agent: proxyAgent } : { lookup }),
+          followRedirects: false,
+          perMessageDeflate: false,
+          maxPayload: MAX_BODY_BYTES,
+          handshakeTimeout: Math.max(1, deadlineAtMs - Date.now()),
+        });
+        sockets.add(remote);
+        remote.once("upgrade", (response) => {
+          handshakeHeaders.set(req, relayHeaders(response.headers));
+        });
+        remote.once("error", close);
+        remote.once("close", close);
+        // Native auth/retry classification consumes the complete HTTP failure, not only status.
+        remote.once("unexpected-response", (_request, response) => {
+          void (async () => {
+            try {
+              const body = await readProxyBody(response, MAX_ERROR_BODY_BYTES);
+              assertCurrent();
+              signal.throwIfAborted();
+              const failureHeaders = Object.entries(relayHeaders(response.headers)).map(
+                ([key, value]) => key + ": " + value,
+              );
+              failureHeaders.push("Connection: close", "Content-Length: " + body.length);
+              const status =
+                "HTTP/1.1 " +
+                response.statusCode +
+                " " +
+                (response.statusMessage ?? "Upstream refused");
+              socket.end(
+                Buffer.concat([
+                  Buffer.from(status + "\r\n" + failureHeaders.join("\r\n") + "\r\n\r\n"),
+                  body,
+                ]),
+                close,
+              );
+            } catch {
+              close();
+            }
+          })();
+        });
+        remote.once("open", () => {
+          try {
+            assertHandshakeCurrent();
+            wss.handleUpgrade(req, socket, head, (accepted) => {
+              clearTimeout(handshakeTimer);
+              socket.off("end", close);
+              local = accepted;
+              sockets.add(accepted);
+              accepted.once("error", close);
+              accepted.once("close", close);
+              let releaseFrame = () => {};
+              const idle = () => {
+                releasePermit?.();
+                releasePermit = null;
+                framePending = false;
+                idleConnections.delete(close);
+                idleConnections.add(close);
+                clearTimeout(idleTimer);
+                idleTimer = setTimeout(close, IDLE_WEBSOCKET_MS);
+                idleTimer.unref();
+              };
+              idle();
+              const forward = async (prepared: ReturnType<typeof prepare>) => {
+                try {
+                  const requestSignal = AbortSignal.any([
+                    signal,
+                    ...(prepared.signal ? [prepared.signal] : []),
+                  ]);
+                  releasePermit = await acquire(
+                    requestSignal,
+                    Date.now() + REQUEST_TIMEOUT_MS,
+                    prepared.bytes.length,
+                  );
+                  requestSignal.throwIfAborted();
+                  prepared.assertCurrent();
+                  if (!releasePermit) {
+                    accepted.send(OVERLOAD_BODY, { binary: false }, close);
+                    return;
+                  }
+                  if (
+                    !remote ||
+                    remote.readyState !== WebSocket.OPEN ||
+                    remote.bufferedAmount + prepared.bytes.length > MAX_BODY_BYTES
+                  ) {
+                    throw new Error(FAILURE);
+                  }
+                  remote.send(prepared.bytes, { binary: false }, (error) => {
+                    if (error) {
+                      close();
+                    }
+                  });
+                } catch {
+                  close();
+                }
+              };
+              accepted.on("message", (data, binary) => {
+                try {
+                  if (binary) {
+                    throw new Error(FAILURE);
+                  }
+                  const prepared = prepare(rawBytes(data), true);
+                  prepared.assertCurrent();
+                  // Native serializes response.create calls on a reusable connection.
+                  if (framePending) {
+                    throw new Error(FAILURE);
+                  }
+                  framePending = true;
+                  clearTimeout(idleTimer);
+                  idleConnections.delete(close);
+                  // A WS may serve later turns. Replace the old generation's abort listener.
+                  releaseFrame();
+                  const onAbort = () => close();
+                  prepared.signal?.addEventListener("abort", onAbort, { once: true });
+                  releaseFrame = () => prepared.signal?.removeEventListener("abort", onAbort);
+                  void forward(prepared);
+                } catch {
+                  close();
+                }
+              });
+              accepted.once("close", () => releaseFrame());
+              remote!.on("message", (data: RawData, binary: boolean) => {
+                if (
+                  accepted.readyState !== WebSocket.OPEN ||
+                  accepted.bufferedAmount + rawBytes(data).length > MAX_BODY_BYTES
+                ) {
+                  close();
+                  return;
+                }
+                // Prewarm and completed responses retain their WS for later turns,
+                // but no longer own an in-flight request slot. Unknown events never
+                // prove quiescence; leave the stream active until native closes it.
+                const terminal = !binary && isTerminalResponse(rawBytes(data));
+                accepted.send(data, { binary }, (error) => {
+                  if (error) {
+                    close();
+                  } else if (terminal && connections.has(close)) {
+                    // Do not evict a transport while its final frame is still buffered.
+                    idle();
+                  }
+                });
+              });
+            });
+          } catch {
+            close();
+          }
+        });
+      } catch {
+        close();
+      }
+    })();
+  });
+  const close = () => {
+    lifetime.abort();
+    context.close();
+    for (const closeConnection of connections) {
+      closeConnection();
+    }
+    for (const socket of sockets) {
+      socket.terminate();
+    }
+    server.close();
+    server.closeAllConnections();
+    wss.close();
+  };
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+    assertCurrent();
+    server.on("error", close);
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error(FAILURE);
+    }
+    return {
+      context,
+      upstream: upstream.toString(),
+      baseUrl: "http://127.0.0.1:" + address.port + pathPrefix,
+      assertCurrent,
+      close,
+    };
+  } catch (error) {
+    close();
+    throw error;
+  }
+}
+
+function isTerminalResponse(bytes: Buffer): boolean {
+  try {
+    const event: unknown = JSON.parse(bytes.toString("utf8"));
+    return (
+      isJsonObject(event) &&
+      (event.type === "response.failed" ||
+        event.type === "response.incomplete" ||
+        (event.type === "response.completed" &&
+          isJsonObject(event.response) &&
+          typeof event.response.id === "string"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function readProxyBody(stream: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of stream) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += bytes.length;
+    if (size > maxBytes) {
+      throw new Error(FAILURE);
+    }
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks);
+}
+
+function rawBytes(data: RawData): Buffer {
+  return Array.isArray(data)
+    ? Buffer.concat(data)
+    : Buffer.isBuffer(data)
+      ? data
+      : Buffer.from(data);
+}
+
+function relayHeaders(input: IncomingHttpHeaders): Record<string, string> {
+  const excluded = new Set(HOP_HEADERS);
+  for (const token of (input.connection ?? "").split(",")) {
+    excluded.add(token.trim().toLowerCase());
+  }
+  const output: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value !== undefined && !excluded.has(key.toLowerCase())) {
+      output[key.toLowerCase()] = Array.isArray(value) ? value.join(", ") : value;
+    }
+  }
+  return output;
+}
+
+export type CodexInferenceProxy = Awaited<ReturnType<typeof createCodexInferenceProxy>>;

@@ -1,9 +1,14 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as deviceTokens from "../../../infra/device-pairing-tokens.js";
+import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import { ensureProfileForEmail, linkEmail } from "../../../state/user-profiles.js";
+import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
+import { deviceHandlers } from "../../server-methods/devices.js";
 import { createSecretsHandlers } from "../../server-methods/secrets.js";
 import type { GatewayRequestOptions } from "../../server-methods/types.js";
-import { disconnectAllSharedGatewayAuthClients } from "../../server-shared-auth-generation.js";
+import { disconnectStaleSharedGatewayAuthClients } from "../../server-shared-auth-generation.js";
 import { holdGatewayPolicyResponse } from "../ws-policy-close.js";
 import {
   createDispatchTestHarness,
@@ -33,6 +38,92 @@ describe("policy writer response ownership", () => {
     runtime.handler.mockReset();
   });
 
+  it.each(["success", "error", "throw"] as const)(
+    "redacts a held %s response after a real profile merge despite the policy-close exception",
+    async (outcome) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const source = ensureProfileForEmail("policy-source@example.test");
+        const target = ensureProfileForEmail("policy-target@example.test");
+        const fixture = createFixture();
+        fixture.client.authenticatedUserProfile = {
+          profileId: source.id,
+          displayName: null,
+          avatarRevision: "1",
+          hasAvatar: false,
+          updatedAt: source.updatedAt,
+        };
+        const entered = createDeferredCore();
+        const release = createDeferredCore();
+        const receipt = { committed: true, accountData: "original-account-result" };
+        const { handleGatewayRequest } =
+          await vi.importActual<typeof import("../../server-methods.js")>(
+            "../../server-methods.js",
+          );
+        runtime.handler.mockImplementation((options: GatewayRequestOptions) =>
+          handleGatewayRequest({
+            ...options,
+            context: {
+              ...options.context,
+              getRuntimeConfig: () => ({}),
+              logGateway: {
+                ...createSubsystemLogger("gateway-test"),
+                ...fixture.harness.logGateway,
+              },
+            },
+            extraHandlers: {
+              "config.patch": async ({ respond }) => {
+                holdGatewayPolicyResponse(respond);
+                entered.resolve();
+                await release.promise;
+                if (outcome === "throw") {
+                  throw new Error("original-account-error");
+                }
+                respond(outcome === "success", receipt, {
+                  code: "UNAVAILABLE",
+                  message: "original-account-error",
+                });
+              },
+            },
+          }),
+        );
+        const request = fixture.harness.dispatcher.dispatch(
+          {
+            type: "req",
+            id: "bound-writer",
+            method: "config.patch",
+            params: {},
+            expectedProfileId: source.id,
+          },
+          fixture.client,
+        );
+        try {
+          await Promise.race([entered.promise, request]);
+          linkEmail("policy-source@example.test", target.id);
+          // The accepted policy writer may bypass transport invalidation, never profile binding.
+          disconnectStaleSharedGatewayAuthClients({
+            clients: [fixture.client],
+            expectedGeneration: null,
+          });
+          release.resolve();
+          await request;
+          expect(await fixture.harness.awaitResponseFrame("bound-writer")).toEqual({
+            type: "res",
+            id: "bound-writer",
+            ok: false,
+            payload: undefined,
+            error: expect.objectContaining({
+              details: { reason: "EXPECTED_PROFILE_MISMATCH", execution: "may_have_executed" },
+            }),
+          });
+          expect(fixture.socketClose).toHaveBeenCalledOnce();
+        } finally {
+          release.resolve();
+          await request;
+        }
+      });
+    },
+  );
+
   it.each([false, true])(
     "delivers a secrets activation result before closing (failed=%s)",
     async (failed) => {
@@ -41,7 +132,10 @@ describe("policy writer response ownership", () => {
       const release = createDeferredCore();
       const handlers = createSecretsHandlers({
         reloadSecrets: async () => {
-          disconnectAllSharedGatewayAuthClients([fixture.client]);
+          disconnectStaleSharedGatewayAuthClients({
+            clients: [fixture.client],
+            expectedGeneration: null,
+          });
           published.resolve();
           await release.promise;
           if (failed) {
@@ -65,66 +159,157 @@ describe("policy writer response ownership", () => {
           params: {},
         });
       });
-      await fixture.dispatch("writer");
-      await published.promise;
-      expect(fixture.client.invalidated).toBe(true);
-      expect(fixture.socketClose).not.toHaveBeenCalled();
-      await fixture.dispatch("revoked", "health");
-      expect(runtime.handler).toHaveBeenCalledOnce();
-      expect(fixture.harness.send).not.toHaveBeenCalled();
-      release.resolve();
-      expect(await fixture.harness.awaitResponseFrame("writer")).toMatchObject({
-        ok: !failed,
-        ...(failed ? { error: { message: "secrets.reload failed" } } : {}),
-      });
-      await fixture.closed.promise;
-      expect(fixture.socketClose).toHaveBeenCalledExactlyOnceWith(4001, "gateway auth changed");
-      expect(fixture.harness.send).toHaveBeenCalledBefore(fixture.socketClose);
+      const dispatch = fixture.dispatch("writer");
+      try {
+        await published.promise;
+        expect(fixture.client.invalidated).toBe(true);
+        expect(fixture.socketClose).not.toHaveBeenCalled();
+        await fixture.dispatch("revoked", "health");
+        expect(runtime.handler).toHaveBeenCalledOnce();
+        expect(fixture.harness.send).not.toHaveBeenCalled();
+        release.resolve();
+        expect(await fixture.harness.awaitResponseFrame("writer")).toMatchObject({
+          ok: !failed,
+          ...(failed ? { error: { message: "secrets.reload failed" } } : {}),
+        });
+        await fixture.closed.promise;
+        expect(fixture.socketClose).toHaveBeenCalledExactlyOnceWith(4001, "gateway auth changed");
+        expect(fixture.harness.send).toHaveBeenCalledBefore(fixture.socketClose);
+      } finally {
+        release.resolve();
+        await dispatch;
+      }
     },
   );
 
-  it("keeps only accepted concurrent writer results, then closes after the last result", async () => {
-    const fixture = createFixture();
-    const writers = ["first", "second"].map((id) => ({
-      id,
-      started: createDeferredCore(),
-      release: createDeferredCore(),
-    }));
-    const readStarted = createDeferredCore();
-    const readRelease = createDeferredCore();
-    const readFinished = createDeferredCore();
-    runtime.handler.mockImplementation(async ({ req, respond }) => {
-      const writer = writers.find(({ id }) => id === req.id);
-      if (writer) {
-        holdGatewayPolicyResponse(respond);
-        writer.started.resolve();
-        await writer.release.promise;
-        respond(true, { committed: req.id });
-      } else {
-        readStarted.resolve();
-        await readRelease.promise;
-        respond(true, { private: "old-authority-read" });
-        readFinished.resolve();
+  it.each(["config.patch", "device.token.rotate", "device.token.revoke", "device.pair.remove"])(
+    "keeps only accepted %s results, then closes after the last result",
+    async (method) => {
+      const fixture = createFixture();
+      const writers = (method === "config.patch" ? ["first", "second"] : ["first"]).map((id) => ({
+        id,
+        started: createDeferredCore(),
+        release: createDeferredCore(),
+      }));
+      const readStarted = createDeferredCore();
+      const readRelease = createDeferredCore();
+      runtime.handler.mockImplementation(async ({ req, respond }) => {
+        const writer = writers.find(({ id }) => id === req.id);
+        if (writer) {
+          holdGatewayPolicyResponse(respond);
+          writer.started.resolve();
+          await writer.release.promise;
+          respond(true, { committed: req.id });
+        } else {
+          readStarted.resolve();
+          await readRelease.promise;
+          respond(true, { private: "old-authority-read" });
+        }
+      });
+      const dispatches = [fixture.dispatch("read", "health")];
+      try {
+        await readStarted.promise;
+        for (const writer of writers) {
+          dispatches.push(fixture.dispatch(writer.id, method));
+          await writer.started.promise;
+        }
+        disconnectStaleSharedGatewayAuthClients({
+          clients: [fixture.client],
+          expectedGeneration: null,
+        });
+        readRelease.resolve();
+        await dispatches[0];
+        expect(fixture.harness.send).not.toHaveBeenCalled();
+        for (const [index, writer] of writers.entries()) {
+          expect(fixture.socketClose).not.toHaveBeenCalled();
+          writer.release.resolve();
+          expect(await fixture.harness.awaitResponseFrame(writer.id)).toMatchObject({ ok: true });
+          expect(fixture.harness.send).toHaveBeenCalledTimes(index + 1);
+        }
+        await fixture.closed.promise;
+        expect(fixture.socketClose).toHaveBeenCalledOnce();
+      } finally {
+        readRelease.resolve();
+        for (const writer of writers) {
+          writer.release.resolve();
+        }
+        await Promise.all(dispatches);
       }
+    },
+  );
+
+  it("does not reserve a replacement bearer before the token mutation finishes", async () => {
+    const fixture = createFixture();
+    fixture.client.isDeviceTokenAuth = true;
+    fixture.client.usesSharedGatewayAuth = false;
+    fixture.client.connect.device = {
+      id: "self",
+      publicKey: "public",
+      signature: "signature",
+      signedAt: 1,
+      nonce: "nonce",
+    };
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
+    const closed = createDeferredCore();
+    const invalidateClientsForDevice = vi.fn();
+    const disconnectClientsForDevice = vi.fn();
+    fixture.harness.close.mockImplementation(() => closed.resolve());
+    const rotate = vi.spyOn(deviceTokens, "rotateDeviceToken").mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return {
+        ok: true,
+        entry: {
+          token: "synthetic-replacement",
+          role: "operator",
+          scopes: ["operator.pairing"],
+          createdAtMs: 1,
+        },
+      };
     });
-    await fixture.dispatch("read", "health");
-    await readStarted.promise;
-    for (const writer of writers) {
-      await fixture.dispatch(writer.id, "config.patch");
-      await writer.started.promise;
+    runtime.handler.mockImplementation(async (options) => {
+      await expectDefined(
+        deviceHandlers[options.req.method],
+        options.req.method,
+      )({
+        ...options,
+        params: { deviceId: "self", role: "operator" },
+        context: {
+          ...options.context,
+          logGateway: { ...createSubsystemLogger("gateway-test"), ...fixture.harness.logGateway },
+          invalidateClientsForDevice,
+          disconnectClientsForDevice,
+        },
+      });
+    });
+    const dispatch = fixture.dispatch("writer", "device.token.rotate");
+    try {
+      await entered.promise;
+      // Invalidation is the authority fence; defer transport close so the test
+      // detects an illicit held response even when the socket could still send.
+      fixture.client.invalidated = true;
+      fixture.client.invalidatedReason = "device-token-revoked";
+      release.resolve();
+      await Promise.race([closed.promise, fixture.harness.awaitResponseFrame("writer")]);
+      expect(fixture.harness.send.mock.calls.length).toBe(0);
+      expect(fixture.harness.close).toHaveBeenCalledWith(
+        4001,
+        "client invalidated: device-token-revoked",
+      );
+      expect(invalidateClientsForDevice).toHaveBeenCalledWith("self", {
+        role: "operator",
+        reason: "device-token-rotated",
+      });
+      expect(disconnectClientsForDevice).toHaveBeenCalledWith("self", { role: "operator" });
+    } finally {
+      release.resolve();
+      try {
+        await dispatch;
+      } finally {
+        rotate.mockRestore();
+      }
     }
-    disconnectAllSharedGatewayAuthClients([fixture.client]);
-    readRelease.resolve();
-    await readFinished.promise;
-    expect(fixture.harness.send).not.toHaveBeenCalled();
-    for (const [index, writer] of writers.entries()) {
-      expect(fixture.socketClose).not.toHaveBeenCalled();
-      writer.release.resolve();
-      expect(await fixture.harness.awaitResponseFrame(writer.id)).toMatchObject({ ok: true });
-      expect(fixture.harness.send).toHaveBeenCalledTimes(index + 1);
-    }
-    await fixture.closed.promise;
-    expect(fixture.socketClose).toHaveBeenCalledOnce();
   });
 
   it.each(["throw", "return"])(
@@ -133,7 +318,10 @@ describe("policy writer response ownership", () => {
       const fixture = createFixture();
       runtime.handler.mockImplementation(async ({ respond }) => {
         holdGatewayPolicyResponse(respond);
-        disconnectAllSharedGatewayAuthClients([fixture.client]);
+        disconnectStaleSharedGatewayAuthClients({
+          clients: [fixture.client],
+          expectedGeneration: null,
+        });
         if (completion === "throw") {
           throw new Error("write failed");
         }

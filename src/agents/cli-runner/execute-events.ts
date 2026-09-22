@@ -1,5 +1,8 @@
+import { projectAgentToolActivity } from "../../infra/agent-activity-events.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { emitTrustedDiagnosticEvent } from "../../infra/diagnostic-events.js";
+import { projectProgressCardChannelUpdate } from "../../session-cards/progress-card-channel-summary.js";
+import { isAgentPlanProgressToolName } from "../../session-cards/progress-card-input.js";
 import type {
   CliCompactionDelta,
   CliStreamingDelta,
@@ -41,7 +44,28 @@ export function createCliEventHandlers(params: {
   const toolSummaryById = new Map<string, { name: string; failed: boolean }>();
   // CLI results report an outcome without repeating the request, so the terminal
   // progress event would otherwise describe the output instead of the command.
-  const toolArgsByCallId = new Map<string, Record<string, unknown>>();
+  const toolArgsByCallId = new Map<string, { args: Record<string, unknown>; tracked: boolean }>();
+  const emitToolEvent = (
+    data: Parameters<typeof projectAgentToolActivity>[0] & {
+      result?: unknown;
+      resultContentSource?: "network";
+    },
+    execution?: { args: unknown },
+  ) => {
+    const item = projectAgentToolActivity({
+      ...data,
+      name: stripOpenClawMcpToolPrefix(data.name),
+      args: execution ? execution.args : data.args,
+    });
+    const activity = { runId: runParams.runId, stream: "item", data: item };
+    if (data.phase === "start") {
+      emitAgentEvent(activity);
+    }
+    emitAgentEvent({ runId: runParams.runId, stream: "tool", data });
+    if (data.phase !== "start") {
+      emitAgentEvent(activity);
+    }
+  };
   const toolSummaryNames: string[] = [];
   const toolSummaryNameSet = new Set<string>();
   const activeParsedTools = new Map<
@@ -55,27 +79,15 @@ export function createCliEventHandlers(params: {
     toolSummaryNameSet.add(name);
     toolSummaryNames.push(name);
   };
-  const recordToolStart = (event: CliToolUseStartDelta) => {
-    if (event.args && Object.keys(event.args).length > 0) {
-      toolArgsByCallId.set(event.toolCallId, event.args);
-    }
-    const current = toolSummaryById.get(event.toolCallId);
-    if (!current) {
-      toolSummaryById.set(event.toolCallId, { name: event.name, failed: false });
-    } else if (!current.name && event.name) {
-      current.name = event.name;
-    }
-    rememberToolName(event.name);
-  };
-  const recordToolResult = (event: CliToolResult) => {
+  const recordToolSummary = (event: { toolCallId: string; name: string }, failed: boolean) => {
     const current = toolSummaryById.get(event.toolCallId);
     if (current) {
-      current.failed ||= event.isError;
+      current.failed ||= failed;
       if (!current.name && event.name) {
         current.name = event.name;
       }
     } else {
-      toolSummaryById.set(event.toolCallId, { name: event.name, failed: event.isError });
+      toolSummaryById.set(event.toolCallId, { name: event.name, failed });
     }
     rememberToolName(event.name);
   };
@@ -84,9 +96,11 @@ export function createCliEventHandlers(params: {
     tools: toolSummaryNames.slice(),
     failures: Array.from(toolSummaryById.values()).filter((entry) => entry.failed).length,
   });
-  const emitCliToolUseStart = (event: CliToolUseStartDelta) => {
+  const emitToolUseStart = (event: CliToolUseStartDelta, tracked: boolean) => {
     observedCliActivity = true;
-    recordToolStart(event);
+    // Empty arguments are meaningful: progress-card calls use {} to clear the card.
+    toolArgsByCallId.set(event.toolCallId, { args: event.args, tracked });
+    recordToolSummary(event, false);
     if (!signaledToolExecutionStarted) {
       signaledToolExecutionStarted = true;
       runParams.onExecutionPhase?.({
@@ -96,90 +110,73 @@ export function createCliEventHandlers(params: {
         backend: context.backendResolved.id,
       });
     }
-    params.toolTracking.handleCliToolUseStart(event);
+    if (tracked) {
+      params.toolTracking.handleCliToolUseStart(event);
+    }
     if (emitLiveEvents) {
-      emitAgentEvent({
-        runId: runParams.runId,
-        stream: "tool",
-        data: {
-          phase: "start",
-          name: event.name,
-          toolCallId: event.toolCallId,
-          args: sanitizeToolArgs(event.args),
-        },
+      emitToolEvent({
+        phase: "start",
+        name: event.name,
+        toolCallId: event.toolCallId,
+        args: sanitizeToolArgs(event.args),
       });
     }
   };
-  const emitCliToolResult = (event: CliToolResult) => {
+  const emitToolResult = (event: CliToolResult, tracked: boolean) => {
     observedCliActivity = true;
-    recordToolResult(event);
-    params.toolTracking.handleCliToolResult(event);
+    recordToolSummary(event, event.isError);
+    const loopbackOutcome = tracked
+      ? params.toolTracking.resolveCliLoopbackTerminalOutcome(event.toolCallId)
+      : undefined;
+    const executedArgs = tracked ? params.toolTracking.handleCliToolResult(event) : undefined;
     if (emitLiveEvents) {
-      const resultContentSource = context.resultContentSourceByToolName?.get(
-        stripOpenClawMcpToolPrefix(event.name),
-      );
-      const startedArgs = toolArgsByCallId.get(event.toolCallId);
+      const strippedName = stripOpenClawMcpToolPrefix(event.name);
+      const resultContentSource = tracked
+        ? context.resultContentSourceByToolName?.get(strippedName)
+        : undefined;
+      const startedCall = toolArgsByCallId.get(event.toolCallId);
+      const startedArgs = startedCall?.args;
       toolArgsByCallId.delete(event.toolCallId);
-      emitAgentEvent({
-        runId: runParams.runId,
-        stream: "tool",
-        data: {
+      const planUpdate =
+        tracked &&
+        startedCall?.tracked &&
+        !event.isError &&
+        (!loopbackOutcome || loopbackOutcome.outcome === "completed") &&
+        isAgentPlanProgressToolName(strippedName)
+          ? projectProgressCardChannelUpdate(executedArgs ?? startedArgs)
+          : undefined;
+      if (planUpdate) {
+        emitAgentEvent({
+          runId: runParams.runId,
+          stream: "plan",
+          data: {
+            phase: "update",
+            title: "Plan updated",
+            source: "openclaw",
+            ...planUpdate,
+          },
+        });
+      }
+      emitToolEvent(
+        {
           phase: "result",
           name: event.name,
           toolCallId: event.toolCallId,
           isError: event.isError,
           result: sanitizeToolResult(event.result),
-          ...(startedArgs ? { args: sanitizeToolArgs(startedArgs) } : {}),
+          ...(tracked && startedArgs ? { args: sanitizeToolArgs(startedArgs) } : {}),
           ...(resultContentSource ? { resultContentSource } : {}),
         },
-      });
+        { args: tracked ? executedArgs : startedArgs },
+      );
     }
   };
-  // Plugin-parsed events describe native work already performed by the backend.
-  // Render and summarize them without host-tool correlation or delivery evidence.
-  const emitCliDisplayToolUseStart = (event: CliToolUseStartDelta) => {
-    observedCliActivity = true;
-    recordToolStart(event);
-    if (!signaledToolExecutionStarted) {
-      signaledToolExecutionStarted = true;
-      runParams.onExecutionPhase?.({
-        phase: "tool_execution_started",
-        provider: runParams.provider,
-        model: context.modelId,
-        backend: context.backendResolved.id,
-      });
-    }
-    if (emitLiveEvents) {
-      emitAgentEvent({
-        runId: runParams.runId,
-        stream: "tool",
-        data: {
-          phase: "start",
-          name: event.name,
-          toolCallId: event.toolCallId,
-          args: sanitizeToolArgs(event.args),
-        },
-      });
-    }
-  };
-  const emitCliDisplayToolResult = (event: CliToolResult) => {
-    observedCliActivity = true;
-    recordToolResult(event);
-    if (emitLiveEvents) {
-      toolArgsByCallId.delete(event.toolCallId);
-      emitAgentEvent({
-        runId: runParams.runId,
-        stream: "tool",
-        data: {
-          phase: "result",
-          name: event.name,
-          toolCallId: event.toolCallId,
-          isError: event.isError,
-          result: sanitizeToolResult(event.result),
-        },
-      });
-    }
-  };
+  // Display-only native events never enter host-tool correlation or delivery accounting.
+  const emitCliToolUseStart = (event: CliToolUseStartDelta) => emitToolUseStart(event, true);
+  const emitCliToolResult = (event: CliToolResult) => emitToolResult(event, true);
+  const emitCliDisplayToolUseStart = (event: CliToolUseStartDelta) =>
+    emitToolUseStart(event, false);
+  const emitCliDisplayToolResult = (event: CliToolResult) => emitToolResult(event, false);
   const emitParsedToolUseStart = (event: CliToolUseStartDelta) => {
     const startedAt = Date.now();
     activeParsedTools.set(event.toolCallId, {
@@ -243,16 +240,10 @@ export function createCliEventHandlers(params: {
       toolCallId: event.toolCallId,
       durationMs: Math.max(0, now - (activeTool?.startedAt ?? now)),
     };
-    if (trustedOutcome?.outcome === "unknown" && !useEnclosingTerminalReason) {
-      emitTrustedDiagnosticEvent({
-        type: "tool.execution.error",
-        ...diagnosticBase,
-        errorCategory: "cli_tool_ambiguous",
-        errorCode: "tool_outcome_unknown",
-      });
-      return;
-    }
-    if (event.incomplete && activeTool?.kind === "server_tool_use" && !trustedOutcome) {
+    if (
+      (trustedOutcome?.outcome === "unknown" && !useEnclosingTerminalReason) ||
+      (event.incomplete && activeTool?.kind === "server_tool_use" && !trustedOutcome)
+    ) {
       emitTrustedDiagnosticEvent({
         type: "tool.execution.error",
         ...diagnosticBase,
@@ -359,6 +350,24 @@ export function createCliEventHandlers(params: {
       });
     }
   };
+  const emitCliCompletedReply = (text: string, assistantMessageIndex: number) => {
+    if (text) {
+      observedCliActivity = true;
+    }
+    if (emitLiveEvents) {
+      emitAgentEvent({
+        runId: runParams.runId,
+        stream: "assistant",
+        data: {
+          assistantMessageIndex,
+          completedText: applyPluginTextReplacements(
+            text,
+            context.backendResolved.textTransforms?.output,
+          ),
+        },
+      });
+    }
+  };
 
   // Emit-always: thinking reaches the event bus and session archive like the
   // embedded reasoning stream; /reasoning and /verbose gate presentation only.
@@ -398,6 +407,7 @@ export function createCliEventHandlers(params: {
     finalizeParsedTools,
     emitCliCommentaryText,
     emitCliAssistantDelta,
+    emitCliCompletedReply,
     emitCliThinkingDelta,
     emitCliThinkingProgress,
     hasObservedCliActivity: () => observedCliActivity,

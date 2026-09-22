@@ -4,14 +4,18 @@ import type { RouteId } from "../../app-route-paths.ts";
 import { inferControlUiPublicAssetPath } from "../../app/public-assets.ts";
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
+import { registerAppsEnglish } from "../../i18n/locales/en-apps.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../../lib/external-link.ts";
 import { COMMUNITY_DISCORD_URL } from "../../lib/product-links.ts";
 import "../../styles/apps.css";
 import { brandIcons } from "../about/brand-icons.ts";
 import { appsBrandIcons } from "./brand-icons.ts";
 
+registerAppsEnglish();
+
 type AppsProps = {
   onNavigate: (routeId: RouteId) => void;
+  macGatewayLaunchUrl?: string | null;
   /** Opens the device-pairing dialog; absent when the operator cannot pair. */
   onPairDevice?: () => void;
 };
@@ -181,7 +185,7 @@ const APP_SECTIONS: readonly AppSection[] = [
       {
         id: "plugins",
         gradient: ["#fb7185", "#9f1239"],
-        icon: icons.puzzle,
+        icon: icons.plug,
         title: () => t("appsPage.cards.plugins.title"),
         desc: () => t("appsPage.cards.plugins.desc"),
         ctas: [
@@ -230,6 +234,7 @@ function renderCta(cta: AppCardCta, index: number, props: AppsProps) {
 
 function renderAppCard(card: AppCard, props: AppsProps) {
   const [from, to] = card.gradient;
+  const macGatewayLaunchUrl = card.id === "macos" ? props.macGatewayLaunchUrl : null;
   return html`
     <article class="apps-card">
       <div class="apps-card__art" style=${`--apps-art-a:${from};--apps-art-b:${to}`}>
@@ -256,7 +261,12 @@ function renderAppCard(card: AppCard, props: AppsProps) {
         </div>
         <p class="apps-card__desc">${card.desc()}</p>
         <div class="apps-card__ctas">
-          ${card.ctas.map((cta, index) => renderCta(cta, index, props))}
+          ${macGatewayLaunchUrl
+            ? html`<a class="apps-card__cta apps-card__cta--primary" href=${macGatewayLaunchUrl}>
+                ${t("appsPage.ctaOpenMac")}
+              </a>`
+            : nothing}
+          ${card.ctas.map((cta, index) => renderCta(cta, index + (macGatewayLaunchUrl ? 1 : 0), props))}
         </div>
       </div>
     </article>

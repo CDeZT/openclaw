@@ -2,13 +2,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { expectDefined } from "@openclaw/normalization-core";
 import JSZip from "jszip";
 import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createSolidPngBuffer, createTinyJpegBuffer } from "../../test/helpers/image-fixtures.js";
 import { isPathWithinBase } from "../../test/helpers/paths.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../test-utils/temp-home.js";
+import { expectSavedOriginalFilenameCase } from "./store-filename.test-support.js";
 
 describe("media store", () => {
   let store: typeof import("./store.js");
@@ -141,37 +141,6 @@ describe("media store", () => {
       expect(entries).toStrictEqual([]);
     } finally {
       vi.doUnmock("../infra/file-store.js");
-    }
-  }
-
-  async function expectSavedOriginalFilenameCase(params: {
-    originalFilename?: string;
-    expectedIdPattern: RegExp;
-    expectedExtractedFilename?: string;
-    expectUuidOnly?: boolean;
-    maxBaseNameLength?: number;
-  }) {
-    const saved = await store.saveMediaBuffer(
-      Buffer.from("test content"),
-      "text/plain",
-      "inbound",
-      5 * 1024 * 1024,
-      params.originalFilename,
-    );
-
-    expect(saved.id).toMatch(params.expectedIdPattern);
-    if (params.expectedExtractedFilename) {
-      expect(store.extractOriginalFilename(saved.path)).toBe(params.expectedExtractedFilename);
-    }
-    if (params.expectUuidOnly) {
-      expect(saved.id).not.toContain("---");
-    }
-    if (params.maxBaseNameLength !== undefined) {
-      const baseName = expectDefined(
-        path.parse(saved.id).name.split("---")[0],
-        'path.parse(saved.id).name.split("---")[0] test invariant',
-      );
-      expect(baseName.length).toBeLessThanOrEqual(params.maxBaseNameLength);
     }
   }
 
@@ -428,18 +397,34 @@ describe("media store", () => {
       },
     },
     {
-      name: "uses original filename to detect generic stream content type",
+      name: "normalizes original filename while detecting generic stream content type",
       run: async () => {
         const saved = await store.saveMediaStream(
           Readable.from([Buffer.from("name,value\none,1\n")]),
           "application/octet-stream",
           "stream-inbound",
           1024,
-          "report.csv",
+          "cafe\u0301.csv",
         );
 
-        expect(saved.id).toMatch(/^report---[a-f0-9-]{36}\.csv$/);
+        expect(saved.id).toMatch(/^caf\u00e9---[a-f0-9-]{36}\.csv$/);
         expect(saved.contentType).toBe("text/csv");
+      },
+    },
+    {
+      name: "preserves original extension for generic file streams",
+      run: async () => {
+        const buffer = Buffer.from("custom binary");
+        const saved = await store.saveMediaStream(
+          Readable.from([buffer]),
+          "application/octet-stream",
+          "stream-inbound",
+          1024,
+          "report.CuStOm",
+        );
+
+        expect(store.extractOriginalFilename(saved.path)).toBe("report.CuStOm");
+        await expect(fs.readFile(saved.path)).resolves.toEqual(buffer);
       },
     },
     {
@@ -642,9 +627,9 @@ describe("media store", () => {
       name: "preserves original extension for generic file buffers",
       buffer: Buffer.from("custom binary"),
       contentType: "application/octet-stream",
-      originalFilename: "report.custom",
+      originalFilename: "report.CuStOm",
       expectedContentType: "application/octet-stream",
-      expectedExtension: ".custom",
+      expectedExtension: ".CuStOm",
     },
     {
       name: "does not preserve mixed-case image header extensions for generic container buffers",
@@ -980,6 +965,31 @@ describe("media store", () => {
         expectedIdPattern: /^my_filetest---[a-f0-9-]{36}\.txt$/,
       },
       {
+        name: "normalizes decomposed Hangul in stored names",
+        originalFilename: "\u1100\u1161.txt",
+        expectedIdPattern: /^\uac00---[a-f0-9-]{36}\.txt$/,
+        expectedExtractedFilename: "\uac00.txt",
+      },
+      {
+        name: "normalizes letters joined by filename sanitization",
+        originalFilename: "\u1100?\u1161.txt",
+        expectedIdPattern: /^\uac00---[a-f0-9-]{36}\.txt$/,
+        expectedExtractedFilename: "\uac00.txt",
+      },
+      {
+        name: "preserves decomposed accents in stored names",
+        originalFilename: "cafe\u0301.txt",
+        expectedIdPattern: /^caf\u00e9---[a-f0-9-]{36}\.txt$/,
+        expectedExtractedFilename: "caf\u00e9.txt",
+      },
+      {
+        name: "composes Unicode before applying the filename cap",
+        originalFilename: `${"a".repeat(59)}\u1100\u1161.txt`,
+        expectedIdPattern: /^a{59}\uac00---[a-f0-9-]{36}\.txt$/,
+        expectedExtractedFilename: `${"a".repeat(59)}\uac00.txt`,
+        maxBaseNameLength: 60,
+      },
+      {
         name: "truncates long original filenames",
         originalFilename: `${"a".repeat(100)}.txt`,
         expectedIdPattern: /^a+---[a-f0-9-]{36}\.txt$/,
@@ -997,12 +1007,30 @@ describe("media store", () => {
         expectUuidOnly: true,
       },
       {
+        name: "falls back to UUID-only when the original basename is blank",
+        originalFilename: "   .txt",
+        expectedIdPattern: /^[a-f0-9-]{36}\.txt$/,
+        expectUuidOnly: true,
+      },
+      {
+        name: "falls back to UUID-only when the original basename has only invalid characters",
+        originalFilename: "<>:\u0001.txt",
+        expectedIdPattern: /^[a-f0-9-]{36}\.txt$/,
+        expectUuidOnly: true,
+      },
+      {
+        name: "preserves an original basename matching the sanitizer default",
+        originalFilename: "file.txt",
+        expectedIdPattern: /^file---[a-f0-9-]{36}\.txt$/,
+        expectedExtractedFilename: "file.txt",
+      },
+      {
         name: "strips controls and neutralizes bidi/zero-width formatting",
         originalFilename: "report\rC\nL\tT\fF\x1bE\x00N\x7fD\u202efd\u200bp\ufeffsafe.exe",
         expectedIdPattern: /^reportCLTFEND_fd_p_safe---[a-f0-9-]{36}\.txt$/,
       },
     ] as const)("$name", async (testCase) => {
-      await expectSavedOriginalFilenameCase(testCase);
+      await expectSavedOriginalFilenameCase(store, testCase);
     });
   });
 });

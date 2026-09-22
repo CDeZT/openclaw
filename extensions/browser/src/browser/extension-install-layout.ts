@@ -27,7 +27,11 @@ export type DiscoveredChromeExtension = {
   extensionId: string;
   extensionPath: string;
 };
-export type DiscoveredChromeStoreExtension = Omit<DiscoveredChromeExtension, "extensionPath">;
+export type DiscoveredChromeStoreExtension = Omit<DiscoveredChromeExtension, "extensionPath"> & {
+  /** Chrome's recorded state is not proof of an authenticated relay connection. */
+  enabled: boolean;
+  awaitingApproval: boolean;
+};
 export type ExtensionInstallDeps = {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -38,6 +42,17 @@ export type ExtensionInstallDeps = {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 };
+
+export async function approvedInstallRealpaths(
+  installed: string,
+  bundled: string,
+): Promise<string[]> {
+  const installedPath = await fs.realpath(installed);
+  const bundledPath = await fs.realpath(bundled);
+  await assertOwnedPath(installedPath, "directory");
+  await assertOwnedPath(bundledPath, "directory", { allowRootOwner: true });
+  return [...new Set([installedPath, bundledPath])];
+}
 
 /** Chromium crx_file::id_util::GenerateIdForPath for a canonical absolute path. */
 export function generateChromeExtensionIdForPath(
@@ -385,12 +400,25 @@ export async function discoverChromeExtensionIds(params: {
               from_webstore?: unknown;
               location?: unknown;
               path?: unknown;
+              state?: unknown;
+              disable_reasons?: unknown;
             };
             if (
               extensionId === params.storeExtensionId &&
               entry.from_webstore === true &&
               entry.location !== UNPACKED_MANIFEST_LOCATION
             ) {
+              // Current Chrome stores a reason list; older profiles used a bitmask
+              // plus state (ENABLED = 1). External-install approval is bit 13.
+              const reasons = entry.disable_reasons;
+              const enabled =
+                (entry.state === undefined || entry.state === 1) &&
+                (reasons === undefined ||
+                  reasons === 0 ||
+                  (Array.isArray(reasons) && reasons.length === 0));
+              const awaitingApproval = Array.isArray(reasons)
+                ? reasons.includes(8_192)
+                : typeof reasons === "number" && (reasons & 8_192) !== 0;
               storeDiscovered.push({
                 product: root.product,
                 browser: root.label,
@@ -398,6 +426,8 @@ export async function discoverChromeExtensionIds(params: {
                 profile: profileEntry.name,
                 securePreferencesPath: preferencesPath,
                 extensionId,
+                enabled,
+                awaitingApproval,
               });
               continue;
             }

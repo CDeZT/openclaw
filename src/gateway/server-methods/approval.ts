@@ -31,6 +31,7 @@ import {
   canResolveOperatorApproval,
   canReviewOperatorApproval,
 } from "../operator-approval-authorization.js";
+import { projectOperatorApprovalSnapshot } from "../operator-approval-snapshot.js";
 import {
   getOperatorApprovalDetailed,
   listTerminalOperatorApprovals,
@@ -61,24 +62,13 @@ function buildApprovalSnapshot(
   record: OperatorApprovalRecord,
   controlUiBasePath: string,
 ): ApprovalSnapshot | null {
-  const common = {
-    id: record.id,
-    status: record.status,
-    presentation: record.presentation,
-    urlPath: `${controlUiBasePath}/approve/${encodeURIComponent(record.id)}`,
-    createdAtMs: record.createdAtMs,
-    expiresAtMs: record.expiresAtMs,
-  };
-  if (record.status === "pending") {
-    return common as ApprovalSnapshot;
+  const snapshot = projectOperatorApprovalSnapshot(record, controlUiBasePath);
+  if (!snapshot || snapshot.status === "pending") {
+    return snapshot;
   }
-  if (record.resolvedAtMs === null || record.terminalReason === null) {
-    return null;
-  }
-  const terminal = {
-    ...common,
-    resolvedAtMs: record.resolvedAtMs,
-    reason: record.terminalReason,
+  // Terminal attribution belongs to RPC readers; session events omit it.
+  return {
+    ...snapshot,
     source: {
       ...(record.source.agentId ? { agentId: record.source.agentId } : {}),
       ...(record.source.sessionKey ? { sessionKey: record.source.sessionKey } : {}),
@@ -92,16 +82,6 @@ function buildApprovalSnapshot(
         }
       : {}),
   };
-  if (record.status === "allowed") {
-    if (record.decision !== "allow-once" && record.decision !== "allow-always") {
-      return null;
-    }
-    return { ...terminal, decision: record.decision } as ApprovalSnapshot;
-  }
-  if (record.status === "denied") {
-    return { ...terminal, decision: "deny" } as ApprovalSnapshot;
-  }
-  return terminal as ApprovalSnapshot;
 }
 
 function resolveApprovalResolver(client: GatewayClient | null): OperatorApprovalResolver {
@@ -139,23 +119,23 @@ function readExactApprovalId(params: unknown): string | null {
   return isWellFormedApprovalId(id) ? id : null;
 }
 
-function loadVisibleApproval(params: {
+async function loadVisibleApproval(params: {
   id: string;
   client: GatewayClient | null;
-  cfg: OpenClawConfig;
+  getCfg: () => OpenClawConfig;
   allowApprovalRuntime?: boolean;
   allowTransportRef?: boolean;
   execApprovalManager: ExecApprovalManager;
   pluginApprovalManager: ExecApprovalManager<PluginApprovalRequestPayload>;
   systemAgentApprovalManager?: ExecApprovalManager<SystemAgentApprovalRequestPayload>;
   databaseOptions?: OpenClawStateDatabaseOptions;
-}): OperatorApprovalRecord | null {
+}): Promise<OperatorApprovalRecord | null> {
   // Reconciliation can settle a live waiter, so authorization must precede
   // every durable read and no unauthorized lookup may reach the bridge.
   const authorized = params.allowApprovalRuntime
     ? canResolveOperatorApproval(params.client)
     : canReviewOperatorApproval(params.client);
-  if (!authorized) {
+  if (!authorized || params.client?.invalidated) {
     return null;
   }
   const liveRecord =
@@ -165,7 +145,7 @@ function loadVisibleApproval(params: {
   if (
     liveRecord &&
     !canAccessApprovalSession({
-      cfg: params.cfg,
+      cfg: params.getCfg(),
       client: params.client,
       sessionKey: liveRecord.request.sessionKey,
       agentId: liveRecord.request.agentId,
@@ -183,24 +163,32 @@ function loadVisibleApproval(params: {
   ) {
     return null;
   }
-  let lookup: ReturnType<typeof getOperatorApprovalDetailed>;
+  let lookup: Awaited<ReturnType<typeof getOperatorApprovalDetailed>>;
   try {
-    lookup = getOperatorApprovalDetailed({
+    lookup = await getOperatorApprovalDetailed({
       id: params.id,
       allowTransportRef: params.allowTransportRef,
       databaseOptions: params.databaseOptions,
     });
   } catch (error) {
     const corrupt = { outcome: "corrupt", id: params.id } as const;
-    params.execApprovalManager.reconcileDurableLookup(corrupt);
-    params.pluginApprovalManager.reconcileDurableLookup(corrupt);
-    params.systemAgentApprovalManager?.reconcileDurableLookup(corrupt);
+    await params.execApprovalManager.reconcileDurableLookup(corrupt);
+    await params.pluginApprovalManager.reconcileDurableLookup(corrupt);
+    await params.systemAgentApprovalManager?.reconcileDurableLookup(corrupt);
     throw error;
+  }
+  if (
+    params.client?.invalidated ||
+    !(params.allowApprovalRuntime
+      ? canResolveOperatorApproval(params.client)
+      : canReviewOperatorApproval(params.client))
+  ) {
+    return null;
   }
   if (lookup.outcome === "found") {
     if (
       !canAccessApprovalSession({
-        cfg: params.cfg,
+        cfg: params.getCfg(),
         client: params.client,
         sessionKey: lookup.record.source.sessionKey,
         agentId: lookup.record.source.agentId,
@@ -225,15 +213,30 @@ function loadVisibleApproval(params: {
           : params.systemAgentApprovalManager;
     // Durable truth can advance outside this manager. Settle only an existing
     // same-kind waiter; reconcileDurableLookup never recreates executable state.
-    return manager?.reconcileDurableLookup(lookup) ?? null;
+    const reconciled = await manager?.reconcileDurableLookup(lookup);
+    return reconciled &&
+      !params.client?.invalidated &&
+      canAccessApprovalSession({
+        cfg: params.getCfg(),
+        client: params.client,
+        sessionKey: reconciled.source.sessionKey,
+        agentId: reconciled.source.agentId,
+      }) &&
+      canAccessOperatorApproval({
+        client: params.client,
+        allowApprovalRuntime: params.allowApprovalRuntime,
+        binding: { reviewerDeviceIds: reconciled.reviewerDeviceIds },
+      })
+      ? reconciled
+      : null;
   }
   const missing = {
     outcome: lookup.outcome === "corrupt" ? "corrupt" : "missing",
     id: lookup.outcome === "corrupt" ? (lookup.id ?? params.id) : params.id,
   } as const;
-  params.execApprovalManager.reconcileDurableLookup(missing);
-  params.pluginApprovalManager.reconcileDurableLookup(missing);
-  params.systemAgentApprovalManager?.reconcileDurableLookup(missing);
+  await params.execApprovalManager.reconcileDurableLookup(missing);
+  await params.pluginApprovalManager.reconcileDurableLookup(missing);
+  await params.systemAgentApprovalManager?.reconcileDurableLookup(missing);
   return null;
 }
 
@@ -254,7 +257,7 @@ function resolveLiveRecord<TPayload>(params: {
   return params.liveRecord ?? params.manager.getLiveSnapshot(params.id) ?? undefined;
 }
 
-function applyApprovalDecision<TPayload>(params: {
+async function applyApprovalDecision<TPayload>(params: {
   manager: ExecApprovalManager<TPayload>;
   id: string;
   decision: ApprovalDecision | null;
@@ -262,9 +265,10 @@ function applyApprovalDecision<TPayload>(params: {
   resolver: OperatorApprovalResolver;
   localResolvedBy: string | null;
   grantExpiresAtMs?: number;
-}): ApplyApprovalDecisionResult<TPayload> {
+  assertCurrent: () => void;
+}): Promise<ApplyApprovalDecisionResult<TPayload>> {
   const result = params.forceMalformedDeny
-    ? params.manager.forceDenyDetailed(
+    ? await params.manager.forceDenyDetailed(
         params.id,
         "malformed-verdict",
         params.resolver,
@@ -272,14 +276,20 @@ function applyApprovalDecision<TPayload>(params: {
         undefined,
         false,
         params.localResolvedBy,
+        params.assertCurrent,
       )
-    : params.manager.resolveDetailed(
+    : await params.manager.resolveDetailed(
         params.id,
         params.decision as ExecApprovalDecision,
         params.resolver,
         params.localResolvedBy,
         "operator",
-        params.grantExpiresAtMs !== undefined ? { grantExpiresAtMs: params.grantExpiresAtMs } : {},
+        {
+          assertCurrent: params.assertCurrent,
+          ...(params.grantExpiresAtMs !== undefined
+            ? { grantExpiresAtMs: params.grantExpiresAtMs }
+            : {}),
+        },
       );
   if (result.outcome === "decision-not-allowed") {
     return applyApprovalDecision({ ...params, forceMalformedDeny: true });
@@ -303,7 +313,7 @@ export function createApprovalHandlers(
   params: CreateApprovalHandlersParams,
 ): GatewayRequestHandlers {
   return {
-    "approval.history": ({ params: rawParams, respond, client, context }) => {
+    "approval.history": async ({ params: rawParams, respond, client, context }) => {
       if (!validateApprovalHistoryParams(rawParams)) {
         respond(
           false,
@@ -313,9 +323,9 @@ export function createApprovalHandlers(
         return;
       }
       const historyParams = rawParams as ApprovalHistoryParams;
-      let history: ReturnType<typeof listTerminalOperatorApprovals>;
+      let history: Awaited<ReturnType<typeof listTerminalOperatorApprovals>>;
       try {
-        history = listTerminalOperatorApprovals({
+        history = await listTerminalOperatorApprovals({
           cursor: historyParams.cursor,
           limit: historyParams.limit,
           kind: historyParams.kind,
@@ -356,7 +366,7 @@ export function createApprovalHandlers(
       respond(true, result, undefined);
     },
 
-    "approval.get": ({ params: rawParams, respond, client, context }) => {
+    "approval.get": async ({ params: rawParams, respond, client, context }) => {
       if (!validateApprovalGetParams(rawParams)) {
         respond(
           false,
@@ -369,10 +379,10 @@ export function createApprovalHandlers(
       let record: OperatorApprovalRecord | null;
       try {
         record = id
-          ? loadVisibleApproval({
+          ? await loadVisibleApproval({
               id,
               client,
-              cfg: context.getRuntimeConfig(),
+              getCfg: context.getRuntimeConfig,
               execApprovalManager: params.execApprovalManager,
               pluginApprovalManager: params.pluginApprovalManager,
               systemAgentApprovalManager: params.systemAgentApprovalManager,
@@ -406,10 +416,10 @@ export function createApprovalHandlers(
       let record: OperatorApprovalRecord | null;
       try {
         record = id
-          ? loadVisibleApproval({
+          ? await loadVisibleApproval({
               id,
               client,
-              cfg: context.getRuntimeConfig(),
+              getCfg: context.getRuntimeConfig,
               allowApprovalRuntime: true,
               allowTransportRef: true,
               execApprovalManager: params.execApprovalManager,
@@ -470,6 +480,33 @@ export function createApprovalHandlers(
           ));
       const kindMatches = resolveParams?.kind === record.presentation.kind;
       const forceMalformedDeny = !validParams || !kindMatches || !decisionAllowed;
+      const assertCurrent = () => {
+        const currentCfg = context.getRuntimeConfig();
+        const currentCustody = resolveParams?.reviewer
+          ? prepareApprovalChannelCustody({
+              cfg: currentCfg,
+              approvalKind: record.kind,
+              reviewer: resolveParams.reviewer,
+            })
+          : null;
+        if (
+          client?.invalidated ||
+          !canAccessOperatorApproval({
+            client,
+            allowApprovalRuntime: true,
+            binding: { reviewerDeviceIds: record.reviewerDeviceIds },
+          }) ||
+          !canAccessApprovalSession({
+            cfg: currentCfg,
+            client,
+            sessionKey: record.source.sessionKey,
+            agentId: record.source.agentId,
+          }) ||
+          (resolveParams?.reviewer && (!liveRecord || !currentCustody?.authorizes(liveRecord)))
+        ) {
+          throw new Error("approval resolver authority is no longer active");
+        }
+      };
       let resolution:
         | ApplyApprovalDecisionResult<ExecApprovalRequestPayload>
         | ApplyApprovalDecisionResult<PluginApprovalRequestPayload>
@@ -477,13 +514,14 @@ export function createApprovalHandlers(
       try {
         resolution =
           record.kind === "exec"
-            ? applyApprovalDecision({
+            ? await applyApprovalDecision({
                 manager: params.execApprovalManager,
                 id: record.id,
                 decision: requestedDecision,
                 forceMalformedDeny,
                 resolver,
                 localResolvedBy,
+                assertCurrent,
                 // Grant terms freeze at resolve; an explicit per-resolve
                 // override (custom operator UIs, CLI) beats the config default.
                 ...(requestedDecision === "allow-always" &&
@@ -495,21 +533,23 @@ export function createApprovalHandlers(
                   : {}),
               })
             : record.kind === "plugin"
-              ? applyApprovalDecision({
+              ? await applyApprovalDecision({
                   manager: params.pluginApprovalManager,
                   id: record.id,
                   decision: requestedDecision,
                   forceMalformedDeny,
                   resolver,
                   localResolvedBy,
+                  assertCurrent,
                 })
-              : applyApprovalDecision({
+              : await applyApprovalDecision({
                   manager: params.systemAgentApprovalManager!,
                   id: record.id,
                   decision: requestedDecision,
                   forceMalformedDeny,
                   resolver,
                   localResolvedBy,
+                  assertCurrent,
                 });
       } catch (error) {
         respondApprovalStorageUnavailable({ context, respond, operation: "resolve", error });

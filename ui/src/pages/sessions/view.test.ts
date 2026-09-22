@@ -2,6 +2,7 @@
 
 import { render } from "lit";
 import { describe, expect, it, vi } from "vitest";
+import { contextBudgetStatusFixture } from "../../../../src/config/sessions/context-budget.test-support.js";
 import type { SessionsListResult } from "../../api/types.ts";
 import { renderSessions, type SessionsProps } from "./view.ts";
 
@@ -31,6 +32,7 @@ function buildMultiResult(sessions: SessionsListResult["sessions"]): SessionsLis
 function buildProps(result: SessionsListResult): SessionsProps {
   return {
     loading: false,
+    refreshing: false,
     agentId: "main",
     mainKey: "main",
     result,
@@ -56,10 +58,6 @@ function buildProps(result: SessionsListResult): SessionsProps {
     selectedKeys: new Set<string>(),
     sessionMenu: null,
     expandedSessionKey: null,
-    checkpointItemsByKey: {},
-    checkpointLoadingKey: null,
-    checkpointBusyKey: null,
-    checkpointErrorByKey: {},
     onFiltersChange: () => undefined,
     onClearFilters: () => undefined,
     onSearchChange: () => undefined,
@@ -70,6 +68,7 @@ function buildProps(result: SessionsListResult): SessionsProps {
     onGroupByChange: () => undefined,
     onAssignCategory: () => undefined,
     onRequestNewCategory: () => undefined,
+    onLoadMore: () => undefined,
     onPageChange: () => undefined,
     onPageSizeChange: () => undefined,
     onRefresh: () => undefined,
@@ -83,8 +82,6 @@ function buildProps(result: SessionsListResult): SessionsProps {
     onDeleteSelected: () => undefined,
     onOpenSessionMenu: () => undefined,
     onToggleDetails: () => undefined,
-    onBranchFromCheckpoint: () => undefined,
-    onRestoreCheckpoint: () => undefined,
   };
 }
 
@@ -104,6 +101,37 @@ function sessionTableHeaders(container: HTMLElement): Array<string | undefined> 
 const SESSION_TABLE_HEADERS = ["", "Key", "Kind", "Status", "Updated", "Tokens", "Actions"];
 
 describe("sessions view", () => {
+  it("identifies agents on plain chat sessions in a mixed-agent list", async () => {
+    const container = document.createElement("div");
+    render(
+      renderSessions(
+        buildProps(
+          buildMultiResult([
+            { key: "agent:main:chat-one", kind: "direct" },
+            { key: "agent:research:chat-two", kind: "direct" },
+            { key: "legacy-chat", agentId: "research", kind: "direct" },
+          ]),
+        ),
+      ),
+      container,
+    );
+    document.body.append(container);
+    try {
+      await Promise.all(
+        [...container.querySelectorAll("openclaw-agent-row-chip")].map(
+          (chip) => chip.updateComplete,
+        ),
+      );
+      expect(
+        [...container.querySelectorAll(".session-data-row .agent-row-chip")].map((chip) =>
+          chip.getAttribute("data-agent-id"),
+        ),
+      ).toEqual(["main", "research", "research"]);
+    } finally {
+      container.remove();
+    }
+  });
+
   it("renders local calendar date headings with their session rows", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(new Date(2026, 2, 9, 12).getTime());
     const container = document.createElement("div");
@@ -238,23 +266,6 @@ describe("sessions view", () => {
     expect(alert?.textContent).toContain("group name exceeds 512 characters");
   });
 
-  it("announces checkpoint failures in their expanded session details", async () => {
-    const sessionKey = "agent:main:checkpoint-failure";
-    const container = document.createElement("div");
-    render(
-      renderSessions({
-        ...buildProps(buildResult({ key: sessionKey, kind: "direct", updatedAt: 1 })),
-        expandedSessionKey: sessionKey,
-        checkpointErrorByKey: { [sessionKey]: "Checkpoint request timed out" },
-      }),
-      container,
-    );
-    await Promise.resolve();
-
-    const alert = container.querySelector('.session-details-panel [role="alert"]');
-    expect(alert?.textContent).toContain("Checkpoint request timed out");
-  });
-
   it("identifies each selectable session before destructive bulk actions", async () => {
     const container = document.createElement("div");
     const onToggleSelect = vi.fn();
@@ -303,7 +314,7 @@ describe("sessions view", () => {
     await Promise.resolve();
 
     expect(container.querySelector<HTMLAnchorElement>(".session-link")?.getAttribute("href")).toBe(
-      "/dashboard/main/12345678",
+      "/dashboard/main/1234567890abcdef1234567890abcdef",
     );
   });
 
@@ -361,6 +372,7 @@ describe("sessions view", () => {
         transcriptSearchQuery: "launch code",
         transcriptSearch: {
           status: "results",
+          sessions: [{ key: "agent:main:launch", kind: "direct", label: "Launch planning" }],
           results: [
             {
               sessionKey: "agent:main:launch",
@@ -374,6 +386,7 @@ describe("sessions view", () => {
           ],
           indexing: true,
           truncated: true,
+          archivedTranscriptsExcluded: 0,
         },
         onNavigateToChat,
       }),
@@ -531,7 +544,10 @@ describe("sessions view", () => {
     expect(container.querySelectorAll(".session-data-row")).toHaveLength(1);
   });
 
-  it("offers person grouping and labels owner sections from their durable profile", async () => {
+  it.each([
+    ["profile-ada", "Ada Lovelace", "Ada Lovelace"],
+    ["gateway-owner", "Saved owner name", "Shared owner"],
+  ])("offers person grouping and labels the durable profile %s", async (id, name, expected) => {
     const container = document.createElement("div");
     render(
       renderSessions({
@@ -544,9 +560,9 @@ describe("sessions view", () => {
               owner: {
                 actor: {
                   type: "human",
-                  id: "profile-ada",
-                  label: "Ada Lovelace",
-                  identity: { type: "profile", id: "profile-ada" },
+                  id,
+                  label: name,
+                  identity: { type: "profile", id },
                 },
               },
             },
@@ -568,7 +584,7 @@ describe("sessions view", () => {
       [...container.querySelectorAll(".session-group-row__label")].map((label) =>
         label.textContent?.trim(),
       ),
-    ).toEqual(["Ada Lovelace", "Ungrouped"]);
+    ).toEqual([expected, "Ungrouped"]);
   });
 
   it("hides the person grouping option without the identity capability", async () => {
@@ -615,9 +631,7 @@ describe("sessions view", () => {
     const container = document.createElement("div");
     render(
       renderSessions({
-        ...buildProps(
-          buildMultiResult([{ key: "agent:main:discord:channel:1", kind: "group", updatedAt: 1 }]),
-        ),
+        ...buildProps(buildMultiResult([])),
         groupBy: "category",
         knownCategories: ["Research"],
         searchQuery: "no-such-session",
@@ -761,7 +775,6 @@ describe("sessions view", () => {
       { x: expect.any(Number), y: expect.any(Number) },
       button,
     );
-
     const row = container.querySelector(".session-data-row");
     if (!row) {
       throw new Error("Expected session row");
@@ -893,6 +906,32 @@ describe("sessions view", () => {
     expect(trigger?.getAttribute("aria-expanded")).toBe("true");
     popover?.dispatchEvent(new Event("wa-hide"));
     expect(trigger?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("does not invent thinking choices for an empty session profile", async () => {
+    const container = document.createElement("div");
+    render(
+      renderSessions({
+        ...buildProps(
+          buildResult({
+            key: "agent:main:main",
+            kind: "direct",
+            updatedAt: Date.now(),
+            modelProvider: "thinking-fixture",
+            model: "no-effort",
+            thinkingLevels: [],
+          }),
+        ),
+        expandedSessionKey: "agent:main:main",
+      }),
+      container,
+    );
+    await Promise.resolve();
+
+    const thinking = container.querySelector<HTMLSelectElement>("tbody select");
+    expect(thinking).not.toBeNull();
+    expect(Array.from(thinking?.options ?? []).map((option) => option.value)).toEqual([""]);
+    expect(thinking?.options[0]?.textContent?.trim()).toBe("Unknown");
   });
 
   it("renders and patches provider-owned thinking ids", async () => {
@@ -1187,7 +1226,7 @@ describe("sessions view", () => {
     ).toEqual(["Status: Queued", "Status: Live", "Status: Idle", "Status: Failed", "Status: Done"]);
   });
 
-  it("renders session goals in the status cell and search index", async () => {
+  it("renders session goals in the status cell", async () => {
     const container = document.createElement("div");
     render(
       renderSessions({
@@ -1232,7 +1271,7 @@ describe("sessions view", () => {
     expect(container.querySelectorAll("tbody tr")).toHaveLength(1);
   });
 
-  it("filters by agent runtime and surfaces it in the details drawer", async () => {
+  it("renders the effective runtime including fallback in the details drawer", async () => {
     const container = document.createElement("div");
     render(
       renderSessions({
@@ -1243,12 +1282,6 @@ describe("sessions view", () => {
               kind: "direct",
               updatedAt: 20,
               agentRuntime: { id: "claude-cli", fallback: "none", source: "agent" },
-            },
-            {
-              key: "agent:main:pi",
-              kind: "direct",
-              updatedAt: 10,
-              agentRuntime: { id: "pi", source: "implicit" },
             },
           ]),
         ),
@@ -1269,41 +1302,6 @@ describe("sessions view", () => {
     );
     const stats = readSessionDetailStats(container);
     expect(stats.get("Runtime")).toBe("claude-cli (fallback none)");
-  });
-
-  it("does not filter terminal sessions as live when active-run flags are stale", async () => {
-    const container = document.createElement("div");
-    render(
-      renderSessions({
-        ...buildProps(
-          buildMultiResult([
-            {
-              key: "agent:main:done",
-              kind: "direct",
-              updatedAt: 20,
-              hasActiveRun: true,
-              status: "done",
-            },
-            {
-              key: "agent:main:running",
-              kind: "direct",
-              updatedAt: 10,
-              hasActiveRun: true,
-              status: "running",
-            },
-          ]),
-        ),
-        searchQuery: "live",
-      }),
-      container,
-    );
-    await Promise.resolve();
-
-    const rows = container.querySelectorAll("tbody tr.session-data-row");
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.querySelector(".session-key-cell")?.textContent?.trim()).toBe(
-      "agent:main:running",
-    );
   });
 
   it("keeps raw keys for inherited identity object properties", async () => {
@@ -1338,12 +1336,6 @@ describe("sessions view", () => {
             updatedAt: Date.now(),
             totalTokens: 123456,
             contextTokens: 200000,
-            compactionCheckpointCount: 1,
-            latestCompactionCheckpoint: {
-              checkpointId: "checkpoint-1",
-              createdAt: Date.now(),
-              reason: "manual",
-            },
           }),
         ),
         onToggleDetails,
@@ -1361,61 +1353,7 @@ describe("sessions view", () => {
     expect(tokenCell?.textContent?.trim()).toBe("123.5k / 200k");
   });
 
-  it("renders the checkpoint count on the details disclosure", async () => {
-    const container = document.createElement("div");
-    const onToggleDetails = vi.fn();
-    render(
-      renderSessions({
-        ...buildProps(
-          buildResult({
-            key: "agent:main:main",
-            kind: "direct",
-            updatedAt: Date.now(),
-            compactionCheckpointCount: 1,
-            latestCompactionCheckpoint: {
-              checkpointId: "checkpoint-1",
-              createdAt: Date.now(),
-              reason: "manual",
-            },
-          }),
-        ),
-        onToggleDetails,
-      }),
-      container,
-    );
-    await Promise.resolve();
-
-    const trigger = container.querySelector<HTMLButtonElement>(".session-details-toggle");
-    expect(trigger?.querySelector(".session-compaction-count")?.textContent?.trim()).toBe("1");
-    expect(trigger?.getAttribute("aria-expanded")).toBe("false");
-
-    expect(trigger).toBeInstanceOf(HTMLButtonElement);
-    trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(onToggleDetails).toHaveBeenCalledWith("agent:main:main");
-  });
-
-  it("omits the checkpoint count pill when a session has no checkpoints", async () => {
-    const container = document.createElement("div");
-    render(
-      renderSessions(
-        buildProps(
-          buildResult({
-            key: "agent:main:main",
-            kind: "direct",
-            updatedAt: Date.now(),
-          }),
-        ),
-      ),
-      container,
-    );
-    await Promise.resolve();
-
-    const trigger = container.querySelector<HTMLButtonElement>(".session-details-toggle");
-    expect(trigger).toBeInstanceOf(HTMLButtonElement);
-    expect(trigger?.querySelector(".session-compaction-count")).toBeNull();
-  });
-
-  it("renders expanded session details with compaction history", async () => {
+  it("renders expanded session details without checkpoint actions", async () => {
     const container = document.createElement("div");
     render(
       renderSessions({
@@ -1443,32 +1381,10 @@ describe("sessions view", () => {
               lastStatusNote: "Waiting for owner review",
               blockedAt: 3,
             },
-            compactionCheckpointCount: 1,
-            latestCompactionCheckpoint: {
-              checkpointId: "checkpoint-1",
-              createdAt: Date.now(),
-              reason: "manual",
-            },
           }),
         ),
         expandedSessionKey: "agent:main:main",
         patchAdminDisabledReason: "Operator admin access is required.",
-        checkpointItemsByKey: {
-          "agent:main:main": [
-            {
-              checkpointId: "checkpoint-1",
-              sessionKey: "agent:main:main",
-              sessionId: "session-1",
-              createdAt: Date.now(),
-              reason: "manual",
-              tokensBefore: 123456,
-              tokensAfter: 38920,
-              summary: "Trimmed earlier setup chatter and kept the active execution plan.",
-              preCompaction: { sessionId: "session-1" },
-              postCompaction: { sessionId: "session-1" },
-            },
-          ],
-        },
       }),
       container,
     );
@@ -1491,18 +1407,18 @@ describe("sessions view", () => {
     expect(stats.get("Status")).toBe("running");
     expect(stats.get("Model")).toBe("gpt-5.5");
     expect(stats.get("Provider")).toBe("openai");
-    expect(stats.get("Runtime")).toBe("pi");
+    expect(stats.get("Runtime")).toBe("-");
     expect(stats.get("Run duration")).toBe("2m 5s");
     expect(stats.get("Tokens")).toBe("123456 / 200000");
-    expect(stats.get("Compaction")).toBe("1 Checkpoint");
+    expect(stats.has("Compaction")).toBe(false);
     expect(stats.get("Goal")).toBe(
       "Goal blocked (24k used): Finish the compaction details - Waiting for owner review",
     );
     expect(stats.get("Goal note")).toBe("Waiting for owner review");
 
     const sections = Array.from(details?.querySelectorAll(".session-details-section") ?? []);
-    expect(sections).toHaveLength(2);
-    const [overridesSection, compactionSection] = sections;
+    expect(sections).toHaveLength(1);
+    const [overridesSection] = sections;
     expect(
       overridesSection?.querySelector(".session-details-panel__eyebrow")?.textContent?.trim(),
     ).toBe("Overrides");
@@ -1517,19 +1433,9 @@ describe("sessions view", () => {
       expect(select.disabled).toBe(true);
       expect(select.title).toBe("Operator admin access is required.");
     }
-
-    expect(
-      compactionSection?.querySelector(".session-details-panel__eyebrow")?.textContent?.trim(),
-    ).toBe("Compaction history");
-    expect(
-      compactionSection?.querySelector(".session-details-section__title")?.textContent?.trim(),
-    ).toBe("1 Checkpoint");
-    expect(
-      compactionSection?.querySelector(".session-checkpoint-card__delta")?.textContent?.trim(),
-    ).toBe("123,456 to 38,920 tokens");
   });
 
-  it("opens details for sessions without checkpoints but ignores nested control clicks", async () => {
+  it("opens details and ignores nested control clicks", async () => {
     const container = document.createElement("div");
     const onToggleDetails = vi.fn();
     render(
@@ -1537,21 +1443,14 @@ describe("sessions view", () => {
         ...buildProps(
           buildMultiResult([
             {
-              key: "agent:main:with-checkpoint",
+              key: "agent:main:first",
               kind: "direct",
               updatedAt: 20,
-              compactionCheckpointCount: 1,
-              latestCompactionCheckpoint: {
-                checkpointId: "checkpoint-1",
-                createdAt: 20,
-                reason: "manual",
-              },
             },
             {
-              key: "agent:main:no-checkpoint",
+              key: "agent:main:second",
               kind: "direct",
               updatedAt: 10,
-              compactionCheckpointCount: 0,
             },
           ]),
         ),
@@ -1572,49 +1471,10 @@ describe("sessions view", () => {
     checkbox.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(onToggleDetails).not.toHaveBeenCalled();
 
-    // Sessions without checkpoints still open the drawer for overrides and stats.
+    // Sessions open the drawer for overrides and stats.
     rows[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(onToggleDetails).toHaveBeenCalledWith("agent:main:no-checkpoint");
+    expect(onToggleDetails).toHaveBeenCalledWith("agent:main:second");
   });
-
-  it("filters rows by agent identity name", async () => {
-    const container = document.createElement("div");
-    render(
-      renderSessions({
-        ...buildProps(
-          buildMultiResult([
-            {
-              key: "agent:data-expert:dingtalk:cidzg6sF43NZMy52Rnk8EN",
-              kind: "direct",
-              updatedAt: 20,
-            },
-            {
-              key: "agent:code-agent:telegram:abc123",
-              kind: "direct",
-              updatedAt: 10,
-            },
-          ]),
-        ),
-        searchQuery: "data expert",
-        agentIdentityById: {
-          "data-expert": {
-            agentId: "data-expert",
-            name: "Data Expert",
-            avatar: "",
-          },
-        },
-      }),
-      container,
-    );
-    await Promise.resolve();
-
-    const rows = container.querySelectorAll("tbody tr.session-data-row");
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.querySelector(".session-key-cell")?.textContent?.trim()).toBe(
-      "Data Expert (dingtalk)",
-    );
-  });
-
   it("keeps session selects stable and deselects only the current page", async () => {
     const container = document.createElement("div");
     render(
@@ -1700,15 +1560,7 @@ describe("sessions view", () => {
     const onClearFilters = vi.fn();
     render(
       renderSessions({
-        ...buildProps(
-          buildMultiResult([
-            {
-              key: "agent:main:main",
-              kind: "direct",
-              updatedAt: Date.now(),
-            },
-          ]),
-        ),
+        ...buildProps(buildMultiResult([])),
         searchQuery: "missing",
         onClearFilters,
       }),
@@ -1957,3 +1809,31 @@ describe("sessions view", () => {
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+it("renders the sessions meter against its last-run prompt budget", async () => {
+  const container = document.createElement("div");
+  render(
+    renderSessions(
+      buildProps(
+        buildResult({
+          key: "agent:main:main",
+          kind: "direct",
+          updatedAt: 2,
+          totalTokens: 160_000,
+          contextTokens: 200_000,
+          contextBudgetStatus: contextBudgetStatusFixture(),
+        }),
+      ),
+    ),
+    container,
+  );
+  await Promise.resolve();
+  expect(container.querySelector(".session-context-meter")?.getAttribute("aria-label")).toBe(
+    "89% of last-run prompt budget used (160,000 / 180,000 tokens)",
+  );
+  expect(
+    container
+      .querySelector(".session-context-meter")
+      ?.classList.contains("session-context-meter--danger"),
+  ).toBe(true);
+});

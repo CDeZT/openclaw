@@ -10,12 +10,14 @@ import {
   type SessionEntry,
 } from "../../config/sessions.js";
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import { COMPACTION_RUN_USAGE_CLEAR_PATCH } from "../../config/sessions/session-entry-projection.js";
 import { projectSessionSnapshotChanges } from "../../config/sessions/session-snapshot-merge.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { createLazyPromise } from "../../shared/lazy-promise.js";
+import { estimateAggregateUsageCost } from "../../utils/usage-format.js";
 import { clearAllCliSessions, setCliSessionBinding } from "../cli-session.js";
+import { resolveContextTokensForModel } from "../context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
 import type { CompactionAccountingFact } from "../embedded-agent-runner/run/internal-params.js";
 import type { EmbeddedAgentCompactResult } from "../embedded-agent-runner/types.js";
@@ -23,9 +25,6 @@ import { clearMainSessionRecoveryAfterAgentRun } from "../main-session-recovery/
 import { deriveSessionTotalTokens, hasBillableUsage, hasNonzeroUsage } from "../usage.js";
 
 type RunResult = Awaited<ReturnType<(typeof import("../embedded-agent.js"))["runEmbeddedAgent"]>>;
-
-const getUsageFormatModule = createLazyPromise(() => import("../../utils/usage-format.js"));
-const getContextModule = createLazyPromise(() => import("../context.js"));
 
 export function normalizeSessionTokenCount(value: number | undefined): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
@@ -93,7 +92,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
   const contextTokens =
     runtimeContextTokens !== undefined
       ? runtimeContextTokens
-      : ((await getContextModule()).resolveContextTokensForModel({
+      : (resolveContextTokensForModel({
           cfg,
           provider: providerUsed,
           model: modelUsed,
@@ -169,16 +168,13 @@ export async function updateSessionStoreAfterAgentRun(params: {
   }
   const hasUsage = hasNonzeroUsage(usage);
   if (hasBillableUsage(usage) && !preserveUserFacingRunState) {
-    const { estimateAggregateUsageCost, resolveModelCostConfig } = await getUsageFormatModule();
     const runEstimatedCostUsd = asNonNegativeFiniteNumber(
       estimateAggregateUsageCost({
         usage,
-        cost: resolveModelCostConfig({
-          provider: providerUsed,
-          model: modelUsed,
-          config: cfg,
-          agentDir: params.agentDir,
-        }),
+        provider: providerUsed,
+        model: modelUsed,
+        config: cfg,
+        agentDir: params.agentDir,
       }),
     );
     if (hasUsage) {
@@ -382,10 +378,7 @@ export async function recordCliCompactionInStore(params: {
   next.updatedAt = Date.now();
   const tokensAfterCompaction = asNonNegativeFiniteNumber(params.tokensAfter);
   next.contextBudgetStatus = undefined;
-  next.inputTokens = undefined;
-  next.outputTokens = undefined;
-  next.cacheRead = undefined;
-  next.cacheWrite = undefined;
+  Object.assign(next, COMPACTION_RUN_USAGE_CLEAR_PATCH);
   if (tokensAfterCompaction !== undefined) {
     next.totalTokens = Math.floor(tokensAfterCompaction);
     next.totalTokensFresh = true;

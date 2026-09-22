@@ -11,17 +11,23 @@ import {
   type DiagnosticPhaseSnapshot,
   type DiagnosticLivenessWarningReason,
 } from "../infra/diagnostic-events.js";
+import { emitChildProcessSpawnSample } from "../process/spawn-utils.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
-import { emitDiagnosticMemorySample, resetDiagnosticMemoryForTest } from "./diagnostic-memory.js";
+import { reconcileDiagnosticGcObserver, stopDiagnosticGcObserver } from "./diagnostic-gc.js";
+import {
+  emitDiagnosticMemorySample,
+  resetDiagnosticMemoryForTest,
+  type EmitDiagnosticMemorySample,
+} from "./diagnostic-memory.js";
 import {
   getCurrentDiagnosticPhase,
   getRecentDiagnosticPhases,
   resetDiagnosticPhasesForTest,
 } from "./diagnostic-phase.js";
 import {
-  BLOCKED_TOOL_CALL_ABORT_FLOOR_MS,
   getDiagnosticSessionActivitySnapshot,
   resetDiagnosticRunActivityForTest,
+  resolveRunStaleThresholdMs,
   startDiagnosticRunActivityTracking,
   stopDiagnosticRunActivityTracking,
   type DiagnosticSessionActivitySnapshot,
@@ -53,6 +59,7 @@ import type {
 } from "./diagnostic-session-recovery.js";
 import {
   diagnosticSessionStates,
+  retireDiagnosticSessionObservations,
   getDiagnosticSessionState,
   isDiagnosticSessionStateCurrent,
   pruneDiagnosticSessionStates,
@@ -93,19 +100,6 @@ const loadStuckSessionRecoveryRuntime = createLazyRuntimeModule(
   () => import("./diagnostic-stuck-session-recovery.runtime.js"),
 );
 
-// The logging-core SDK shipped this callback input before automatic bundles retired.
-// Preserve its optional fields; the heartbeat only supplies emitSample.
-type DiagnosticMemorySampleCallbackOptions = NonNullable<
-  Parameters<typeof emitDiagnosticMemorySample>[0]
-> & {
-  writeCriticalBundle?: boolean;
-  stateDir?: string;
-  sessionStorePaths?: string[];
-  resolveSessionStorePaths?: () => string[] | undefined;
-};
-type EmitDiagnosticMemorySample = (
-  options?: DiagnosticMemorySampleCallbackOptions,
-) => ReturnType<typeof emitDiagnosticMemorySample>;
 type EventLoopDelayMonitor = ReturnType<typeof monitorEventLoopDelay>;
 type EventLoopUtilization = ReturnType<typeof performance.eventLoopUtilization>;
 type CpuUsage = ReturnType<typeof process.cpuUsage>;
@@ -481,85 +475,53 @@ function resolveStuckSessionAbortMs(stuckSessionWarnMs: number): number {
   );
 }
 
-function isStalledEmbeddedRunRecoveryEligible(params: {
-  classification: SessionAttentionClassification | undefined;
-  activity?: DiagnosticSessionActivitySnapshot;
-  stuckSessionAbortMs: number;
-}): boolean {
-  const lastProgressAgeMs = params.activity?.lastProgressAgeMs;
-  return (
-    params.classification?.eventType === "session.stalled" &&
-    params.classification.classification === "stalled_agent_run" &&
-    params.classification.activeWorkKind === "embedded_run" &&
-    typeof lastProgressAgeMs === "number" &&
-    lastProgressAgeMs >= params.stuckSessionAbortMs
-  );
-}
-
-function isBlockedToolCallRecoveryEligible(params: {
-  classification: SessionAttentionClassification | undefined;
-  activity?: DiagnosticSessionActivitySnapshot;
-  stuckSessionAbortMs: number;
-}): boolean {
-  const toolAgeMs = params.activity?.activeToolAgeMs;
-  const lastProgressAgeMs = params.activity?.lastProgressAgeMs;
-  const abortMs = Math.max(params.stuckSessionAbortMs, BLOCKED_TOOL_CALL_ABORT_FLOOR_MS);
-  return (
-    params.classification?.eventType === "session.stalled" &&
-    params.classification.classification === "blocked_tool_call" &&
-    params.classification.activeWorkKind === "tool_call" &&
-    typeof toolAgeMs === "number" &&
-    typeof lastProgressAgeMs === "number" &&
-    (params.activity?.activeToolDeadlineAtMs !== undefined
-      ? Date.now() >= params.activity.activeToolDeadlineAtMs
-      : toolAgeMs >= abortMs && lastProgressAgeMs >= abortMs)
-  );
-}
-
-function isStalledModelCallRecoveryEligible(params: {
-  classification: SessionAttentionClassification | undefined;
-  activity?: DiagnosticSessionActivitySnapshot;
-  stuckSessionAbortMs: number;
-}): boolean {
-  const lastProgressAgeMs = params.activity?.lastProgressAgeMs;
-  const effectiveAbortMs = Math.max(
-    params.stuckSessionAbortMs,
-    params.activity?.activeModelCallRequestTimeoutMs ?? 0,
-  );
-  // Local providers are not blanket-exempt from recovery. Streaming model
-  // chunks refresh run activity while emitted progress events are throttled, so
-  // active streams stay fresh and silent/non-streaming calls can be recovered.
-  return (
-    params.classification?.eventType === "session.stalled" &&
-    params.classification.classification === "stalled_agent_run" &&
-    params.classification.activeWorkKind === "model_call" &&
-    typeof lastProgressAgeMs === "number" &&
-    lastProgressAgeMs >= effectiveAbortMs
-  );
-}
-
 function isActiveAbortRecoveryEligible(params: {
   classification: SessionAttentionClassification | undefined;
   activity?: DiagnosticSessionActivitySnapshot;
   stuckSessionAbortMs: number;
 }): boolean {
-  const effectiveModelAbortMs = Math.max(
-    params.stuckSessionAbortMs,
-    params.activity?.activeModelCallRequestTimeoutMs ?? 0,
-  );
-  const activeModelCallRequestTimeoutMs = params.activity?.activeModelCallRequestTimeoutMs;
-  const activeModelCallAllowanceExpired =
-    activeModelCallRequestTimeoutMs === undefined ||
-    (params.activity?.lastProgressAgeMs ?? 0) >= activeModelCallRequestTimeoutMs;
+  const { activity, classification, stuckSessionAbortMs } = params;
+  const lastProgressAgeMs = activity?.lastProgressAgeMs;
+  if (
+    !activity ||
+    classification?.eventType !== "session.stalled" ||
+    lastProgressAgeMs === undefined
+  ) {
+    return false;
+  }
+  if (
+    classification.classification === "blocked_tool_call" &&
+    classification.activeWorkKind === "tool_call"
+  ) {
+    const abortMs = resolveRunStaleThresholdMs(activity, lastProgressAgeMs, stuckSessionAbortMs);
+    return (
+      activity.activeToolAgeMs !== undefined &&
+      lastProgressAgeMs >= abortMs &&
+      (activity.activeToolDeadlineAtMs !== undefined || activity.activeToolAgeMs >= abortMs)
+    );
+  }
+  if (classification.classification !== "stalled_agent_run") {
+    return false;
+  }
+  const modelAllowanceExpired =
+    activity.activeModelCallRequestTimeoutMs === undefined ||
+    lastProgressAgeMs >= activity.activeModelCallRequestTimeoutMs;
+  // Repeated requests can be stalled while a tool owns the current phase.
+  // Transport liveness must not replace that independent semantic evidence.
+  if (
+    activity.hasActiveEmbeddedRun &&
+    (activity.repeatedRequestNoProgressAgeMs ?? 0) >=
+      Math.max(stuckSessionAbortMs, activity.activeModelCallRequestTimeoutMs ?? 0) &&
+    modelAllowanceExpired
+  ) {
+    return true;
+  }
   return (
-    (params.classification?.eventType === "session.stalled" &&
-      params.classification.classification === "stalled_agent_run" &&
-      params.activity?.hasActiveEmbeddedRun === true &&
-      (params.activity.repeatedRequestNoProgressAgeMs ?? 0) >= effectiveModelAbortMs &&
-      activeModelCallAllowanceExpired) ||
-    isStalledEmbeddedRunRecoveryEligible(params) ||
-    isBlockedToolCallRecoveryEligible(params) ||
-    isStalledModelCallRecoveryEligible(params)
+    (classification.activeWorkKind === "model_call" ||
+      classification.activeWorkKind === "embedded_run") &&
+    lastProgressAgeMs >=
+      resolveRunStaleThresholdMs(activity, lastProgressAgeMs, stuckSessionAbortMs) &&
+    modelAllowanceExpired
   );
 }
 
@@ -1155,6 +1117,7 @@ export function startDiagnosticHeartbeat(
   startDiagnosticRunActivityTracking();
   startDiagnosticStabilityRecorder();
   installDiagnosticStabilityFatalHook();
+  reconcileDiagnosticGcObserver();
   if (heartbeatInterval) {
     return;
   }
@@ -1167,6 +1130,9 @@ export function startDiagnosticHeartbeat(
     opts?.startupGraceMs != null && opts.startupGraceMs > 0 ? Date.now() + opts.startupGraceMs : 0;
   lastDiagnosticHeartbeatTickAt = Date.now();
   heartbeatInterval = setInterval(() => {
+    // Reuse this tick for exporter demand changes; GC collection never adds a timer.
+    reconcileDiagnosticGcObserver();
+    emitChildProcessSpawnSample();
     let heartbeatConfig = config;
     if (!heartbeatConfig) {
       try {
@@ -1318,12 +1284,14 @@ export function startDiagnosticHeartbeat(
 }
 
 export function stopDiagnosticHeartbeat() {
+  stopDiagnosticGcObserver();
   if (heartbeatInterval) {
     clearInterval(heartbeatInterval);
     heartbeatInterval = null;
   }
   lastDiagnosticHeartbeatTickAt = undefined;
   stopDiagnosticRunActivityTracking();
+  retireDiagnosticSessionObservations();
   stopDiagnosticLivenessSampler();
   stopDiagnosticStabilityRecorder();
   uninstallDiagnosticStabilityFatalHook();

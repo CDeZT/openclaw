@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   getAdmittedRunDelegatedAuthority,
   prepareSystemAgentRunAdmission,
@@ -39,6 +40,7 @@ import {
 import { recoverStuckDiagnosticSession } from "../../logging/diagnostic-stuck-session-recovery.runtime.js";
 import { diagnosticLogger, startDiagnosticHeartbeat } from "../../logging/diagnostic.js";
 import { resetDiagnosticStateForTest } from "../../logging/diagnostic.test-support.js";
+import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createAgentRuntimeApprovalAuthorityValidator } from "../agent-runtime-identity-token.js";
 import { QuestionManager } from "../question-manager.js";
@@ -122,7 +124,7 @@ afterEach(() => {
   releaseAgentRunDelegatedAuthority(authority);
   unregister();
   clearAgentRunContext(ref.runId);
-  manager.reset();
+  manager.close();
   embeddedRunTesting.resetActiveEmbeddedRuns();
   resetDiagnosticEventsForTest();
   vi.useRealTimers();
@@ -346,7 +348,29 @@ it.each([900_000, 3_600_000])(
   },
 );
 
-it.each(["cancel", "reset", "authority", "generation"] as const)(
+it("does not expire a stopped RPC observer's question before its expiry callback runs", async () => {
+  const id = await request("ask_user", false, 100);
+  const events: string[] = [];
+  onBroadcast = (event) => events.push(event);
+  const observer = new AsyncWorkScope();
+  const waiting = observer.track(() => call("question.waitAnswer", { id }, false));
+  try {
+    observer.beginClose();
+    // The clock can pass expiry while its timer is still queued. Observation
+    // cleanup must not turn that queued deadline into a question decision.
+    vi.setSystemTime(Date.now() + 101);
+    await expect(waiting).resolves.toEqual([true, { status: "pending" }, undefined]);
+    await observer.drain();
+    manager.close();
+    expect(events).toEqual([]);
+  } finally {
+    manager.close();
+    await waiting;
+    await observer.drain();
+  }
+});
+
+it.each(["cancel", "reset", "close", "authority", "generation"] as const)(
   "releases protection after %s closes the question",
   async (terminal) => {
     const id = await request("ask_user");
@@ -356,6 +380,9 @@ it.each(["cancel", "reset", "authority", "generation"] as const)(
     }
     if (terminal === "reset") {
       manager.reset();
+    }
+    if (terminal === "close") {
+      manager.close();
     }
     if (terminal === "authority") {
       admission.close();
@@ -429,7 +456,10 @@ it.each(["reply admission", "embedded steering"])(
       resetTriggered: false,
     });
     operation.attachBackend(Object.assign(handle, { kind: "embedded" as const, cancel: abort }));
-    operation.bindToolAuthorityFingerprint("human-wait-surface");
+    operation.bindToolAuthoritySnapshot({
+      fingerprint: () => "human-wait-surface",
+      project: () => "human-wait-surface",
+    });
     operation.setPhase("running");
     try {
       await request("ask_user");
@@ -531,10 +561,7 @@ it("refuses to bind new authority to the old handle when a run ID is reused", as
 it.each(["pending", "answered", "cancelled", "expired", "requester-inactive"] as const)(
   "rechecks a question accepted after recovery was queued (%s)",
   async (terminal) => {
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const { promise: gate, resolve: release } = createDeferred();
     const recovery = vi.fn(async (params: Parameters<typeof recoverStuckDiagnosticSession>[0]) => {
       await gate;
       return recoverStuckDiagnosticSession(params);
