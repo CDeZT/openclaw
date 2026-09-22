@@ -19,7 +19,10 @@ import { runAgentHarnessBeforeMessageWriteHook } from "../../agents/harness/hook
 import { findModelInCatalog, modelSupportsInput } from "../../agents/model-catalog-lookup.js";
 import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
 import { rootedAgentRunParams } from "../../agents/rooted-run-params.js";
-import { resolveScheduledToolPolicyContext } from "../../agents/scheduled-tool-policy.js";
+import {
+  resolveScheduledToolCallerContext,
+  resolveScheduledToolPolicyContext,
+} from "../../agents/scheduled-tool-policy.js";
 import { withLocalSessionPlacementTurnSettlement } from "../../agents/session-placement-admission.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
 import { needsThinkHydration } from "../../agents/thinking-runtime.js";
@@ -177,10 +180,11 @@ function createCronPromptExecutor(
   const sourceReplyDeliveryMode = sourceDelivery.sourceReplyDeliveryMode;
   const messageChannel = sourceDelivery.target.channel ?? params.resolvedDelivery.channel;
   if (scheduledToolPolicy?.mode === "account") {
+    const callerContext = resolveScheduledToolCallerContext({ scheduledToolPolicy });
     const policyOutcome = resolveGroupToolPolicyOutcome({
       config: params.cfgWithAgentDefaults,
       sessionKey: scheduledToolPolicy.ownerSessionKey,
-      messageProvider: messageChannel,
+      messageProvider: callerContext.channel ?? undefined,
       accountId: scheduledToolPolicy.ownerAccountId,
       requireConfiguredAccount: true,
       senderPolicyMode: "never",
