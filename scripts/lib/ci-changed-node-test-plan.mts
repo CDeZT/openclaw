@@ -104,7 +104,9 @@ const MAX_CHANGED_NODE_TEST_TARGETS = 96;
 // Each target runs in its own child process (isolation contract), so bound the
 // serial tail per job; the shard runner overlaps two children at a time.
 const CHANGED_NODE_TEST_TARGETS_PER_JOB = 12;
-const CHANGED_EXTENSION_JOB_SECONDS = 240;
+// Share the 45–60s runner setup across more unchanged serial envelopes.
+// Runtime preparation and native-worker file ceilings remain separate admission limits.
+const CHANGED_EXTENSION_JOB_SECONDS = 300;
 const MAX_CHANGED_EXTENSION_FALLBACK_JOBS = 50;
 // Memory Core targets perform real SQLite/indexing work. Two concurrent Vitest
 // processes starve each other on 4-vCPU runners and push otherwise healthy

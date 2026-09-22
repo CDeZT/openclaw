@@ -3596,14 +3596,14 @@ setImmediate(() => {
         runner: "blacksmith-32vcpu-ubuntu-2404",
       })),
       ...[
-        "changed-extensions-bundle-16",
-        "changed-extensions-bundle-25",
-        "compact-large-5",
-        "compact-large-9",
-      ].map((bin) => ({
+        ["changed-extensions-bundle-16", 8],
+        ["changed-extensions-bundle-25", 8],
+        ["compact-large-5", 16],
+        ["compact-large-9", 16],
+      ].map(([bin, size]) => ({
         jobName: "checks-node-core-test-nondist-shard",
         matrix: { check_name: `checks-node-${bin}`, runner: "blacksmith-8vcpu-ubuntu-2404" },
-        runner: "blacksmith-16vcpu-ubuntu-2404",
+        runner: `blacksmith-${size}vcpu-ubuntu-2404`,
       })),
     ] as const;
     for (const { jobName, matrix, runner } of widenedHybridMatrixRows) {

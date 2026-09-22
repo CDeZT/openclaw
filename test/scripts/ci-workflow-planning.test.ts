@@ -1790,7 +1790,7 @@ describe("ci workflow guards", () => {
             runnerBackend: "hybrid",
             preflightOutputs: manifest.outputs,
           }),
-        ).toBe(admitted && eventName === "push" ? "ubuntu-24.04" : "blacksmith-16vcpu-ubuntu-2404");
+        ).toBe("blacksmith-16vcpu-ubuntu-2404");
         const step = readCiWorkflow().jobs.preflight.steps.find(
           (candidate: WorkflowStep) => candidate.id === "hosted_health",
         );
@@ -1871,7 +1871,7 @@ describe("ci workflow guards", () => {
           });
           expect(manifest.status, manifest.output).toBe(0);
           const admitted = healthy === "true" && baseRows <= 35;
-          const mainAdmitted = admitted && baseRows <= 32;
+          const mainAdmitted = admitted && baseRows <= 33;
           expect(manifest.outputs.hybrid_hosted_checks).toBe(String(admitted));
           expect(manifest.outputs.hybrid_hosted_main_checks).toBe(String(mainAdmitted));
           const hosted = emittedHostedRows(manifest.outputs);
@@ -1882,11 +1882,9 @@ describe("ci workflow guards", () => {
           });
           expect(Number(manifest.outputs.hybrid_hosted_total_rows)).toBe(hosted.length);
           expect(hosted.length - withoutChecks.length).toBe(
-            (admitted ? 5 : 0) + (mainAdmitted ? 3 : 0),
+            (admitted ? 5 : 0) + (mainAdmitted ? 2 : 0),
           );
-          expect(hosted.filter((name) => name === "build-artifacts")).toHaveLength(
-            mainAdmitted ? 1 : 0,
-          );
+          expect(hosted).not.toContain("build-artifacts");
           expect(
             hosted.filter((name) => name === "check-test-types-hosted-core-shard"),
           ).toHaveLength(admitted ? 2 : 0);
