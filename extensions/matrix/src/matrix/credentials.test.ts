@@ -127,7 +127,7 @@ describe("matrix credentials storage", () => {
       const observedSources: Array<{ root: string | undefined; supervisor: string | undefined }> =
         [];
       vi.spyOn(runtime.state, "openKeyedStore").mockImplementation(
-        <T>(options: OpenKeyedStoreOptions) => {
+        <T>(options: Parameters<typeof runtime.state.openKeyedStore>[0]) => {
           observedSources.push({
             root: options.env?.OPENCLAW_STATE_DIR,
             supervisor: options.env?.OPENCLAW_SUPERVISOR_MODE,
