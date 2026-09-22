@@ -114,7 +114,7 @@ suite.define(() => {
         expect(await gateway.getRequests("models.list", scope)).toHaveLength(1);
         await gateway.emitGatewayEvent("models.snapshot", {
           target,
-          scope: "shortId" in target ? scope : target,
+          scope,
           catalog: {
             models: [current],
             pendingProviders: ["fixture"],
