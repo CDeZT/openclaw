@@ -374,7 +374,14 @@ async function capture(name, cwd, revision) {
   const errors = [];
   try {
     for (const script of ["ios-configure-signing.sh", "ios-write-version-xcconfig.sh"]) {
-      await checked(`${name}-${script}`, "/bin/bash", [`scripts/${script}`], { cwd, env });
+      const scriptPath = `scripts/${script}`;
+      // Bash 3.2 cannot wait on process substitutions; join their inherited output
+      // before the strict process-group check, preserving the preparation script's status.
+      const scriptArgs =
+        script === "ios-write-version-xcconfig.sh"
+          ? ["-o", "pipefail", "-c", '"$@" 2>&1 | cat', "_", "/bin/bash", scriptPath]
+          : [scriptPath];
+      await checked(`${name}-${script}`, "/bin/bash", scriptArgs, { cwd, env });
     }
     await checked(`${name}-filelist`, process.execPath, ["scripts/ios-write-swift-filelist.mjs"], {
       cwd,
@@ -402,6 +409,9 @@ async function capture(name, cwd, revision) {
         : []),
       "-jobs",
       "4",
+    ];
+    const testArgs = [
+      ...args,
       "-parallel-testing-enabled",
       "NO",
       `-only-testing:${TEST}`,
@@ -483,7 +493,7 @@ async function capture(name, cwd, revision) {
       `${name}-test`,
       "xcodebuild",
       [
-        ...args,
+        ...testArgs,
         "-resultBundlePath",
         path.join(directory, "test.xcresult"),
         "test-without-building",
