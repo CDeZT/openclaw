@@ -325,6 +325,24 @@ describe("anysearch web search provider", () => {
     );
   });
 
+  it("redacts the active credential reflected in a 2xx envelope error", async () => {
+    // HTTP-200 failure envelopes do not pass through throwWebSearchApiError, so
+    // the request-bound redactor must still cover the raw upstream message.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ code: -1, message: "bad key secret-sample" }, 200),
+    );
+    const tool = requireAnysearchTool({ apiKey: "secret-sample" }, { cacheTtlMinutes: 0 });
+
+    const error: unknown = await tool
+      .execute({ query: "envelope redaction probe" })
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toContain("AnySearch API error (code -1)");
+    expect(message).not.toContain("secret-sample");
+  });
+
   it("rejects a malformed provider body", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("<html>not json</html>", {

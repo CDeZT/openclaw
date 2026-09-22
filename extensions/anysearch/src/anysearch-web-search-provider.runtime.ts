@@ -1,3 +1,4 @@
+import { redactProviderResponseErrorText } from "openclaw/plugin-sdk/provider-http";
 // Anysearch provider module implements model/runtime integration.
 import {
   buildSearchCacheKey,
@@ -114,7 +115,11 @@ function parseAnysearchTagParams(
   return entries.length > 0 ? { value: Object.fromEntries(entries) } : { value: undefined };
 }
 
-function normalizeAnysearchSearchHits(payload: unknown, count: number): AnysearchSearchHit[] {
+function normalizeAnysearchSearchHits(
+  payload: unknown,
+  count: number,
+  requestHeaders: HeadersInit,
+): AnysearchSearchHit[] {
   const record = asOptionalRecord(payload);
   if (!record) {
     return [];
@@ -123,10 +128,15 @@ function normalizeAnysearchSearchHits(payload: unknown, count: number): Anysearc
   const response: AnysearchSearchResponse = record;
   // A rejected request answers with a non-zero envelope code. The search
   // endpoint reports those as HTTP 4xx today, so this covers a 2xx response
-  // that still carries a failure code.
+  // that still carries a failure code. The envelope is an untrusted provider
+  // body, so it passes through the same request-bound redactor as HTTP failures
+  // instead of widening the raw message into a thrown diagnostic.
   if (typeof response.code === "number" && response.code !== 0) {
     const detail = normalizeOptionalString(response.message);
-    throw new Error(`AnySearch API error (code ${response.code})${detail ? `: ${detail}` : ""}`);
+    throw new Error(
+      `AnySearch API error (code ${response.code})` +
+        (detail ? `: ${redactProviderResponseErrorText(detail, requestHeaders)}` : ""),
+    );
   }
 
   const results = asOptionalRecord(response.data)?.results;
@@ -143,6 +153,7 @@ function normalizeAnysearchSearchHits(payload: unknown, count: number): Anysearc
 async function readAnysearchSearchHits(
   response: Response,
   count: number,
+  requestHeaders: HeadersInit,
 ): Promise<AnysearchSearchHit[]> {
   const body = await readResponseText(response, { maxBytes: ANYSEARCH_SEARCH_JSON_MAX_BYTES });
   if (body.truncated) {
@@ -155,7 +166,7 @@ async function readAnysearchSearchHits(
   } catch (cause) {
     throw new Error("AnySearch search returned malformed JSON", { cause });
   }
-  return normalizeAnysearchSearchHits(parsed, count);
+  return normalizeAnysearchSearchHits(parsed, count, requestHeaders);
 }
 
 async function runAnysearchSearch(params: {
@@ -217,7 +228,7 @@ async function runAnysearchSearch(params: {
           signal: params.signal,
         });
       }
-      return await readAnysearchSearchHits(response, params.count);
+      return await readAnysearchSearchHits(response, params.count, headers);
     },
   );
 }

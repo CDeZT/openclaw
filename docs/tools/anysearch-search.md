@@ -110,8 +110,11 @@ instead. With no key anywhere, AnySearch answers anonymously: no
 | `language` | Language hint for results (optional)                               |
 | `params`   | Tag parameters such as `library` for the `code.doc` tag (optional) |
 
-The `web_search` tool call also accepts `count` (1-10 results), `tag`,
-`zone`, `language`, and `params` as per-call overrides.
+The shared `web_search` tool owns a fixed argument schema (`query`, `count`,
+and the other providers' filters). It does not adopt a provider's own `parameters`
+schema, so `tag`, `zone`, `language`, and `params` are **not** exposed to the
+model as per-call arguments. Configure them as plugin config; they apply to every
+search this provider runs.
 
 ## Notes
 
