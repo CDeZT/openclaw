@@ -37,11 +37,19 @@ Advantages:
     # Select "anysearch" as the provider
     ```
 
-    Or set the env var and let auto-detection find it:
+    Select the provider explicitly for both anonymous and keyed use:
 
-    ```bash
-    export ANYSEARCH_API_KEY="as_sk_..."
+    ```json5
+    {
+      tools: { web: { search: { provider: "anysearch" } } },
+    }
     ```
+
+    An `ANYSEARCH_API_KEY` environment variable alone does **not** select this
+    provider. Automatic selection only considers providers that require a
+    credential, and this provider is usable without one, so keyless providers are
+    skipped by auto-detection. Set `ANYSEARCH_API_KEY` (or the plugin `apiKey`)
+    only to raise rate limits once the provider is selected.
 
     Leave the key blank for anonymous access at lower rate limits.
 
@@ -87,7 +95,8 @@ Plugin-level settings for AnySearch:
 
 ## Environment variable
 
-Set `ANYSEARCH_API_KEY` as an alternative to config:
+Set `ANYSEARCH_API_KEY` as an alternative to the plugin `apiKey`. This supplies
+the credential only; it does not select the provider (see Setup).
 
 ```bash
 export ANYSEARCH_API_KEY="as_sk_..."
@@ -111,10 +120,11 @@ instead. With no key anywhere, AnySearch answers anonymously: no
 | `params`   | Tag parameters such as `library` for the `code.doc` tag (optional) |
 
 The shared `web_search` tool owns a fixed argument schema (`query`, `count`,
-and the other providers' filters). It does not adopt a provider's own `parameters`
-schema, so `tag`, `zone`, `language`, and `params` are **not** exposed to the
-model as per-call arguments. Configure them as plugin config; they apply to every
-search this provider runs.
+`language`, and other providers' filters). It does not adopt a provider's own
+`parameters` schema, so `tag`, `zone`, and `params` are **not** exposed to the
+model as per-call arguments; configure them as plugin config and they apply to
+every search this provider runs. `language` **is** part of the shared schema: a
+per-call `language` overrides the configured `language` default for that request.
 
 ## Notes
 
