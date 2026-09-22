@@ -361,6 +361,8 @@ async function runWorkboardDispatch(
     let workspaceAccess: WorkboardWorkspaceAccess;
     let targetWorkspace: string | undefined;
     let persistWorkspaceAccess: boolean;
+    // Preflight failures leave the card unclaimed; keep them outside the
+    // claim and launch compensation boundary below.
     try {
       ({ workspaceAccess, targetWorkspace, persistWorkspaceAccess } =
         await resolveDispatchWorkspaceAccess({
@@ -368,25 +370,16 @@ async function runWorkboardDispatch(
           currentAccess: params.options?.workspaceAccess,
           resolveAgentWorkspace: params.options?.resolveAgentWorkspace,
         }));
-    } catch (error) {
-      startFailures.push({
-        cardId: card.id,
-        title: card.title,
-        error: formatErrorMessage(error),
-      });
-      continue;
-    }
-    if (!requestedWorkspace || requestedWorkspace.kind === "scratch") {
-      if (!workspaceAccess.unrestricted) {
-        if (!targetWorkspace) {
-          startFailures.push({
-            cardId: card.id,
-            title: card.title,
-            error: "target agent workspace is unavailable for restricted dispatch",
-          });
-          continue;
-        }
-        try {
+      if (!requestedWorkspace || requestedWorkspace.kind === "scratch") {
+        if (!workspaceAccess.unrestricted) {
+          if (!targetWorkspace) {
+            startFailures.push({
+              cardId: card.id,
+              title: card.title,
+              error: "target agent workspace is unavailable for restricted dispatch",
+            });
+            continue;
+          }
           implicitWorkspaceCwd = targetWorkspace;
           await assertCanonicalWorkboardRootAccess(implicitWorkspaceCwd, workspaceAccess);
           await assertRestrictedWorkboardTarget({
@@ -398,17 +391,8 @@ async function runWorkboardDispatch(
             resolveAgentWorkspaceRuntime: params.options?.resolveAgentWorkspaceRuntime,
             worktrees: params.worktrees,
           });
-        } catch (error) {
-          startFailures.push({
-            cardId: card.id,
-            title: card.title,
-            error: formatErrorMessage(error),
-          });
-          continue;
         }
-      }
-    } else {
-      try {
+      } else {
         const canonicalSourcePath = await assertWorkboardWorkspaceSourceAccess(
           requestedWorkspace,
           workspaceAccess,
@@ -432,14 +416,14 @@ async function runWorkboardDispatch(
             worktrees: params.worktrees,
           });
         }
-      } catch (error) {
-        startFailures.push({
-          cardId: card.id,
-          title: card.title,
-          error: formatErrorMessage(error),
-        });
-        continue;
       }
+    } catch (error) {
+      startFailures.push({
+        cardId: card.id,
+        title: card.title,
+        error: formatErrorMessage(error),
+      });
+      continue;
     }
     try {
       const claimed = await params.store.claim(
