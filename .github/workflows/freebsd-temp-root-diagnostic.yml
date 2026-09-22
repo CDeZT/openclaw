@@ -2,7 +2,7 @@
 name: Temporary FreeBSD temp-root diagnostic producer
 on:
   pull_request:
-    types: [opened]
+    types: [synchronize]
     branches: [main]
     paths: [.github/workflows/freebsd-temp-root-diagnostic.yml]
 permissions:
@@ -14,7 +14,9 @@ jobs:
   candidate-package:
     if: >-
       github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
-      github.event_name == 'pull_request' && github.event.action == 'opened' &&
+      github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
+      github.event.pull_request.number == 155285 &&
+      github.event.before == '7effec872cc03fa8af9d96dc71d63123a33ab0dc' &&
       github.event.pull_request.state == 'open' && github.event.pull_request.draft &&
       github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
@@ -35,13 +37,15 @@ jobs:
       CANDIDATE_TREE: 282fcc4a3ee7d7af39c51fb39b97ca3545dff873
       PRODUCT_SHA: 10725d8613c64f5efdc8ea58eae70a3b8f4276ac
       PRODUCT_TREE: 74bddc0882c455c519931e40040c260df9951ee8
+      PREVIOUS_CARRIER_SHA: 7effec872cc03fa8af9d96dc71d63123a33ab0dc
+      PREVIOUS_CARRIER_TREE: 1cb3a786afe727743a5e991bfb29ebe3057a3172
       CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
       WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 5
+          fetch-depth: 6
           persist-credentials: false
       - name: Bind the diagnostic derivative and sole workflow carrier
         run: |
@@ -49,7 +53,9 @@ jobs:
           [[ "$CARRIER_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
-          test "$(git show -s --format=%P HEAD)" = "$CANDIDATE_SHA"
+          test "$(git show -s --format=%P HEAD)" = "$PREVIOUS_CARRIER_SHA"
+          test "$(git rev-parse "$PREVIOUS_CARRIER_SHA^{tree}")" = "$PREVIOUS_CARRIER_TREE"
+          test "$(git show -s --format=%P "$PREVIOUS_CARRIER_SHA")" = "$CANDIDATE_SHA"
           test "$(git show -s --format=%P "$CANDIDATE_SHA")" = "$PRODUCT_SHA"
           test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
           test "$(git rev-parse "$PRODUCT_SHA^{tree}")" = "$PRODUCT_TREE"
@@ -72,7 +78,7 @@ jobs:
           assert paths==expected
           receipt=dict(product=product,productTree=os.environ['PRODUCT_TREE'],candidate=candidate,candidateTree=os.environ['CANDIDATE_TREE'],
               patchSha256=hashlib.sha256(patch).hexdigest(),paths=paths,carrier=os.environ['CARRIER_SHA'],workflow=os.environ['WORKFLOW_SHA'],
-              eventMerge=os.environ['GITHUB_SHA'],run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+              previousCarrier=os.environ['PREVIOUS_CARRIER_SHA'],eventMerge=os.environ['GITHUB_SHA'],run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],
               scope='temporary closed cause and role-only filesystem observations; not a shipping repair or native qualification')
           Path(os.environ['RUNNER_TEMP'],'freebsd-temp-diagnostic-proof','source-binding.json').write_text(json.dumps(receipt,indent=2)+'\n')
           print(json.dumps(receipt))
@@ -157,58 +163,71 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'EMIT'
-          import hashlib,json,os,tarfile
+          import hashlib,json,os,sys,tarfile
           from pathlib import Path,PurePosixPath
           root=Path(os.environ['RUNNER_TEMP']);proof=root/'freebsd-temp-diagnostic-proof'
           package=root/'freebsd-temp-candidate-package/candidate.tgz'
-          modules=[];candidates=[];retained_bytes=0
-          with tarfile.open(package,'r:gz') as archive:
-              members=archive.getmembers();names=[member.name for member in members]
-              assert len(names)==len(set(names)),'duplicate package members'
-              for member in members:
-                  parts=PurePosixPath(member.name).parts
-                  assert not member.name.startswith('/') and '\\' not in member.name and '..' not in parts and parts[0]=='package','unsafe package member'
-              def read(name):
-                  matches=[member for member in members if member.name=='package/'+name]
-                  assert len(matches)==1 and matches[0].isfile(),name
-                  return archive.extractfile(matches[0]).read()
-              meta=json.loads(read('package.json'));build=json.loads(read('dist/build-info.json'))
-              assert build['commit']==os.environ['CANDIDATE_SHA']
-              assert meta['dependencies']['@openclaw/fs-safe']=='0.18.0'
-              finalizer='dist/infra/update-migrated-finalize.worker.js'
-              worker=read(finalizer)
-              assert worker==(root/'freebsd-temp-candidate'/finalizer).read_bytes()
-              for member in members:
-                  name=member.name
-                  if not name.startswith('package/dist/') or PurePosixPath(name).suffix not in {'.js','.mjs'}: continue
-                  assert member.isfile(),'runtime JavaScript must be a regular package member'
-                  data=archive.extractfile(member).read();relative=name.removeprefix('package/')
-                  marker=b'OPENCLAW_FREEBSD_TEMP_DIAGNOSTIC_V1 ' in data
-                  item=dict(file=relative,bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),markerCandidate=marker)
-                  modules.append(item)
-                  if not marker: continue
-                  assert data==(root/'freebsd-temp-candidate'/relative).read_bytes(),'packaged diagnostic differs from the source build'
-                  retained_bytes+=len(data)
-                  assert len(candidates)<16 and len(data)<=8*1024*1024 and retained_bytes<=32*1024*1024,'diagnostic evidence exceeds retention bound'
-                  retained=f'diagnostic-candidate-{len(candidates)+1}.js'
-                  (proof/retained).write_bytes(data)
-                  candidates.append(dict(**item,retained=retained))
-          inventory=dict(source=os.environ['CANDIDATE_SHA'],modules=modules,candidates=candidates)
-          encoded=json.dumps(inventory,indent=2)+'\n'
-          assert len(encoded.encode())<=8*1024*1024,'module inventory exceeds retention bound'
-          (proof/'diagnostic-module-inventory.json').write_text(encoded)
-          packages=[dict(role='candidate',source=os.environ['CANDIDATE_SHA'],build=build,
-              packageBytes=package.stat().st_size,packageSha256=hashlib.file_digest(package.open('rb'),'sha256').hexdigest(),
-              finalizer=dict(file=finalizer,bytes=len(worker),sha256=hashlib.sha256(worker).hexdigest()),fsSafe=meta['dependencies']['@openclaw/fs-safe'])]
-          (proof/'packages.json').write_text(json.dumps(packages,indent=2)+'\n')
-          print(json.dumps(dict(packages=packages,runtimeModules=len(modules),diagnosticCandidates=candidates)))
-          assert candidates,'no packaged diagnostic candidates; retained inventory records the search'
+          inventory=dict(source=os.environ['CANDIDATE_SHA'],complete=False,modules=[],candidates=[],errors=[])
+          packages=[];stage='archive';current=None
+          try:
+              with tarfile.open(package,'r:gz') as archive:
+                  members=archive.getmembers();names=[member.name for member in members]
+                  stage='unique-members';assert len(names)==len(set(names))
+                  for member in members:
+                      current=member.name;parts=PurePosixPath(current).parts;stage='safe-member'
+                      assert not current.startswith('/') and '\\' not in current and '..' not in parts and parts[0]=='package'
+                  def read(name):
+                      matches=[member for member in members if member.name=='package/'+name]
+                      assert len(matches)==1 and matches[0].isfile()
+                      return archive.extractfile(matches[0]).read()
+                  stage='package-contract';current=None
+                  meta=json.loads(read('package.json'));build=json.loads(read('dist/build-info.json'))
+                  assert build['commit']==os.environ['CANDIDATE_SHA']
+                  assert meta['dependencies']['@openclaw/fs-safe']=='0.18.0'
+                  finalizer='dist/infra/update-migrated-finalize.worker.js'
+                  worker=read(finalizer)
+                  assert worker==(root/'freebsd-temp-candidate'/finalizer).read_bytes()
+                  packages=[dict(role='candidate',source=os.environ['CANDIDATE_SHA'],build=build,
+                      packageBytes=package.stat().st_size,packageSha256=hashlib.file_digest(package.open('rb'),'sha256').hexdigest(),
+                      finalizer=dict(file=finalizer,bytes=len(worker),sha256=hashlib.sha256(worker).hexdigest()),fsSafe=meta['dependencies']['@openclaw/fs-safe'])]
+                  for member in members:
+                      current=member.name
+                      if not current.startswith('package/dist/') or PurePosixPath(current).suffix not in {'.js','.mjs'}: continue
+                      stage='regular-javascript';assert member.isfile()
+                      stage='read-package-member';data=archive.extractfile(member).read();relative=current.removeprefix('package/')
+                      marker=b'OPENCLAW_FREEBSD_TEMP_DIAGNOSTIC_V1 ' in data
+                      item=dict(file=relative,bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),markerCandidate=marker)
+                      inventory['modules'].append(item)
+                      if not marker: continue
+                      candidate=dict(**item,packageBuildEqual=False,retention='bounded-excerpts-only')
+                      inventory['candidates'].append(candidate)
+                      try:
+                          built=(root/'freebsd-temp-candidate'/relative).read_bytes()
+                          candidate['packageBuildEqual']=data==built
+                          candidate['buildBytes']=len(built);candidate['buildSha256']=hashlib.sha256(built).hexdigest()
+                          candidate['condition']='verified' if candidate['packageBuildEqual'] else 'package-build-mismatch'
+                      except OSError:
+                          candidate['condition']='build-read-failed'
+              inventory['complete']=True
+          except Exception:
+              inventory['errors'].append(dict(stage=stage,code='collector-failed',member=current if stage!='safe-member' else None))
+          finally:
+              try:
+                  (proof/'diagnostic-module-inventory.json').write_text(json.dumps(inventory,indent=2)+'\n')
+                  (proof/'packages.json').write_text(json.dumps(packages,indent=2)+'\n')
+              except Exception:
+                  print(json.dumps(dict(stage='inventory-write',code='collector-failed')))
+                  raise SystemExit(1)
+          print(json.dumps(dict(complete=inventory['complete'],packages=packages,runtimeModules=len(inventory['modules']),diagnosticCandidates=inventory['candidates'],errors=inventory['errors'])))
+          if not inventory['complete']: sys.exit(1)
           EMIT
           node --input-type=module <<'EMIT'
           import assert from 'node:assert/strict';import fs from 'node:fs';import {createRequire} from 'node:module';import {createHash} from 'node:crypto';
           const require=createRequire(`${process.env.RUNNER_TEMP}/freebsd-temp-candidate/package.json`),{parse}=require('acorn');
           const dir=`${process.env.RUNNER_TEMP}/freebsd-temp-diagnostic-proof`,sha=b=>createHash('sha256').update(b).digest('hex');
-          const inventory=JSON.parse(fs.readFileSync(`${dir}/diagnostic-module-inventory.json`)),receipts=[],observed=new Set();
+          const MAX_DEBUG_BYTES=256*1024,MAX_EXCERPT_BYTES=64*1024;
+          let retainedBytes=0;
+          const observed=new Set(),result={source:process.env.CANDIDATE_SHA,complete:false,emissionPassed:false,receipts:[],errors:[],debug:{maxBytes:MAX_DEBUG_BYTES,retainedBytes:0,excerpts:[]},scope:'actual packaged observer and relay sites; native failure reproduction remains unrun'};
           const marker='OPENCLAW_FREEBSD_TEMP_DIAGNOSTIC_V1 ';
           const member=(n,object,property)=>n?.type==='MemberExpression'&&!n.computed&&n.object?.type==='Identifier'&&n.object.name===object&&n.property?.name===property;
           const builtinFs=n=>n?.type==='CallExpression'&&member(n.callee,'process','getBuiltinModule')&&n.arguments[0]?.value==='node:fs';
@@ -226,41 +245,86 @@ jobs:
             if(n.type==='TemplateLiteral')return n.quasis.some(q=>(q.value.cooked??q.value.raw).includes(marker))||n.expressions.some(value=>outputMarker(value,init,seen));
             return n.type==='BinaryExpression'&&n.operator==='+'&&(outputMarker(n.left,init,seen)||outputMarker(n.right,init,seen));
           }
-          for(const candidate of inventory.candidates) {
-            const bytes=fs.readFileSync(`${dir}/${candidate.retained}`);assert.equal(bytes.length,candidate.bytes);assert.equal(sha(bytes),candidate.sha256);
-            const ast=parse(bytes.toString('utf8'),{ecmaVersion:'latest',sourceType:'module'}),sites=[];
-            function visit(n,ancestors=[]) {
-              if(!n||typeof n!=='object')return;
-              const callee=n.callee;
-              if(n.type==='CallExpression'&&callee?.type==='MemberExpression'&&!callee.computed&&callee.property?.name==='writeSync'&&n.arguments[0]?.value===2&&n.arguments[1]?.type==='Identifier') {
-                const owner=ancestors.findLast(a=>a.type==='TryStatement');
-                if(owner) {
-                  const declarations=new Map();
-                  walk(owner.block,d=>{if(d.type==='VariableDeclarator'&&d.id.type==='Identifier'){const values=declarations.get(d.id.name)??[];values.push(d.init);declarations.set(d.id.name,values)}});
-                  const init=name=>declarations.get(name)?.length===1?declarations.get(name)[0]:undefined;
-                  const fsOwner=callee.object.type==='Identifier'?init(callee.object.name):callee.object;
-                  const output=init(n.arguments[1].name);
-                  const bounded=ancestors.some(a=>a.type==='IfStatement'&&a.test?.type==='BinaryExpression'&&a.test.operator==='<='&&a.test.right?.value===8192&&a.test.left?.type==='CallExpression'&&member(a.test.left.callee,'Buffer','byteLength')&&a.test.left.arguments[0]?.name===n.arguments[1].name);
-                  if(builtinFs(fsOwner)&&outputMarker(output,init)&&bounded) {
-                    walk(output,d=>{
-                      if(d.type!=='CallExpression'||!member(d.callee,'JSON','stringify')||d.arguments[0]?.type!=='Identifier')return;
-                      const record=init(d.arguments[0].name);
-                      if(record?.type!=='ObjectExpression')return;
-                      const origin=record.properties.find(p=>p.type==='Property'&&!p.computed&&(p.key.name??p.key.value)==='origin')?.value?.value;
-                      if(['config-snapshot','config-validator-relay'].includes(origin)){sites.push({origin,writeStart:n.start,writeEnd:n.end,maxBytes:8192});observed.add(origin)}
-                    });
+          function excerpt(bytes,source,file,bundleSha,start,end,kind) {
+            const byteStart=Buffer.byteLength(source.slice(0,start),'utf8'),byteEnd=Buffer.byteLength(source.slice(0,end),'utf8');
+            const slice=bytes.subarray(byteStart,byteEnd);assert(slice.equals(Buffer.from(source.slice(start,end),'utf8')));
+            const item={file,fullBundleBytes:bytes.length,fullBundleSha256:bundleSha,kind,utf16Start:start,utf16End:end,byteStart,byteEnd,bytes:slice.length,sha256:sha(slice)};
+            if(slice.length>MAX_EXCERPT_BYTES)item.omission='excerpt-size';
+            else if(retainedBytes+slice.length>MAX_DEBUG_BYTES)item.omission='total-debug-budget';
+            else {item.text=slice.toString('utf8');retainedBytes+=slice.length;item.omission=null;}
+            result.debug.excerpts.push(item);
+          }
+          try {
+            const inventory=JSON.parse(fs.readFileSync(`${dir}/diagnostic-module-inventory.json`));
+            assert.equal(inventory.complete,true);assert.equal(inventory.source,process.env.CANDIDATE_SHA);
+            for(const candidate of inventory.candidates) {
+              const receipt={...candidate,parsed:false,classification:'unclassified',markerWrites:0,sites:[],errors:[]};result.receipts.push(receipt);
+              let stage='read-build',bytes,source,bundleSha;
+              const fail=code=>receipt.errors.push({stage,code});
+              try {
+                bytes=fs.readFileSync(`${process.env.RUNNER_TEMP}/freebsd-temp-candidate/${candidate.file}`);bundleSha=sha(bytes);
+                stage='package-build-identity';
+                if(!candidate.packageBuildEqual||bytes.length!==candidate.bytes||bundleSha!==candidate.sha256)fail('package-build-mismatch');
+                source=bytes.toString('utf8');assert(Buffer.from(source,'utf8').equals(bytes));
+                stage='ast-parse';const ast=parse(source,{ecmaVersion:'latest',sourceType:'module'}),owners=new Map();
+                receipt.parsed=true;stage='ast-check';
+                function visit(n,ancestors=[]) {
+                  if(!n||typeof n!=='object')return;
+                  const callee=n.callee;
+                  if(n.type==='CallExpression'&&callee?.type==='MemberExpression'&&!callee.computed&&callee.property?.name==='writeSync'&&n.arguments[1]?.type==='Identifier') {
+                    const owner=ancestors.findLast(a=>a.type==='TryStatement');
+                    if(owner) {
+                      const declarations=new Map();
+                      walk(owner.block,d=>{if(d.type==='VariableDeclarator'&&d.id.type==='Identifier'){const values=declarations.get(d.id.name)??[];values.push(d.init);declarations.set(d.id.name,values)}});
+                      const init=name=>declarations.get(name)?.length===1?declarations.get(name)[0]:undefined;
+                      const fsOwner=callee.object.type==='Identifier'?init(callee.object.name):callee.object;
+                      const output=init(n.arguments[1].name);
+                      const bounded=ancestors.some(a=>a.type==='IfStatement'&&a.test?.type==='BinaryExpression'&&a.test.operator==='<='&&a.test.right?.value===8192&&a.test.left?.type==='CallExpression'&&member(a.test.left.callee,'Buffer','byteLength')&&a.test.left.arguments[0]?.name===n.arguments[1].name);
+                      if(outputMarker(output,init)) {
+                        receipt.markerWrites++;owners.set(`${owner.start}:${owner.end}`,owner);
+                        if(!builtinFs(fsOwner))fail('builtin-fs-writer-missing');
+                        if(n.arguments[0]?.value!==2)fail('stderr-descriptor-missing');
+                        if(!bounded)fail('output-bound-missing');
+                        const origins=new Set();
+                        walk(output,d=>{
+                          if(d.type!=='CallExpression'||!member(d.callee,'JSON','stringify')||d.arguments[0]?.type!=='Identifier')return;
+                          const record=init(d.arguments[0].name);
+                          if(record?.type!=='ObjectExpression')return;
+                          const origin=record.properties.find(p=>p.type==='Property'&&!p.computed&&(p.key.name??p.key.value)==='origin')?.value?.value;
+                          if(['config-snapshot','config-validator-relay'].includes(origin))origins.add(origin);
+                        });
+                        if(!origins.size)fail('fixed-origin-missing');
+                        if(builtinFs(fsOwner)&&n.arguments[0]?.value===2&&bounded)for(const origin of origins){receipt.sites.push({origin,writeStart:n.start,writeEnd:n.end,maxBytes:8192});observed.add(origin)}
+                      }
+                    }
                   }
+                  const next=[...ancestors,n];
+                  for(const value of Object.values(n))if(Array.isArray(value))value.forEach(v=>visit(v,next));else if(value&&typeof value==='object')visit(value,next);
+                }
+                visit(ast);receipt.classification=receipt.markerWrites?'executable-diagnostic':'marker-only';
+                stage='debug-excerpt';
+                for(const owner of owners.values())excerpt(bytes,source,candidate.file,bundleSha,owner.start,owner.end,'owner-try');
+                for(const site of receipt.sites)excerpt(bytes,source,candidate.file,bundleSha,site.writeStart,site.writeEnd,`write:${site.origin}`);
+              } catch(error) {
+                receipt.errors.push({stage,code:'collector-failed',...(stage==='ast-parse'&&Number.isSafeInteger(error?.pos)?{utf16Position:error.pos}:{})});
+                if(stage==='ast-parse'&&source!==undefined) {
+                  const position=Number.isSafeInteger(error?.pos)?Math.min(source.length,Math.max(0,error.pos)):0;
+                  try {excerpt(bytes,source,candidate.file,bundleSha,Math.max(0,position-256),Math.min(source.length,position+256),'parse-error-context');}
+                  catch {fail('debug-excerpt-failed');}
                 }
               }
-              const next=[...ancestors,n];
-              for(const value of Object.values(n))if(Array.isArray(value))value.forEach(v=>visit(v,next));else if(value&&typeof value==='object')visit(value,next);
+              result.errors.push(...receipt.errors.map(error=>({file:candidate.file,...error})));
             }
-            visit(ast);
-            if(sites.length)receipts.push({...candidate,sites});
+            for(const origin of ['config-snapshot','config-validator-relay'])if(!observed.has(origin))result.errors.push({stage:'origin-coverage',code:'required-origin-missing',origin});
+            result.complete=true;
+          } catch {result.errors.push({stage:'collector-input',code:'collector-failed'});}
+          finally {
+            result.debug.retainedBytes=retainedBytes;result.emissionPassed=result.complete&&result.errors.length===0;
+            try {fs.writeFileSync(`${dir}/diagnostic-emission.json`,JSON.stringify(result,null,2)+'\n',{flag:'wx'});}
+            catch {result.errors.push({stage:'receipt-write',code:'collector-failed'});result.emissionPassed=false;}
           }
-          assert.deepEqual([...observed].sort(),['config-snapshot','config-validator-relay'].sort(),'both actual bounded diagnostic writes must survive packaging');
-          const result={source:process.env.CANDIDATE_SHA,emissionPassed:true,receipts,scope:'actual packaged observer and relay sites; native failure reproduction remains unrun'};
-          fs.writeFileSync(`${dir}/diagnostic-emission.json`,JSON.stringify(result,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify(result));
+          console.log(JSON.stringify({emissionPassed:result.emissionPassed,complete:result.complete,receipts:result.receipts,debugRetainedBytes:retainedBytes,errors:result.errors}));
+          if(!result.emissionPassed)process.exitCode=1;
           EMIT
       - name: Seal the diagnostic package for a separately reviewed native consumer
         run: |
