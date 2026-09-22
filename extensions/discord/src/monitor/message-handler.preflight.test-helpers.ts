@@ -94,7 +94,9 @@ export function createDiscordPreflightArgs(params: {
   data: DiscordMessageEvent;
   client: DiscordClient;
   botUserId?: string;
-}): Parameters<typeof preflightDiscordMessage>[0] {
+}): Parameters<typeof preflightDiscordMessage>[0] & {
+  threadBindings: ReturnType<typeof createNoopThreadBindingManager>;
+} {
   return {
     cfg: params.cfg,
     discordConfig: params.discordConfig,

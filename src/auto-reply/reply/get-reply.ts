@@ -8,7 +8,6 @@ import {
   resolveAgentConfig,
   resolveAgentDir,
   resolveAgentWorkspaceDir,
-  resolveSessionAgentId,
   resolveAgentSkillsFilter,
 } from "../../agents/agent-scope.js";
 import { resolveConversationCapabilityProfile } from "../../agents/conversation-capability-profile.js";
@@ -31,7 +30,6 @@ import { type OpenClawConfig, getRuntimeConfig } from "../../config/config.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { isSessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import { logVerbose } from "../../globals.js";
-import { createAbortError, isAbortError } from "../../infra/abort-signal.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isFastTestRuntimeEnv } from "../../infra/env.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -52,7 +50,6 @@ import {
   sessionDeliveryChannel,
   sessionDeliveryOrigin,
 } from "../../utils/delivery-context.read.js";
-import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import type { GetReplyOptions } from "../get-reply-options.types.js";
 import { DEFAULT_HEARTBEAT_ACK_MAX_CHARS } from "../heartbeat.js";
 import {
@@ -72,6 +69,14 @@ import {
 } from "./get-reply-fast-path.js";
 import { handleInlineActions } from "./get-reply-inline-actions.js";
 import { maybeResolveNativeSlashCommandFastReply } from "./get-reply-native-slash-fast-path.js";
+import {
+  applyLinkUnderstandingIfNeeded,
+  applyMediaUnderstandingIfNeeded,
+  assertReplyPreprocessingActive,
+  hasExplicitAudioUnderstandingConfig,
+  hasLinkCandidate,
+  resolveReplyAgentScope,
+} from "./get-reply-preprocessing.js";
 import { runPreparedReply } from "./get-reply-run.js";
 import {
   prepareInternalGetReplyOptions,
@@ -117,54 +122,10 @@ const sessionResetModelRuntimeLoader = createLazyImportLoader(
 const stageSandboxMediaRuntimeLoader = createLazyImportLoader(
   () => import("./stage-sandbox-media.runtime.js"),
 );
-const mediaUnderstandingApplyRuntimeLoader = createLazyImportLoader(
-  () => import("../../media-understanding/apply.runtime.js"),
-);
-const linkUnderstandingApplyRuntimeLoader = createLazyImportLoader(
-  () => import("../../link-understanding/apply.runtime.js"),
-);
 const replyResolverTimingLog = createSubsystemLogger("auto-reply/reply-resolver-timing");
 const commandsCoreRuntimeLoader = createLazyImportLoader(
   () => import("./commands-core.runtime.js"),
 );
-
-function hasLinkCandidate(ctx: MsgContext): boolean {
-  const message = ctx.agentText;
-  if (!message) {
-    return false;
-  }
-  return /\bhttps?:\/\/\S+/i.test(message);
-}
-
-async function applyMediaUnderstandingIfNeeded(params: {
-  ctx: MsgContext;
-  cfg: OpenClawConfig;
-  agentId?: string;
-  agentDir?: string;
-  workspaceDir?: string;
-  activeModel: { provider: string; model: string };
-  processingMode?: "audio-only" | "files-only" | "audio-and-files";
-  selfServeLocalPaths?: boolean;
-}): Promise<ApplyMediaUnderstandingResult | undefined> {
-  if (!hasInboundMediaForUnderstanding(params.ctx)) {
-    return undefined;
-  }
-  try {
-    const { applyMediaUnderstanding } = await mediaUnderstandingApplyRuntimeLoader.load();
-    return await applyMediaUnderstanding(params);
-  } catch (err) {
-    mediaUnderstandingApplyRuntimeLoader.clear();
-    logVerbose(
-      `media understanding failed, proceeding with raw content: ${formatErrorMessage(err)}`,
-    );
-    return undefined;
-  }
-}
-
-function hasExplicitAudioUnderstandingConfig(cfg: OpenClawConfig): boolean {
-  const audio = cfg.tools?.media?.audio;
-  return audio !== undefined && audio.enabled !== false;
-}
 
 function canSelfServeLocalPaths(params: {
   ctx: MsgContext;
@@ -252,30 +213,6 @@ function collectStagedAttachmentPaths(ctx: MsgContext): ReadonlyMap<number, stri
   );
 }
 
-async function applyLinkUnderstandingIfNeeded(params: {
-  ctx: MsgContext;
-  cfg: OpenClawConfig;
-  signal?: AbortSignal;
-}): Promise<boolean> {
-  if (!hasLinkCandidate(params.ctx)) {
-    return false;
-  }
-  try {
-    const { applyLinkUnderstanding } = await linkUnderstandingApplyRuntimeLoader.load();
-    await applyLinkUnderstanding(params);
-    return true;
-  } catch (err) {
-    if (isAbortError(err)) {
-      throw err;
-    }
-    linkUnderstandingApplyRuntimeLoader.clear();
-    logVerbose(
-      `link understanding failed, proceeding with raw content: ${formatErrorMessage(err)}`,
-    );
-    return false;
-  }
-}
-
 export async function getReplyFromConfig(
   ctx: MsgContext,
   options?: GetReplyOptions,
@@ -320,18 +257,11 @@ export async function getReplyFromConfig(
   if (explicitSteerTargetSessionKey) {
     finalized.CommandTargetSessionKey = explicitSteerTargetSessionKey;
   }
-  const initialAgentScope = resolverTiming.measureSync("reply.resolve_agent_scope", () => {
-    const targetSessionKey = resolveCommandTurnTargetSessionKey(finalized);
-    const resolvedAgentSessionKey = targetSessionKey || finalized.SessionKey;
-    return {
-      agentSessionKey: resolvedAgentSessionKey,
-      agentId: resolveSessionAgentId({
-        sessionKey: resolvedAgentSessionKey,
-        config: cfg,
-        fallbackAgentId: finalized.AgentId,
-      }),
-    };
-  });
+  const initialAgentScope = await resolverTiming.measure("reply.resolve_agent_scope", () =>
+    resolveReplyAgentScope({ cfg, ctx: finalized }),
+  );
+  assertReplyPreprocessingActive(opts?.abortSignal);
+  opts?.operatorAuthority?.assertCurrent();
   const refusal = readAgentDatabaseAdmissionRefusal(initialAgentScope.agentId);
   if (refusal) {
     return { text: `${refusal.reason}\n${refusal.repairHint}`, isError: true };
@@ -499,7 +429,8 @@ export async function getReplyFromConfig(
     ? await traceGetReplyPhase("reply.resolve_acp_workspace_provisioning", async () => {
         // Implicit ACP agents need the live session's ACP meta (per-session cwd
         // from /acp spawn --cwd or /acp cwd) before workspace scaffolding runs.
-        const state = resolveReplySessionPreprocessingState({ ctx: finalized, cfg });
+        const state = await resolveReplySessionPreprocessingState({ ctx: finalized, cfg });
+        assertReplyPreprocessingActive(internalOptsWithSkillFilter?.abortSignal);
         return {
           cfg,
           agentId,
@@ -568,6 +499,7 @@ export async function getReplyFromConfig(
           resolveReplySessionPreprocessingState({ ctx: finalized, cfg }),
         )
       : undefined;
+  assertReplyPreprocessingActive(internalOptsWithSkillFilter?.abortSignal);
   const utilityModelSelectionLocked = isModelSelectionLocked(preprocessingState?.sessionEntry);
 
   if (mediaUnderstandingRequested) {
@@ -612,11 +544,7 @@ export async function getReplyFromConfig(
     );
   }
   // Cleanup may resolve after cancellation; hooks must stay inside the reply lifetime.
-  if (internalOptsWithSkillFilter?.abortSignal?.aborted) {
-    throw createAbortError("Reply canceled during preprocessing", {
-      cause: internalOptsWithSkillFilter.abortSignal.reason,
-    });
-  }
+  assertReplyPreprocessingActive(internalOptsWithSkillFilter?.abortSignal);
   emitPreAgentMessageHooks({
     ctx: finalized,
     cfg,
