@@ -17,7 +17,6 @@ import { handleGatewayRequest } from "../server-methods.js";
 import { GatewayClientRegistry } from "../server/client-registry.js";
 import { createGatewayWsTestSocket } from "../server/ws-connection.test-helpers.js";
 import { createOperatorWsClient } from "../server/ws-connection/authenticated-request-dispatch.test-support.js";
-import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import type { GatewayClient } from "./types.js";
 import { usersHandlers } from "./users.js";
 
@@ -196,10 +195,15 @@ test("users.prefs.get retains its original scope across the preference read", as
       release.resolve();
       await outcome;
     }
-    expect(await outcome).toMatchObject([
-      { status: "rejected", reason: expect.any(SessionMutationAuthorizationChangedError) },
-    ]);
-    expect(respond).not.toHaveBeenCalled();
+    expect(await outcome).toEqual([{ status: "fulfilled", value: undefined }]);
+    expect(respond).toHaveBeenCalledExactlyOnceWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        code: "FORBIDDEN",
+        message: "Gateway requester authority changed",
+      }),
+    );
     expect(await original(owner.id)).toMatchObject({ entries: { "ui.theme": "dark" } });
   } finally {
     await state.cleanup();
