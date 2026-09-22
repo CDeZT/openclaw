@@ -97,8 +97,6 @@ describe("session-scoped method admission", () => {
     ["agent", { message: "/reset" }],
     ["users.setDisplayName", {}],
     ["tools.invoke", {}],
-    ["question.get", {}],
-    ["question.resolve", {}],
     ["plugins.sessionAction", { pluginId: "custom", actionId: "protected" }],
   ] as const)("does not turn the session grant into broader authority for %s", (method, params) => {
     expect(
@@ -112,6 +110,45 @@ describe("session-scoped method admission", () => {
         allowedScopes: ["operator.sessions.write"],
       }),
     ).toEqual([]);
+  });
+
+  it.each([
+    ["question.list", "operator.sessions.read"],
+    ["question.get", "operator.sessions.read"],
+    ["question.waitAnswer", "operator.sessions.read"],
+    ["question.request", "operator.sessions.write"],
+    ["question.resolve", "operator.sessions.write"],
+  ] as const)("records the actual narrow admission for %s", (method, scope) => {
+    expect(authorizeOperatorScopesForMethod(method, [scope])).toEqual({
+      allowed: true,
+      sessionScope: scope,
+    });
+    expect(
+      projectOperatorScopesForMethod({
+        method,
+        requestParams: {},
+        requestedScopes: ["operator.questions", "operator.admin"],
+        allowedScopes: [scope],
+      }),
+    ).toEqual([scope]);
+    expect(
+      projectOperatorScopesForMethod({
+        method,
+        requestParams: {},
+        requestedScopes: ["operator.questions"],
+        allowedScopes: [scope],
+        requiredScope: "operator.admin",
+      }),
+    ).toEqual([]);
+    for (const broad of ["operator.questions", "operator.admin"]) {
+      expect(authorizeOperatorScopesForMethod(method, [scope, broad])).toEqual({ allowed: true });
+    }
+    if (scope === "operator.sessions.write") {
+      expect(authorizeOperatorScopesForMethod(method, ["operator.sessions.read"])).toEqual({
+        allowed: false,
+        missingScope: "operator.questions",
+      });
+    }
   });
 
   it("preserves a dispatch registry's stronger scope and does not borrow broad read for a write", () => {

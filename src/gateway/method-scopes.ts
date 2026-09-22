@@ -326,7 +326,8 @@ export function authorizeOperatorScopesForRequiredScope(
   }
   if (
     ((requiredScope === READ_SCOPE && sessionScope === "operator.sessions.read") ||
-      (requiredScope === WRITE_SCOPE && sessionScope === "operator.sessions.write")) &&
+      (requiredScope === WRITE_SCOPE && sessionScope === "operator.sessions.write") ||
+      (requiredScope === QUESTIONS_SCOPE && sessionScope !== undefined)) &&
     operatorScopeSatisfied(sessionScope, scopes)
   ) {
     return { allowed: true, sessionScope };

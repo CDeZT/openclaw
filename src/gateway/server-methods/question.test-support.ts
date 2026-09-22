@@ -13,9 +13,10 @@ import { createAgentRuntimeApprovalAuthorityValidator } from "../agent-runtime-i
 import { QuestionManager } from "../question-manager.js";
 import type { GatewayBroadcastFn } from "../server-broadcast-types.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
+import { handleGatewayRequest } from "../server-methods.js";
 import { createQuestionHandlers } from "./question.js";
 import { createSecretStoreWriteService } from "./secrets.js";
-import type { GatewayClient, RespondFn } from "./types.js";
+import type { GatewayClient, GatewayRequestOptions, RespondFn } from "./types.js";
 
 export let manager: QuestionManager;
 export let requesterAuthority: AgentRunDelegatedAuthority;
@@ -75,22 +76,32 @@ export function installQuestionTestHooks() {
 export async function callQuestionRpc(
   method: string,
   params: Record<string, unknown>,
-  options?: { client?: GatewayClient; cfg?: OpenClawConfig },
+  options?: {
+    client?: GatewayClient;
+    cfg?: OpenClawConfig;
+    throughRouter?: boolean;
+    hasCurrentClientAuthority?: () => boolean;
+  },
 ) {
   const calls: Parameters<RespondFn>[] = [];
   const respond: RespondFn = (...args) => calls.push(args);
-  await handlers[method]?.({
+  const requestOptions: GatewayRequestOptions = {
     req: { type: "req", id: "request-1", method, params },
-    params,
     respond,
     client: options?.client ?? null,
     isWebchatConnect: () => false,
+    hasCurrentClientAuthority: options?.hasCurrentClientAuthority,
     context: createDirectChatContext({
       broadcast,
       validateAgentRuntimeApprovalAuthority: createAgentRuntimeApprovalAuthorityValidator(),
       getRuntimeConfig: () => options?.cfg ?? {},
     }),
-  });
+  };
+  if (options?.throughRouter) {
+    await handleGatewayRequest({ ...requestOptions, extraHandlers: handlers });
+  } else {
+    await handlers[method]?.({ ...requestOptions, params });
+  }
   const response = calls[0];
   if (!response) {
     throw new Error(`expected ${method} response`);

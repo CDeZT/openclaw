@@ -166,6 +166,42 @@ describe("update run event scope guards", () => {
   });
 });
 
+describe("plugin install progress scope guards", () => {
+  it("delivers progress only to targeted administrators", () => {
+    const admin = makeClient("admin", "operator", ["operator.admin"]);
+    const observer = makeClient("observer", "operator", ["operator.admin"]);
+    const read = makeClient("read", "operator", ["operator.read"]);
+    const write = makeClient("write", "operator", ["operator.write"]);
+    const session = makeClient("session", "operator", [
+      "operator.sessions.read",
+      "operator.sessions.write",
+    ]);
+    const node = makeClient("node", "node", ["operator.admin"]);
+    const targets = [admin, read, write, session, node];
+    const { broadcastToConnIds } = createGatewayBroadcaster({
+      clients: new GatewayClientRegistry([...targets, observer].map((entry) => entry.client)),
+    });
+    const payload = { activityId: "install-activity", stage: "runtime", status: "started" };
+
+    broadcastToConnIds(
+      "plugins.install.progress",
+      { ...payload, requestId: "install-request" },
+      new Set(targets.map((entry) => entry.client.connId)),
+    );
+
+    expect(admin.socket.send).toHaveBeenCalledOnce();
+    expect(JSON.parse(admin.socket.send.mock.calls[0]![0] as string)).toEqual({
+      type: "event",
+      event: "plugins.install.progress",
+      seq: 1,
+      payload: { ...payload, requestId: "install-request" },
+    });
+    for (const denied of [observer, read, write, session, node]) {
+      expect(denied.socket.send).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe("device setup event scope guards", () => {
   it("delivers exact setup completion only to pairing-capable operators", () => {
     const pairing = makeClient("pairing", "operator", ["operator.pairing"]);

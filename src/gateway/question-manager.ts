@@ -18,6 +18,7 @@ import {
   type GatewayRootWorkAdmissionContinuationScope,
 } from "../process/gateway-work-admission.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
+import type { QuestionSessionAccess } from "./question-session-access.js";
 
 /** Grace period for late question.waitAnswer and question.get calls. */
 const QUESTION_RESOLVED_ENTRY_GRACE_MS = 15_000;
@@ -50,7 +51,8 @@ type QuestionManagerRequest = {
   sessionKey?: string;
   runId?: string;
   timeoutMs: number;
-  onResolved?: (event: QuestionResolvedEvent) => void;
+  onResolved?: (event: QuestionResolvedEvent, observation: QuestionObservation) => void;
+  sessionAccess?: QuestionSessionAccess;
   isRequesterActive?: () => boolean;
   /** Trusted handler binds the run; the manager owns expiry and terminal release. */
   registerHumanInputWait?: (isPending: () => boolean) => ((resolved: boolean) => void) | undefined;
@@ -60,14 +62,24 @@ type Waiter = () => void;
 
 type QuestionEntry = {
   record: QuestionRecord;
+  ordinary: boolean;
   resolutionId?: string;
   expiryTimer: ReturnType<typeof setTimeout>;
   cleanupTimer: ReturnType<typeof setTimeout> | null;
   waiters: Set<Waiter>;
-  onResolved?: (event: QuestionResolvedEvent) => void;
+  onResolved?: QuestionManagerRequest["onResolved"];
+  sessionAccess?: QuestionSessionAccess;
   isRequesterActive?: () => boolean;
   admissionContinuation: GatewayRootWorkAdmissionContinuationScope | null;
   releaseHumanInputWait?: (resolved: boolean) => void;
+};
+
+/** Private entry identity. Never reselect a successor by its public question id. */
+export type QuestionObservation = {
+  readonly record: QuestionRecord;
+  readonly ordinary: boolean;
+  readonly sessionAccess?: QuestionSessionAccess;
+  isCurrent: () => boolean;
 };
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
@@ -145,10 +157,12 @@ export class QuestionManager {
     const expiryTimer = setTimeout(() => this.expire(record.id), timeoutMs);
     const entry: QuestionEntry = {
       record,
+      ordinary: !params.questions.some((question) => question.isSecret || question.secretStore),
       expiryTimer,
       cleanupTimer: null,
       waiters: new Set(),
       onResolved: params.onResolved,
+      sessionAccess: params.sessionAccess,
       isRequesterActive: params.isRequesterActive,
       admissionContinuation: retainGatewayRootWorkAdmissionContinuationScope(),
     };
@@ -171,7 +185,27 @@ export class QuestionManager {
     if (entry.record.status === "pending" && entry.isRequesterActive?.() === false) {
       this.cancelEntry(entry, "requester-inactive");
     }
-    return this.entries.get(id)?.record ?? null;
+    return this.entries.get(id) === entry ? entry.record : null;
+  }
+
+  /** Observation only: unlike get(), this cannot expire or cancel and recursively broadcast. */
+  observe(id: string, expectedRecord?: QuestionRecord): QuestionObservation | null {
+    const entry = this.entries.get(id);
+    if (!entry || (expectedRecord && entry.record !== expectedRecord)) {
+      return null;
+    }
+    return this.observeEntry(entry);
+  }
+
+  private observeEntry(entry: QuestionEntry): QuestionObservation {
+    return {
+      get record() {
+        return entry.record;
+      },
+      ordinary: entry.ordinary,
+      sessionAccess: entry.sessionAccess,
+      isCurrent: () => this.entries.get(entry.record.id) === entry,
+    };
   }
 
   /** Called by the Gateway's existing authority-close observer. */
@@ -196,10 +230,11 @@ export class QuestionManager {
 
   /** Re-enters only the still-pending question's original admitted root. */
   runPendingContinuation<T>(id: string, run: () => Promise<T>): Promise<T> | null {
-    this.get(id);
+    const record = this.get(id);
     const entry = this.entries.get(id);
     if (
       !entry?.admissionContinuation ||
+      entry.record !== record ||
       entry.record.status !== "pending" ||
       entry.record.expiresAtMs <= Date.now()
     ) {
@@ -292,6 +327,7 @@ export class QuestionManager {
   /** Reusable on open owners (v2026.8.1 SDK context); never reopens a closed owner. */
   reset(): void {
     for (const entry of this.entries.values()) {
+      entry.sessionAccess?.release();
       clearTimeout(entry.expiryTimer);
       const releaseHumanInputWait = entry.releaseHumanInputWait;
       entry.releaseHumanInputWait = undefined;
@@ -310,9 +346,9 @@ export class QuestionManager {
 
   private requireEntry(id: string): QuestionEntry {
     // get() settles expiry/requester loss; its callbacks can replace the entry.
-    this.get(id);
+    const record = this.get(id);
     const entry = this.entries.get(id);
-    if (!entry) {
+    if (!record || !entry || entry.record !== record) {
       throw this.notFound(id);
     }
     return entry;
@@ -415,7 +451,7 @@ export class QuestionManager {
     const event = resolvedEvent(entry.record);
     if (event) {
       try {
-        entry.onResolved?.(event);
+        entry.onResolved?.(event, this.observeEntry(entry));
       } catch {
         // Broadcast fanout is observational and must not change question truth.
       }
@@ -428,6 +464,7 @@ export class QuestionManager {
     const cleanupTimer = setTimeout(() => {
       if (entry.cleanupTimer === cleanupTimer && this.entries.get(entry.record.id) === entry) {
         this.entries.delete(entry.record.id);
+        entry.sessionAccess?.release();
       }
     }, QUESTION_RESOLVED_ENTRY_GRACE_MS);
     entry.cleanupTimer = cleanupTimer;

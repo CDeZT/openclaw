@@ -78,6 +78,84 @@ afterEach(() => {
 });
 
 describe("QuestionManager", () => {
+  it.each(["cleanup", "reset", "close"] as const)(
+    "retains private read facts through completion and releases them on %s",
+    async (retirement) => {
+      const release = vi.fn();
+      const sessionAccess = {
+        agentId: "main",
+        sessionKey: "agent:main:own",
+        canAccess: () => true,
+        release,
+      };
+      let requesterActive = true;
+      const onResolved = vi.fn();
+      const record = manager.request({
+        questions,
+        timeoutMs: 10_000,
+        sessionAccess,
+        onResolved,
+        isRequesterActive: () => requesterActive,
+      });
+      const observation = manager.observe(record.id)!;
+      manager.resolve(record.id, answers);
+      requesterActive = false;
+      expect(observation.record).toMatchObject({ status: "answered", answers });
+      expect(observation.isCurrent()).toBe(true);
+      expect(observation.ordinary).toBe(true);
+      expect(observation.sessionAccess).toBe(sessionAccess);
+      expect(onResolved.mock.calls[0]?.[1].sessionAccess).toBe(sessionAccess);
+      expect(release).not.toHaveBeenCalled();
+      if (retirement === "cleanup") {
+        await vi.advanceTimersByTimeAsync(15_000);
+      }
+      if (retirement === "reset") {
+        manager.reset();
+      }
+      if (retirement === "close") {
+        manager.close();
+      }
+      expect(release).toHaveBeenCalledOnce();
+      expect(observation.isCurrent()).toBe(false);
+      expect(observation.record).toMatchObject({ status: "answered", answers });
+      if (retirement !== "close") {
+        manager.request({ id: record.id, questions, timeoutMs: 10_000 });
+        expect(observation.isCurrent()).toBe(false);
+      }
+    },
+  );
+
+  it("keeps secret classification immutable and observes without settling expiry", () => {
+    const secret = { ...questions[0]!, isSecret: true };
+    const onResolved = vi.fn();
+    const record = manager.request({ questions: [secret], timeoutMs: 10, onResolved });
+    const observation = manager.observe(record.id)!;
+    secret.isSecret = false;
+    vi.setSystemTime(2_000);
+    expect(manager.observe(record.id)?.record.status).toBe("pending");
+    expect(observation.ordinary).toBe(false);
+    expect(onResolved).not.toHaveBeenCalled();
+    expect(manager.get(record.id)?.status).toBe("expired");
+    expect(observation.ordinary).toBe(false);
+  });
+
+  it("does not resolve a successor installed synchronously by the original expiry callback", () => {
+    const original = manager.request({
+      id: "reused",
+      questions,
+      timeoutMs: 10,
+      onResolved: () => {
+        manager.reset();
+        manager.request({ id: "reused", questions, timeoutMs: 1_000 });
+      },
+    });
+    const observation = manager.observe(original.id)!;
+    vi.setSystemTime(1_011);
+    expect(() => manager.resolve(original.id, answers)).toThrow("was not found");
+    expect(manager.get(original.id)?.status).toBe("pending");
+    expect(observation.isCurrent()).toBe(false);
+  });
+
   it("requests, gets, and deterministically lists pending questions", () => {
     const first = manager.request({
       questions,
@@ -143,7 +221,8 @@ describe("QuestionManager", () => {
       resolutionId,
     });
     expect(manager.get(record.id)).not.toHaveProperty("resolutionId");
-    expect(onResolved).toHaveBeenCalledExactlyOnceWith({
+    expect(onResolved).toHaveBeenCalledOnce();
+    expect(onResolved.mock.calls[0]?.[0]).toEqual({
       id: record.id,
       status: "answered",
       answers,
@@ -275,7 +354,8 @@ describe("QuestionManager", () => {
       await expect(waiting).resolves.toEqual({ status: "answered", answers });
       expect(manager.get(record.id)).toMatchObject({ status: "answered", answers });
       expect(releaseHumanInputWait).toHaveBeenCalledExactlyOnceWith(true);
-      expect(onResolved).toHaveBeenCalledExactlyOnceWith({
+      expect(onResolved).toHaveBeenCalledOnce();
+      expect(onResolved.mock.calls[0]?.[0]).toEqual({
         id: record.id,
         status: "answered",
         answers,
@@ -323,7 +403,8 @@ describe("QuestionManager", () => {
       manager.resolve(record.id, answers);
       await expect(otherObserver).resolves.toEqual({ status: "answered", answers });
       expect(releaseHumanInputWait).toHaveBeenCalledExactlyOnceWith(true);
-      expect(onResolved).toHaveBeenCalledExactlyOnceWith({
+      expect(onResolved).toHaveBeenCalledOnce();
+      expect(onResolved.mock.calls[0]?.[0]).toEqual({
         id: record.id,
         status: "answered",
         answers,
@@ -355,7 +436,7 @@ describe("QuestionManager", () => {
 
     await expect(waiting).resolves.toEqual({ status: "expired" });
     expect(manager.get(record.id)?.status).toBe("expired");
-    expect(onResolved).toHaveBeenCalledWith({ id: record.id, status: "expired" });
+    expect(onResolved.mock.calls[0]?.[0]).toEqual({ id: record.id, status: "expired" });
   });
 
   it("cancels pending questions", async () => {
