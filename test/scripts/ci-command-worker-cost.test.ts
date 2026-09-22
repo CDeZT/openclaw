@@ -9,8 +9,10 @@ import {
   createNodeTestShardBundles,
   createNodeTestShards,
 } from "../../scripts/lib/ci-node-test-plan.mts";
+import type { CompactWorkerTiming } from "../../scripts/lib/ci-test-timings-schema.mts";
 import * as testTimings from "../../scripts/lib/ci-test-timings.mts";
 import * as buildPrerequisites from "../../scripts/lib/vitest-build-prerequisites.mts";
+import * as shardMetadata from "../../scripts/lib/vitest-shard-metadata.mts";
 import { fullSuiteVitestShards } from "../vitest/vitest.test-shards.mjs";
 
 const files = Array.from({ length: 8 }, (_, index) => `src/commands/worker-cost-${index}.test.ts`);
@@ -19,10 +21,91 @@ const group = {
   includePatterns: files,
   timing_key: "commands#file-parallel-2",
 };
+const commandConfig = "test/vitest/vitest.commands.config.ts";
+const ownerName = "agentic-commands-doctor-auth";
+const plannerOptions = {
+  compactMode: "push" as const,
+  runnerBackend: "hybrid",
+  includeReleaseOnlyPluginShards: false,
+};
+
+function withCommandPlanner(
+  check: (
+    owner: ReturnType<typeof createNodeTestShards>[number],
+    timings: Record<string, number>,
+  ) => void,
+) {
+  const original = fullSuiteVitestShards.slice();
+  vi.spyOn(buildPrerequisites, "resolveVitestPretestBuildMode").mockReturnValue(undefined);
+  fullSuiteVitestShards.splice(
+    0,
+    fullSuiteVitestShards.length,
+    ...original
+      .map((shard) => ({
+        ...shard,
+        projects: shard.projects.filter((project) => project === commandConfig),
+      }))
+      .filter((shard) => shard.projects.length > 0),
+  );
+  try {
+    const owners = createNodeTestShards();
+    const owner = owners.find((shard) => shard.shardName === ownerName)!;
+    expect(owner.includePatterns).toBeDefined();
+    const timings = Object.fromEntries(owners.map((shard) => [shard.shardName, 1]));
+    vi.mocked(testTimings.readCompactGroupTimings).mockReturnValue(timings);
+    check(owner, timings);
+  } finally {
+    fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...original);
+  }
+}
+
+function workerObservation(
+  includePatterns: string[],
+  overrides: Partial<CompactWorkerTiming> = {},
+): CompactWorkerTiming {
+  return {
+    timingOwner: ownerName,
+    runner: "blacksmith-8vcpu-ubuntu-2404",
+    cpuCount: 2,
+    totalMemoryBytes: 8 * 1024 ** 3,
+    jobWorkers: 2,
+    workers: 2,
+    planConcurrency: 1,
+    configs: [commandConfig],
+    env: {},
+    includePatterns,
+    seconds: 160,
+    ...overrides,
+  };
+}
+
+function parallelObservations(includePatterns: string[], seconds: number): CompactWorkerTiming[] {
+  return [
+    workerObservation(includePatterns, { timingOwner: `${ownerName}#file-parallel-2`, seconds }),
+    workerObservation(includePatterns, {
+      timingOwner: `${ownerName}#file-parallel-2`,
+      runner: "blacksmith-32vcpu-ubuntu-2404",
+      cpuCount: 8,
+      totalMemoryBytes: 32 * 1024 ** 3,
+      planConcurrency: 2,
+      seconds,
+    }),
+    workerObservation(includePatterns, {
+      timingOwner: `${ownerName}#file-parallel-8`,
+      runner: "blacksmith-32vcpu-ubuntu-2404",
+      cpuCount: 8,
+      totalMemoryBytes: 32 * 1024 ** 3,
+      jobWorkers: 8,
+      workers: 8,
+      seconds,
+    }),
+  ];
+}
 
 beforeEach(() => {
   vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({});
   vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
+  vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([]);
 });
 
 afterEach(() => {
@@ -64,49 +147,11 @@ describe("command worker costs", () => {
   });
 
   it("preserves class-aware planner costs when a lower scalar lacks matching workload evidence", () => {
-    const config = "test/vitest/vitest.commands.config.ts";
-    const ownerName = "agentic-commands-doctor-auth";
-    const original = fullSuiteVitestShards.slice();
-    vi.spyOn(buildPrerequisites, "resolveVitestPretestBuildMode").mockReturnValue(undefined);
-    fullSuiteVitestShards.splice(
-      0,
-      fullSuiteVitestShards.length,
-      ...original
-        .map((shard) => ({
-          ...shard,
-          projects: shard.projects.filter((project) => project === config),
-        }))
-        .filter((shard) => shard.projects.length > 0),
-    );
-    try {
-      const owners = createNodeTestShards();
-      const owner = owners.find((shard) => shard.shardName === ownerName)!;
-      expect(owner.includePatterns).toBeDefined();
-      const timings: Record<string, number> = Object.fromEntries(
-        owners.map((shard) => [shard.shardName, 1]),
-      );
-      vi.mocked(testTimings.readCompactGroupTimings).mockReturnValue(timings);
-      vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([
-        {
-          timingOwner: ownerName,
-          runner: "blacksmith-8vcpu-ubuntu-2404",
-          cpuCount: 2,
-          totalMemoryBytes: 8 * 1024 ** 3,
-          jobWorkers: 2,
-          workers: 2,
-          planConcurrency: 1,
-          configs: [config],
-          env: {},
-          includePatterns: owner.includePatterns!,
-          seconds: 160,
-        },
+    withCommandPlanner((owner, timings) => {
+      vi.mocked(testTimings.readCompactWorkerTimings).mockReturnValue([
+        workerObservation(owner.includePatterns!),
       ]);
-      const options = {
-        compactMode: "push" as const,
-        runnerBackend: "hybrid",
-        includeReleaseOnlyPluginShards: false,
-      };
-      const baseline = createNodeTestShardBundles(options);
+      const baseline = createNodeTestShardBundles(plannerOptions);
       const children = baseline
         .flatMap((job) => job.groups)
         .filter((child) => child.shard_name.startsWith(`${ownerName}-hosted-`));
@@ -121,9 +166,75 @@ describe("command worker costs", () => {
       }
       const predictions = (plan: typeof baseline) =>
         plan.map(({ checkName, predictedSeconds }) => ({ checkName, predictedSeconds }));
-      expect(predictions(createNodeTestShardBundles(options))).toEqual(predictions(baseline));
-    } finally {
-      fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...original);
-    }
+      expect(predictions(createNodeTestShardBundles(plannerOptions))).toEqual(
+        predictions(baseline),
+      );
+    });
+  });
+
+  it.each(["backend", "files"] as const)(
+    "retains compatible serial costs when parallel evidence has unrelated %s",
+    (unrelated) => {
+      withCommandPlanner((owner) => {
+        const serial = workerObservation(owner.includePatterns!);
+        vi.mocked(testTimings.readCompactWorkerTimings).mockReturnValue([serial]);
+        const baseline = createNodeTestShardBundles(plannerOptions);
+        const parallel = workerObservation(owner.includePatterns!, {
+          timingOwner: `${ownerName}#file-parallel-2`,
+          seconds: 1,
+          ...(unrelated === "backend"
+            ? { runner: "ubuntu-24.04" }
+            : { includePatterns: ["src/commands/retired-worker-cost.test.ts"] }),
+        });
+        vi.mocked(testTimings.readCompactWorkerTimings).mockReturnValue([serial, parallel]);
+        expect(createNodeTestShardBundles(plannerOptions)).toEqual(baseline);
+      });
+    },
+  );
+
+  it("retains the serial floor for a file uncovered by partial parallel observations", () => {
+    withCommandPlanner((owner) => {
+      const [covered, uncovered] = owner.includePatterns!;
+      expect(uncovered).toBeDefined();
+      vi.mocked(testTimings.readCompactWorkerTimings).mockReturnValue([
+        workerObservation([uncovered!], { seconds: 1000 }),
+        ...parallelObservations([covered!], 1),
+      ]);
+      const plan = createNodeTestShardBundles(plannerOptions);
+      const ownerGroups = plan
+        .flatMap((job) => job.groups)
+        .filter(
+          (child) =>
+            child.shard_name === ownerName || child.shard_name.startsWith(`${ownerName}-hosted-`),
+        );
+      expect(ownerGroups.flatMap((child) => child.includePatterns!).toSorted()).toEqual(
+        owner.includePatterns!.toSorted(),
+      );
+      const job = plan.find((entry) =>
+        entry.groups.some((child) => child.includePatterns?.includes(uncovered!)),
+      );
+      expect(job?.predictedSeconds).toBeGreaterThanOrEqual(1000);
+    });
+  });
+
+  it("keeps the indivisible command file floor during admission and final pricing", () => {
+    withCommandPlanner((owner) => {
+      const heavy = owner.includePatterns![0]!;
+      const estimate = shardMetadata.estimateVitestTestFileSeconds;
+      vi.spyOn(shardMetadata, "estimateVitestTestFileSeconds").mockImplementation((file) =>
+        file === heavy ? 300 : estimate(file),
+      );
+      vi.mocked(testTimings.readCompactWorkerTimings).mockReturnValue(
+        parallelObservations([heavy], 1),
+      );
+      const plan = createNodeTestShardBundles({ ...plannerOptions, runnerBackend: "blacksmith" });
+      const jobs = plan.filter((entry) =>
+        entry.groups.some((child) => child.includePatterns?.includes(heavy)),
+      );
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]!.groups).toEqual([expect.objectContaining({ includePatterns: [heavy] })]);
+      expect(jobs[0]!.planConcurrency).toBe(1);
+      expect(jobs[0]!.predictedSeconds).toBe(300);
+    });
   });
 });

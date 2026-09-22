@@ -185,6 +185,55 @@ export function createCompactWorkerCostResolver(workerTimings: readonly CompactW
     measuredCosts.set(group, costs);
     return resolved;
   };
+  const projectFamilyCost = (
+    parent: NodeTestShardGroup,
+    capacity: WorkerCapacity,
+    childFiles: readonly string[],
+    fallbackSeconds: number,
+    fallbackFamily?: NodeTestShardGroup,
+  ): number => {
+    const workloads = resolve(parent, capacity)?.familyWorkloads;
+    if (!workloads?.length) {
+      return fallbackFamily
+        ? projectFamilyCost(fallbackFamily, capacity, childFiles, fallbackSeconds)
+        : fallbackSeconds;
+    }
+    const files = new Set(childFiles);
+    const totalWeight = [...files].reduce(
+      (sum, file) => sum + estimateVitestTestFileSeconds(file),
+      0,
+    );
+    if (totalWeight === 0) {
+      return fallbackSeconds;
+    }
+    const unobserved = new Set(files);
+    let measuredSeconds = 0;
+    // Preserve each measured stripe's cost density; averaging the family can
+    // erase a slow workload when its files move to a newly generated child.
+    for (const workload of workloads) {
+      let coveredWeight = 0;
+      for (const file of workload.files) {
+        if (files.has(file)) {
+          coveredWeight += estimateVitestTestFileSeconds(file);
+          unobserved.delete(file);
+        }
+      }
+      measuredSeconds += (workload.seconds * coveredWeight) / workload.weight;
+    }
+    const unobservedWeight = [...unobserved].reduce(
+      (sum, file) => sum + estimateVitestTestFileSeconds(file),
+      0,
+    );
+    const remainingFallback = (fallbackSeconds * unobservedWeight) / totalWeight;
+    // A newer timing epoch replaces only measured files. Preserve older
+    // compatible work for the remainder without adding overlapping spans.
+    return (
+      measuredSeconds +
+      (fallbackFamily && unobserved.size > 0
+        ? projectFamilyCost(fallbackFamily, capacity, [...unobserved], remainingFallback)
+        : remainingFallback)
+    );
+  };
   return {
     childSeconds: (group: NodeTestShardGroup, capacity: WorkerCapacity) =>
       resolve(group, capacity)?.childSeconds,
@@ -192,43 +241,6 @@ export function createCompactWorkerCostResolver(workerTimings: readonly CompactW
       resolve(group, capacity)?.familyCost,
     exactSeconds: (group: NodeTestShardGroup, capacity: WorkerCapacity) =>
       resolve(group, capacity)?.exactSeconds,
-    projectFamilyCost: (
-      parent: NodeTestShardGroup,
-      capacity: WorkerCapacity,
-      childFiles: readonly string[],
-      fallbackSeconds: number,
-    ): number => {
-      const workloads = resolve(parent, capacity)?.familyWorkloads;
-      if (!workloads?.length) {
-        return fallbackSeconds;
-      }
-      const files = new Set(childFiles);
-      const totalWeight = [...files].reduce(
-        (sum, file) => sum + estimateVitestTestFileSeconds(file),
-        0,
-      );
-      if (totalWeight === 0) {
-        return fallbackSeconds;
-      }
-      const unobserved = new Set(files);
-      let measuredSeconds = 0;
-      // Preserve each measured stripe's cost density; averaging the family can
-      // erase a slow workload when its files move to a newly generated child.
-      for (const workload of workloads) {
-        let coveredWeight = 0;
-        for (const file of workload.files) {
-          if (files.has(file)) {
-            coveredWeight += estimateVitestTestFileSeconds(file);
-            unobserved.delete(file);
-          }
-        }
-        measuredSeconds += (workload.seconds * coveredWeight) / workload.weight;
-      }
-      const unobservedWeight = [...unobserved].reduce(
-        (sum, file) => sum + estimateVitestTestFileSeconds(file),
-        0,
-      );
-      return measuredSeconds + (fallbackSeconds * unobservedWeight) / totalWeight;
-    },
+    projectFamilyCost,
   };
 }

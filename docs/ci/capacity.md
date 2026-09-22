@@ -264,8 +264,9 @@ as advisory floors until the normal complete-group refit replaces them.
 
 Commands splitting and packing retain the conservative two-worker retry budget.
 Their wall estimates include imports, transforms and startup, so additional
-workers do not divide that entire cost. Compatible serial observations remain
-unscaled fallback floors until parallel observations exist. After placement, an
+workers do not divide that entire cost. Parallel observations replace only the
+files they cover; compatible serial observations price the remaining files,
+without overlapping the two timing epochs. After placement, an
 exact target-worker parallel observation can replace the fallback, bounded below
 by the longest file. Separate timing identities preserve direct two/eight-worker
 samples. Runtime preparation is charged once and never divided. Live CPU load

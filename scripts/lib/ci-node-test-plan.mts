@@ -3829,10 +3829,9 @@ function createCompactNodeTestShardBundles(
     return timed;
   };
   const serialCommandGroups = new WeakMap<NodeTestShardGroup, NodeTestShardGroup>();
-  const familyGroupAtCapacity = (group: NodeTestShardGroup, capacity: Capacity) => {
-    const timed = timingGroupAtCapacity(group, capacity);
-    if (!isParallelCommandsGroup(group) || measuredFamilies.has(compactWorkerTimingOwner(timed))) {
-      return timed;
+  const serialCommandFamily = (group: NodeTestShardGroup) => {
+    if (!isParallelCommandsGroup(group)) {
+      return undefined;
     }
     let serial = serialCommandGroups.get(group);
     if (!serial) {
@@ -3873,10 +3872,12 @@ function createCompactNodeTestShardBundles(
     // These are sums of child walls, so the splitter must not divide them again.
     // Tooling retains its separate per-file parallel timing owner.
     const initialCapacity = measurementCapacity(group, capacityForGroups([group]));
-    const measuredFamilyGroup = familyGroupAtCapacity(group, initialCapacity);
+    const measuredFamilyGroup = timingGroupAtCapacity(group, initialCapacity);
+    const serialFamily = serialCommandFamily(group);
     const familySource =
       !isParallelToolingGroup(group) &&
       (measuredFamilies.has(compactWorkerTimingOwner(measuredFamilyGroup)) ||
+        (serialFamily && measuredFamilies.has(compactWorkerTimingOwner(serialFamily))) ||
         (isParallelCommandsGroup(group) &&
           measuredFamilies.has(
             compactWorkerTimingOwner(
@@ -3891,11 +3892,14 @@ function createCompactNodeTestShardBundles(
             includePatterns: group.includePatterns ?? listWholeConfigSplitFiles(group.shard_name),
           }
         : undefined;
-    const measuredFamilySeconds = familySource
-      ? (measuredCosts.familyCost(
-          familyGroupAtCapacity(familySource, initialCapacity),
+    const measuredFamilySeconds = familySource?.includePatterns
+      ? measuredCosts.projectFamilyCost(
+          timingGroupAtCapacity(familySource, initialCapacity),
           initialCapacity,
-        )?.seconds ?? 0)
+          familySource.includePatterns,
+          0,
+          serialCommandFamily(familySource),
+        )
       : 0;
     // Resolve whole-config ownership before splitting so ordinary files do not
     // inherit a runtime build. Keep consumers together and split the remaining work.
@@ -4021,7 +4025,9 @@ function createCompactNodeTestShardBundles(
               (seconds, file) => seconds + stripeFileWeight(file),
               0,
             )
-          : 0,
+          : isParallelCommandsGroup(group)
+            ? commandFileSecondsFloor(group.includePatterns ?? [], options.runnerBackend)
+            : 0,
         family: compactStripeFamily(group),
       };
       stripeFacts.set(group, facts);
@@ -4029,10 +4035,18 @@ function createCompactNodeTestShardBundles(
     return facts;
   };
   const wholePricingGroups = new WeakMap<NodeTestShardGroup, NodeTestShardGroup>();
+  const stripeCosts = new WeakMap<NodeTestShardGroup, Map<string, number>>();
   const estimateStripeSeconds = (
     group: NodeTestShardGroup,
     capacity: Capacity = capacityForGroups([group]),
   ) => {
+    const execution = measurementCapacity(group, capacity);
+    const capacityKey = `${execution.runner}/${execution.planConcurrency}/${execution.env?.OPENCLAW_VITEST_MAX_WORKERS ?? ""}`;
+    const costs = stripeCosts.get(group) ?? new Map<string, number>();
+    const cached = costs.get(capacityKey);
+    if (cached !== undefined) {
+      return cached;
+    }
     const parent = familySources.get(compactGroupTimingKey(group));
     let pricingGroup = group;
     if (group.includePatterns === undefined && parent?.includePatterns) {
@@ -4042,28 +4056,34 @@ function createCompactNodeTestShardBundles(
       };
       wholePricingGroups.set(group, pricingGroup);
     }
-    const execution = measurementCapacity(group, capacity);
     const timed = timingGroupAtCapacity(pricingGroup, execution);
     const facts = prepareStripe(group);
     const exact = measuredCosts.exactSeconds(timed, execution);
+    let seconds: number;
     if (exact !== undefined) {
-      return Math.max(facts.fileSecondsFloor, exact);
+      seconds = Math.max(facts.fileSecondsFloor, exact);
+    } else {
+      const fallback = facts.seconds;
+      const projected =
+        parent && pricingGroup.includePatterns
+          ? measuredCosts.projectFamilyCost(
+              timingGroupAtCapacity(parent, execution),
+              execution,
+              pricingGroup.includePatterns,
+              fallback,
+              serialCommandFamily(parent),
+            )
+          : fallback;
+      seconds = Math.max(
+        facts.fileSecondsFloor,
+        projected,
+        measuredCosts.childSeconds(timed, execution) ?? 0,
+      );
     }
-    const fallback = facts.seconds;
-    const projected =
-      parent && pricingGroup.includePatterns
-        ? measuredCosts.projectFamilyCost(
-            familyGroupAtCapacity(parent, execution),
-            execution,
-            pricingGroup.includePatterns,
-            fallback,
-          )
-        : fallback;
-    return Math.max(
-      facts.fileSecondsFloor,
-      projected,
-      measuredCosts.childSeconds(timed, execution) ?? 0,
-    );
+    // Packing probes immutable groups repeatedly; retain costs only within this plan and class.
+    costs.set(capacityKey, seconds);
+    stripeCosts.set(group, costs);
+    return seconds;
   };
   const estimateBinSeconds = (
     groups: NodeTestShardGroup[],
@@ -4552,7 +4572,11 @@ function createCompactNodeTestShardBundles(
         { ...group, timing_key: adjusted.timingKey },
         measurementCapacity(group, job),
       );
-      savedSeconds += previousSeconds - (measured ?? Math.max(previousSeconds, adjusted.seconds));
+      const nextSeconds =
+        measured === undefined
+          ? Math.max(previousSeconds, adjusted.seconds)
+          : Math.max(measured, prepareStripe(group).fileSecondsFloor);
+      savedSeconds += previousSeconds - nextSeconds;
       return { ...group, timing_key: adjusted.timingKey };
     });
     job.predictedSeconds = Math.ceil(job.predictedSeconds! - savedSeconds);

@@ -255,6 +255,58 @@ describe("compact worker costs", () => {
     ).toBe(200);
   });
 
+  it.each([
+    {
+      label: "higher partial",
+      seconds: 400,
+      runner: large,
+      disjoint: false,
+      child: 225,
+      full: 450,
+    },
+    { label: "lower partial", seconds: 20, runner: large, disjoint: false, child: 35, full: 70 },
+    { label: "absent", seconds: undefined, runner: large, disjoint: false, child: 50, full: 100 },
+    {
+      label: "wrong backend",
+      seconds: 400,
+      runner: "ubuntu-24.04",
+      disjoint: false,
+      child: 50,
+      full: 100,
+    },
+    { label: "disjoint", seconds: 400, runner: large, disjoint: true, child: 50, full: 100 },
+  ])(
+    "composes $label parallel evidence with serial costs only for uncovered files",
+    ({ seconds, runner, disjoint, child, full }) => {
+      const a = "src/gateway/epoch-a.test.ts";
+      const b = "src/gateway/epoch-b.test.ts";
+      const c = "src/gateway/epoch-c.test.ts";
+      const d = "src/gateway/epoch-d.test.ts";
+      const files = [a, b, c, d];
+      const capacity = { runner: large, planConcurrency: 1 };
+      const parallel = {
+        ...group,
+        timing_key: "measured-child#file-parallel-8",
+        includePatterns: files,
+      };
+      const serial = { ...group, includePatterns: files, fallbackMaxWorkers: undefined };
+      const observations = [observation({ includePatterns: files, workers: 2, seconds: 100 })];
+      if (seconds !== undefined) {
+        observations.push(
+          observation({
+            timingOwner: parallel.timing_key,
+            runner,
+            includePatterns: disjoint ? ["src/gateway/other-epoch.test.ts"] : [a, b],
+            seconds,
+          }),
+        );
+      }
+      const cost = createCompactWorkerCostResolver(observations);
+      expect(cost.projectFamilyCost(parallel, capacity, [a, c], 0, serial)).toBe(child);
+      expect(cost.projectFamilyCost(parallel, capacity, files, 0, serial)).toBe(full);
+    },
+  );
+
   it("uses canonical nonuniform file weights within a measured workload", () => {
     const heavy = "src/gateway/server.sessions.fixture-lifecycle.test.ts";
     const light = "src/gateway/light.test.ts";
