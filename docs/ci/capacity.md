@@ -256,12 +256,13 @@ speedup. Existing two-worker timing generations stay
 as advisory floors until the normal complete-group refit replaces them.
 
 Commands splitting and packing retain the conservative two-worker retry budget.
-After placement, their predicted child seconds use the expected allocation:
-eight on uncapped serial 32-class rows and two on constrained or overlapping rows, capped
-by file count and bounded below by the longest file. Runtime preparation is not
-divided. Separate timing identities preserve direct two/eight-worker samples;
-new parallel observations are not divided as though they were serial. Live
-CPU load and memory pressure can lower the scheduler's allocation.
+Their wall estimates include imports, transforms and startup, so additional
+workers do not divide that entire cost. Compatible serial observations remain
+unscaled fallback floors until parallel observations exist. After placement, an
+exact target-worker parallel observation can replace the fallback, bounded below
+by the longest file. Separate timing identities preserve direct two/eight-worker
+samples. Runtime preparation is charged once and never divided. Live CPU load
+and memory pressure can lower the scheduler's allocation.
 
 Embedded base, attempt-runner, and tool files follow the shared scheduler's file
 parallelism. The base keeps three balanced stripes for its large harness files;
@@ -509,7 +510,8 @@ candidate job's execution class before packing. A two-worker observation on the
 2-CPU class cannot be replaced by a faster eight-worker observation on the
 32-class. Direct observations are wall seconds, including serial configurations;
 they are not multiplied by a worker ratio or discounted by the hybrid profile.
-Existing admission floors remain intact when a newer observation is faster.
+An exact observation for the current workload and allocation can replace a
+fallback projection. Other admission floors remain conservative.
 Worker pins and measured-worker fallback eligibility use the runtime's existing
 owner. Multiple compatible observed allowances retain the largest measured wall
 for admission. When files are added, the largest contained observation remains a
@@ -521,6 +523,19 @@ project that wall to fewer workers using the observed allowance ratio; serial
 groups keep the unscaled wall, and additional workers never imply a speedup.
 Observed job allowances remain separate from each child's worker pin. Missing
 workload observations retain the existing positive fallback costs.
+
+Before repartitioning a family, the splitter preserves a measured work floor
+from compatible observations with disjoint file sets. It deduplicates repeated
+workloads and never sums overlapping snapshots. The floor feeds the existing
+stripe weights and admission budgets; changed child membership cannot silently
+fall back to a smaller stale parent or static per-file estimate. These sums
+already contain child walls, so worker projection does not divide them again.
+During admission, each observed workload's cost is distributed over its files
+using the existing stripe weights at the candidate job's actual allocation.
+Unobserved files retain their fallback cost. If a job loses capacity, its costs
+are recalculated before admission; an eight-worker sample cannot price a
+two-worker placement as though the allocation were unchanged.
+Tooling retains its per-file parallel timing owner.
 
 For split compact groups, the refit also records the parent cost from a complete
 generation within one run and runner profile. It sums each part's median span,

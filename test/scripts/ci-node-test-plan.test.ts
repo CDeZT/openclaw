@@ -847,6 +847,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   );
 
   it("retains isolated Gateway timing history recorded under its former job cap", () => {
+    vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([]);
     const owner = "agentic-gateway-server-isolated";
     const configs = [
       "test/vitest/vitest.gateway-server-isolated.config.ts",
@@ -905,6 +906,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   ])(
     "retains complete $owner timing floors and ignores partial generations",
     ({ owner, config, previousWorkers }) => {
+      vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([]);
       const originalShards = fullSuiteVitestShards.slice();
       const fixtureShards = originalShards
         .map((shard) => ({
@@ -1425,6 +1427,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   ])(
     "bounds $runnerBackend child groups by the slower $slowerProfile path",
     ({ runnerBackend, slowerProfile }) => {
+      vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([]);
       // This lane still uses profile-specific group spans; tooling now prices
       // current per-file costs and has separate worker/longest-file coverage.
       const target = {
@@ -2358,6 +2361,67 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     } finally {
       fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...originalShards);
       cliProcessTestFiles.splice(0, cliProcessTestFiles.length, ...originalProcessFiles);
+    }
+  });
+
+  it("retains disjoint measured work before repartitioning a growing compact family", () => {
+    const originalShards = fullSuiteVitestShards.slice();
+    const originalFiles = cliProcessTestFiles.slice();
+    const files = Array.from({ length: 5 }, (_, index) => `src/cli/measured-${index}.test.ts`);
+    const config = "test/vitest/vitest.cli-process.config.ts";
+    vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({ "agentic-cli-process": 10 });
+    vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
+    vi.spyOn(buildPrerequisites, "resolveVitestPretestBuildMode").mockReturnValue(undefined);
+    vi.spyOn(shardMetadata, "estimateVitestTestFileSeconds").mockReturnValue(1);
+    vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue(
+      [400, 350].map((seconds, index) => ({
+        timingOwner: "agentic-cli-process",
+        runner: DEFAULT_NODE_TEST_RUNNER,
+        cpuCount: 2,
+        totalMemoryBytes: 8 * 1024 ** 3,
+        jobWorkers: 2,
+        workers: 2,
+        planConcurrency: 1,
+        configs: [config],
+        env: {},
+        includePatterns: files.slice(index * 2, index * 2 + 2),
+        seconds,
+      })),
+    );
+    try {
+      cliProcessTestFiles.splice(0, cliProcessTestFiles.length, ...files);
+      fullSuiteVitestShards.splice(
+        0,
+        fullSuiteVitestShards.length,
+        ...originalShards
+          .map((shard) => ({
+            ...shard,
+            projects: shard.projects.filter((entry) => entry === config),
+          }))
+          .filter((shard) => shard.projects.length > 0),
+      );
+      const plan = createNodeTestShardBundles({
+        compactMode: "pull-request",
+        runnerBackend: "hybrid",
+        includeReleaseOnlyPluginShards: false,
+      });
+      expect(
+        plan.reduce((seconds, job) => seconds + job.predictedSeconds!, 0),
+      ).toBeGreaterThanOrEqual(750);
+      expect(
+        plan.flatMap((job) => job.groups.flatMap((group) => group.includePatterns!)).toSorted(),
+      ).toEqual(files.toSorted());
+      expect(plan.map((job) => job.predictedSeconds).toSorted((a, b) => a! - b!)).toEqual([
+        150, 175, 175, 200, 200,
+      ]);
+      expect(
+        plan.every(
+          (job) => job.groups.length === 1 && job.groups[0]!.includePatterns?.length === 1,
+        ),
+      ).toBe(true);
+    } finally {
+      fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...originalShards);
+      cliProcessTestFiles.splice(0, cliProcessTestFiles.length, ...originalFiles);
     }
   });
 
