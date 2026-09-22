@@ -55,6 +55,14 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
         }
     }
 
+    package static func _testRetainsBufferedFrameAfterFinish(_ data: Data, connectID: String?) -> Bool {
+        self.retainsBufferedFrameAfterFinish(data, connectID: connectID)
+    }
+
+    package static func _testRejectsDeliveryAfterFinish(_ data: Data) -> Bool {
+        RustGatewayWebSocketTask._testRejectsDeliveryAfterFinish(data)
+    }
+
     package init(executableURL: URL, fingerprint: String? = nil, tlsParams: GatewayTLSParams? = nil) {
         self.executableURL = executableURL
         self.fingerprint = fingerprint
@@ -84,6 +92,18 @@ GatewayTLSFailureProviding, GatewayDeviceTokenRetryTrustProviding, @unchecked Se
             request: request,
             fingerprint: self.fingerprint,
             trustOwner: self.trustOwner))
+    }
+
+    fileprivate static func retainsBufferedFrameAfterFinish(_ data: Data, connectID: String?) -> Bool {
+        guard let connectID,
+              let frame = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              frame["type"] as? String == "res",
+              frame["id"] as? String == connectID,
+              frame["ok"] as? Bool == false
+        else {
+            return false
+        }
+        return true
     }
 }
 
@@ -534,6 +554,11 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
 
     private func deliver(_ data: Data) throws {
         self.lock.lock()
+        guard self.failure == nil, self.taskState == .running else {
+            let error = self.failure ?? URLError(.cancelled)
+            self.lock.unlock()
+            throw error
+        }
         if !self.receivers.isEmpty {
             let receiver = self.receivers.removeFirst()
             self.lock.unlock()
@@ -549,12 +574,27 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         }
     }
 
+    fileprivate static func _testRejectsDeliveryAfterFinish(_ data: Data) -> Bool {
+        let task = RustGatewayWebSocketTask(
+            executableURL: URL(fileURLWithPath: "/tmp/openclaw-rust-sidecar-test"),
+            request: URLRequest(url: URL(string: "ws://127.0.0.1:1")!),
+            fingerprint: nil,
+            trustOwner: GatewayTLSPinningSession(params: GatewayTLSParams(
+                required: false, expectedFingerprint: nil, allowTOFU: false, storeKey: nil)))
+        task.finish(URLError(.networkConnectionLost))
+        do {
+            try task.deliver(data)
+            return false
+        } catch {
+            return true
+        }
+    }
+
     private func finish(_ error: Error) {
         self.lock.lock()
         guard self.failure == nil else { self.lock.unlock()
             return
         }
-        let shouldDropBuffered = (error as? URLError)?.code == .cancelled
         self.failure = error
         self.taskState = .completed
         self.admitted = false
@@ -569,10 +609,11 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
         let pings = self.pings.values
         self.receivers.removeAll()
         self.pings.removeAll()
-        if shouldDropBuffered {
-            self.buffered.removeAll()
-            self.bufferedBytes = 0
+        let retainedBuffered = (error as? URLError)?.code == .cancelled ? [] : self.buffered.filter {
+            RustGatewayWebSocketSession.retainsBufferedFrameAfterFinish($0, connectID: self.connectID)
         }
+        self.buffered = retainedBuffered
+        self.bufferedBytes = retainedBuffered.reduce(0) { $0 + $1.count }
         self.lock.unlock()
         // Closing the owned pipe retires the Rust connection before any replacement process starts.
         // Closing on the writer queue prevents a reused descriptor from reaching a late write.
