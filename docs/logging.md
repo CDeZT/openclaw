@@ -59,42 +59,21 @@ You can override the path in `~/.openclaw/openclaw.json`:
 
 ### Find a failed turn by run ID
 
-Caught chat setup and dispatch exceptions produce error-level
-`chat.send setup failed` and `chat.send dispatch failed` records. The agent
-runner also records `agent run failed` when it settles a failure through its
-normal error-reply path, including sandbox provisioning failures.
-These records carry the turn's `runId`, which matches its diagnostic reference.
-This is a run correlation ID, separate from an OpenTelemetry trace ID.
-
-The `diagnostic` field contains a redacted snapshot of the caught error,
-including readable native stacks, causes, and aggregate errors. Graph traversal
-is bounded, and custom stack getters are skipped. Native stacks appear before
-other error metadata; the serialized snapshot is limited to 100,000 characters
-after redaction. `diagnosticTruncated: true` indicates this final text clipping,
-so a clipped snapshot is text rather than a complete JSON object. This flag does
-not describe graph limits or upstream truncation. Upstream services may already
-have shortened an error, and logging cannot recover details they discarded.
-These records cover caught setup/dispatch failures and terminal execution
-failures handled by the runner; they do not guarantee a diagnostic for every
-cancellation, retry attempt, or failure reported only as a returned string.
-
-The conversation retains up to 10,000 characters of its redacted user-facing
-explanation, preserving line breaks. **Details** expands this bounded text and
-shows the run ID; **Copy error** and **Copy run ID** copy them separately. An
-explicit truncation notice appears when the retained explanation is clipped.
-
-Search for the run ID in the Control UI **Logs** tab or in CLI JSON output:
+Expand **Details** on a failed turn to view up to 10,000 characters of redacted
+error text. Use **Copy run ID** to find its fuller diagnostic in the Control UI
+**Logs** tab or CLI output:
 
 ```bash
 openclaw logs --json --max-bytes 1000000 | rg --fixed-strings 'RUN_ID'
 ```
 
-The Logs tab and `logs.tail` read a bounded window of the configured active log;
-they do not search older archives. For an older turn, search the configured log
-directory on the Gateway host, including dated files and numbered archives.
-Retrieval follows the existing operator log permissions and file retention
-described above. Logging is best effort, and `logging.level: "silent"` disables
-file records; a run ID does not guarantee that a log record is still available.
+Chat setup, dispatch, and terminal agent failures log the same `runId` with a
+redacted `diagnostic` containing available stacks and causes. Diagnostics are
+capped at 100,000 characters; `diagnosticTruncated: true` marks text clipping.
+
+The Logs tab and CLI read the active log. For older failures, search dated files
+and numbered archives on the Gateway host. Availability depends on logging
+settings and retention.
 
 ### CLI: live tail (recommended)
 
