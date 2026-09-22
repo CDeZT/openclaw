@@ -15,6 +15,7 @@ import {
 import { formatErrorMessage } from "../../infra/errors.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import { filterMutableSessionGroupRecords } from "../session-group-defaults-access.js";
+import { resolveSessionGroupMutationTargetsByName } from "../session-group-mutation-targets.js";
 import {
   deleteSessionGroup,
   listSessionGroupDefaults,
@@ -22,7 +23,6 @@ import {
   listSessionGroups,
   putSessionGroups,
   renameSessionGroup,
-  resolveSessionGroupMutationTargetsByName,
   SessionGroupNotEmptyError,
   SessionGroupNotFoundError,
   updateSessionGroupDefaults,

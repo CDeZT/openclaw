@@ -15,6 +15,9 @@ const pathMocks = vi.hoisted(() => ({
   resolveContainment: vi.fn(),
 }));
 
+vi.mock("../session-group-mutation-targets.js", () => ({
+  resolveSessionGroupMutationTargetsByName: vi.fn(() => new Map()),
+}));
 vi.mock("../session-groups.js", () => ({
   deleteSessionGroup: vi.fn(),
   listSessionGroupDefaults: vi.fn(() => []),
@@ -22,7 +25,6 @@ vi.mock("../session-groups.js", () => ({
   listSidebarSectionOrder: vi.fn(() => []),
   putSessionGroups: groupMocks.put,
   renameSessionGroup: groupMocks.rename,
-  resolveSessionGroupMutationTargetsByName: vi.fn(() => new Map()),
   SessionGroupNotEmptyError: groupMocks.NotEmpty,
   SessionGroupNotFoundError: groupMocks.NotFound,
   updateSessionGroupDefaults: groupMocks.update,

@@ -4,11 +4,8 @@ import { DEFAULT_AGENT_ID } from "../routing/session-key.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import { resolveAuthorizedBoardViewTicketClaims } from "./board-view-ticket.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
-import {
-  listSessionGroups,
-  normalizeGroupNames,
-  resolveSessionGroupMutationTargetsByName,
-} from "./session-groups.js";
+import { resolveSessionGroupMutationTargetsByName } from "./session-group-mutation-targets.js";
+import { listSessionGroups, normalizeGroupNames } from "./session-groups.js";
 import {
   isApprovalSessionTargetMethod,
   sessionMutationTargetFields,

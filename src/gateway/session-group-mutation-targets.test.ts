@@ -14,7 +14,7 @@ import {
 import { listOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.test-support.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { setStateDirEnv, withStateDirEnv } from "../test-helpers/state-dir-env.js";
-import { resolveSessionGroupMutationTargetsByName } from "./session-groups.js";
+import { resolveSessionGroupMutationTargetsByName } from "./session-group-mutation-targets.js";
 
 const EXPECTED_OPEN_HANDLE_CAP = 64;
 

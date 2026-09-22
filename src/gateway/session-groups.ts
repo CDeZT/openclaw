@@ -5,10 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveAllAgentSessionStoreTargetsSync } from "../config/sessions.js";
-import {
-  applySessionEntryReplacements,
-  listSessionEntriesReadOnly,
-} from "../config/sessions/session-accessor.js";
+import { applySessionEntryReplacements } from "../config/sessions/session-accessor.js";
 import type { SessionEntryCommitContext } from "../config/sessions/session-accessor.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -23,10 +20,8 @@ import {
 } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
-import {
-  SessionMutationAuthorizationChangedError,
-  type SessionMutationTarget,
-} from "./session-mutation-authorization-error.js";
+import { resolveSessionGroupMutationTargetsByName } from "./session-group-mutation-targets.js";
+import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 
 // Write transactions must run on the same env-scoped handle as their
 // statements; a bare transaction would open the default state DB while the
@@ -433,31 +428,6 @@ export function updateSessionGroupDefaults(
     ensuredSessionGroupDefaultsDatabases.add(database.db);
   }
   return updated ? listSessionGroupDefaults(env) : null;
-}
-
-export function resolveSessionGroupMutationTargetsByName(
-  cfg: OpenClawConfig,
-  env: NodeJS.ProcessEnv = process.env,
-): Map<string, SessionMutationTarget[]> {
-  const targetsByName = new Map<string, SessionMutationTarget[]>();
-  for (const storeTarget of resolveAllAgentSessionStoreTargetsSync(cfg, { env })) {
-    for (const { sessionKey, entry } of listSessionEntriesReadOnly({
-      agentId: storeTarget.agentId,
-      storePath: storeTarget.storePath,
-      // Membership only borrows category metadata; full reads decode every saved prompt.
-      projection: "list",
-      clone: false,
-    })) {
-      const groupName = normalizeOptionalString(entry.category);
-      if (!groupName) {
-        continue;
-      }
-      const targets = targetsByName.get(groupName) ?? [];
-      targets.push({ sessionKey, agentId: storeTarget.agentId });
-      targetsByName.set(groupName, targets);
-    }
-  }
-  return targetsByName;
 }
 
 /**
