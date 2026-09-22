@@ -7,6 +7,7 @@ import { writeOpenClawConfig } from "../config/test-helpers.js";
 import { prepareLegacyStateDatabaseSchema } from "../infra/state-migrations.doctor.js";
 import { createStateSchemaMigrationStep } from "../infra/state-migrations.state-schema.js";
 import { recordOpenClawDatabaseQuarantine } from "../state/openclaw-quarantine-store.js";
+import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import * as stateRepair from "../state/openclaw-state-db-repair.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -51,7 +52,9 @@ it.each(["current", "historical", "missing index"] as const)(
       );
       const inspected = new DatabaseSync(databasePath, { readOnly: true });
       try {
-        expect(inspected.prepare("PRAGMA user_version").get()?.user_version).toBe(17);
+        expect(inspected.prepare("PRAGMA user_version").get()?.user_version).toBe(
+          OPENCLAW_STATE_SCHEMA_VERSION,
+        );
         expect(
           inspected
             .prepare("SELECT name FROM sqlite_schema WHERE name = 'config_machine_state'")
@@ -188,7 +191,9 @@ it.each(["early convergence", "later repair"] as const)(
       expect(injected).toBe(true);
       const inspected = new DatabaseSync(databasePath, { readOnly: true });
       try {
-        expect(inspected.prepare("PRAGMA user_version").get()?.user_version).toBe(17);
+        expect(inspected.prepare("PRAGMA user_version").get()?.user_version).toBe(
+          OPENCLAW_STATE_SCHEMA_VERSION,
+        );
         expect(
           inspected.prepare("SELECT workspace_key FROM workspace_generated_bootstrap_hashes").all(),
         ).toEqual([{ workspace_key: "missing-workspace" }]);
