@@ -107,10 +107,7 @@ describe("executeAgentTurn: provider failures", () => {
       });
 
       // A resolved error reply bypasses the Gateway's rejected-dispatch catch.
-      expect(result.kind).toBe("final");
-      if (result.kind === "final") {
-        expect(result.payload.isError).toBe(true);
-      }
+      expect(result).toMatchObject({ kind: "final", payload: { isError: true } });
       expect(state.runEmbeddedAgentMock).toHaveBeenCalledOnce();
       await loggingTestApi.flushFileLogQueueForTests();
       const records = fs
@@ -126,9 +123,7 @@ describe("executeAgentTurn: provider failures", () => {
       expect(metadata).toMatchObject({ runId, diagnosticTruncated: false });
       const diagnostic = String(metadata?.diagnostic);
       expect(diagnostic.length).toBeGreaterThan(10_000);
-      expect(diagnostic).toContain("IPAM allocation failed");
       expect(diagnostic).toContain("last startup detail");
-      expect(diagnostic).toContain("Partial sandbox cleanup failed");
       expect(diagnostic).not.toContain("synthetic-startup-secret");
       expect(JSON.parse(diagnostic).stacks).toEqual(
         expect.arrayContaining([

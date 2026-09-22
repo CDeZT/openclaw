@@ -553,68 +553,59 @@ afterEach(() => {
 });
 
 describe("grouped chat rendering", () => {
-  it.each([
-    { label: "one failure", runIds: ["failed-run"], count: 1 },
-    { label: "duplicate receipts", runIds: ["failed-run", "failed-run"], count: 2 },
-    { label: "different runs", runIds: ["failed-run", "other-run"], count: 1 },
-  ])(
-    "keeps $label compact with their count, diagnostic, and run IDs",
-    async ({ runIds, count }) => {
-      vi.useFakeTimers();
-      const writeText = vi.fn().mockResolvedValue(undefined);
-      vi.stubGlobal("navigator", { clipboard: { writeText } });
-      const diagnostic = `This turn ended before a reply: Worker startup failed.\n${"  at prepare (/workspace/example.ts:12)\n".repeat(240)}<img src=x onerror=alert(1)>\nTerminal cause`;
-      const container = document.createElement("div");
-      const groups = groupMessages(
-        runIds.map((runId, index) => ({
-          kind: "message" as const,
-          key: `failure-notice-${index}`,
-          message: {
-            role: "custom",
-            customType: "run-failed-before-reply",
-            content: diagnostic,
-            timestamp: index + 1,
-            __openclaw: { id: `failure-notice-${index}`, seq: index + 1, runId },
-          },
-        })),
-      );
-      renderMessageGroups(
-        container,
-        groups.filter((group) => group.kind === "group"),
-      );
-      expect(container.querySelectorAll(".chat-error")).toHaveLength(new Set(runIds).size);
-      expect(
-        Array.from(container.querySelectorAll(".chat-error__run code"), (code) => code.textContent),
-      ).toEqual([...new Set(runIds)]);
-      const badge = container.querySelector(".chat-duplicate-count");
-      expect(badge?.textContent?.trim()).toBe(count > 1 ? "×2" : undefined);
-      expect(badge?.getAttribute("aria-label")).toBe(
-        count > 1 ? "2 consecutive identical messages collapsed" : undefined,
-      );
-      expect(badge?.closest("details")).toBe(count > 1 ? null : undefined);
-      const details = container.querySelector("details");
-      expect(details).not.toBeNull();
-      expect(details?.open).toBe(false);
-      const summary = details?.querySelector("summary");
-      expect(summary?.querySelector("strong")?.textContent).toBe(
-        "This turn ended before a reply: Worker startup failed.",
-      );
-      expect(summary?.textContent).not.toContain("Terminal cause");
-      expect(container.querySelector("img")).toBeNull();
-      expect(container.querySelector(".chat-error")?.hasAttribute("role")).toBe(false);
-      summary?.click();
-      expect(details?.open).toBe(true);
-      expect(details?.querySelector("pre")?.textContent).toBe(diagnostic);
-      expect(details?.querySelector("code")?.textContent).toBe("failed-run");
-      details?.querySelector<HTMLButtonElement>('[aria-label="Copy error"]')?.click();
-      await Promise.resolve();
-      expect(writeText).toHaveBeenLastCalledWith(diagnostic);
-      expect(details?.open).toBe(true);
-      details?.querySelector<HTMLButtonElement>('[aria-label="Copy run ID"]')?.click();
-      await Promise.resolve();
-      expect(writeText).toHaveBeenLastCalledWith("failed-run");
-    },
-  );
+  it("keeps repeated failures compact without merging distinct run IDs", async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const diagnostic = `This turn ended before a reply: Worker startup failed.\n${"  at prepare (/workspace/example.ts:12)\n".repeat(240)}<img src=x onerror=alert(1)>\nTerminal cause`;
+    const container = document.createElement("div");
+    const groups = groupMessages(
+      ["failed-run", "failed-run", "other-run"].map((runId, index) => ({
+        kind: "message" as const,
+        key: `failure-notice-${index}`,
+        message: {
+          role: "custom",
+          customType: "run-failed-before-reply",
+          content: diagnostic,
+          timestamp: index + 1,
+          __openclaw: { id: `failure-notice-${index}`, seq: index + 1, runId },
+        },
+      })),
+    );
+    renderMessageGroups(
+      container,
+      groups.filter((group) => group.kind === "group"),
+    );
+    expect(container.querySelectorAll(".chat-error")).toHaveLength(2);
+    expect(
+      Array.from(container.querySelectorAll(".chat-error__run code"), (code) => code.textContent),
+    ).toEqual(["failed-run", "other-run"]);
+    expect(container.querySelectorAll(".chat-duplicate-count")).toHaveLength(1);
+    const badge = container.querySelector(".chat-bubble")?.querySelector(".chat-duplicate-count");
+    expect(badge?.textContent?.trim()).toBe("×2");
+    expect(badge?.getAttribute("aria-label")).toBe("2 consecutive identical messages collapsed");
+    expect(badge?.closest("details")).toBeNull();
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    const summary = details?.querySelector("summary");
+    expect(summary?.querySelector("strong")?.textContent).toBe(
+      "This turn ended before a reply: Worker startup failed.",
+    );
+    expect(summary?.textContent).not.toContain("Terminal cause");
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector(".chat-error")?.hasAttribute("role")).toBe(false);
+    summary?.click();
+    expect(details?.open).toBe(true);
+    expect(details?.querySelector("pre")?.textContent).toBe(diagnostic);
+    details?.querySelector<HTMLButtonElement>('[aria-label="Copy error"]')?.click();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenLastCalledWith(diagnostic);
+    expect(details?.open).toBe(true);
+    details?.querySelector<HTMLButtonElement>('[aria-label="Copy run ID"]')?.click();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenLastCalledWith("failed-run");
+  });
 
   it.each([
     { customType: "run-failed-before-reply", label: "Error" },

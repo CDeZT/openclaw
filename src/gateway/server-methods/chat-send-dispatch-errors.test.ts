@@ -556,6 +556,9 @@ describe("createChatSendDispatchErrorLifecycle", () => {
     const chatRunState = createChatRunState();
     const dedupe = new Map();
     const broadcast = vi.fn();
+    const logError = vi.fn(() => {
+      throw new Error("diagnostic sink unavailable");
+    });
     const lifecycle = createChatSendDispatchErrorLifecycle({
       admission: {
         sessionBinding: {
@@ -580,13 +583,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         chatRunState,
         dedupe,
         getRuntimeConfig: () => ({}),
-        logGateway: {
-          isEnabled: () => true,
-          warn: vi.fn(),
-          error: vi.fn(() => {
-            throw new Error("diagnostic sink unavailable");
-          }),
-        },
+        logGateway: { isEnabled: () => true, warn: vi.fn(), error: logError },
         nodeSendToSession: vi.fn(),
         removeChatRun: vi.fn(),
       } as never,
@@ -609,6 +606,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
     await lifecycle.handleError(new Error("dispatch rejected after restart"));
     await lifecycle.finalize();
 
+    expect(logError).toHaveBeenCalledOnce();
     expect(dedupe.get("chat:signal-only-dispatch-rejection")).toMatchObject({
       ok: false,
       payload: { runId: "signal-only-dispatch-rejection", status: "error" },

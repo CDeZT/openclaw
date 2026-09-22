@@ -92,20 +92,24 @@ async function reports() {
 }
 
 describe("durable pre-reply run failure", () => {
-  it("records one displayed failure per run and retains it after the next run starts", async () => {
+  it("records one long diagnostic per run and retains it after the next run starts", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       await seed();
-      await persistGatewaySessionLifecycleEvent({ ...target, event });
+      const diagnostic = `Worker setup failed\n${"  at prepareWorkspace (worker.ts:42)\n".repeat(260)}Cause: network allocation failed`;
+      expect(diagnostic.length).toBeGreaterThan(8_000);
+      expect(diagnostic.length).toBeLessThan(10_000);
+      const failureEvent = { ...event, data: { ...event.data, error: diagnostic } };
+      await persistGatewaySessionLifecycleEvent({ ...target, event: failureEvent });
       expect(await reports()).toMatchObject([
         {
           type: "custom_message",
           customType: "run-failed-before-reply",
-          content: `This turn ended before a reply: ${error}`,
+          content: `This turn ended before a reply: ${diagnostic}`,
           display: true,
-          details: { runId, error },
+          details: { runId, error: diagnostic },
         },
       ]);
-      await persistGatewaySessionLifecycleEvent({ ...target, event });
+      await persistGatewaySessionLifecycleEvent({ ...target, event: failureEvent });
       await persistGatewaySessionLifecycleEvent({
         ...target,
         event: {
@@ -234,25 +238,6 @@ describe("durable pre-reply run failure", () => {
       expect(lastRunError).toMatch(/^Worker rejected token=/);
       expect(lastRunError).toMatch(/upload failed$/);
       expect(lastRunError?.length).toBeLessThanOrEqual(160);
-    });
-  });
-
-  it("retains multiline diagnostics beyond both previous display caps", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      await seed();
-      const diagnostic = `Worker setup failed\n${"  at prepareWorkspace (worker.ts:42)\n".repeat(260)}Cause: network allocation failed`;
-      expect(diagnostic.length).toBeGreaterThan(8_000);
-      expect(diagnostic.length).toBeLessThan(10_000);
-      await persistGatewaySessionLifecycleEvent({
-        ...target,
-        event: { ...event, data: { ...event.data, error: diagnostic } },
-      });
-      expect(await reports()).toMatchObject([
-        {
-          content: `This turn ended before a reply: ${diagnostic}`,
-          details: { runId, error: diagnostic },
-        },
-      ]);
     });
   });
 

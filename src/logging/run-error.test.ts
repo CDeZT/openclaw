@@ -98,16 +98,4 @@ describe("logRunError", () => {
     expect(ownKeys).not.toHaveBeenCalled();
     expect(logger.error).not.toHaveBeenCalled();
   });
-
-  it("contains failures from the diagnostic sink", () => {
-    const logger = createLogger();
-    logger.error.mockImplementation(() => {
-      throw new Error("sink unavailable");
-    });
-
-    expect(() =>
-      logRunError(logger, "agent run failed", { runId: "run-sink", error: new Error("original") }),
-    ).not.toThrow();
-    expect(logger.error).toHaveBeenCalledOnce();
-  });
 });
