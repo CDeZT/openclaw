@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as sqlite from "../infra/node-sqlite.js";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../infra/sqlite-handle-lifecycle.js";
 import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
+import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
 import {
   closeRetainedOpenClawStateReadConnections,
   withOpenClawStateReadOnlyLocation,
@@ -15,6 +17,8 @@ import type {
   OpenClawStateReadReply,
   OpenClawStateReadRequest,
 } from "./openclaw-state-read.types.js";
+
+const isBun = Boolean(process.versions.bun);
 
 const worker = vi.hoisted(() => ({
   read: vi.fn<(input: OpenClawStateReadRequest) => OpenClawStateReadReply>(),
@@ -60,7 +64,10 @@ function fixture() {
       { directory: path.join(root, "locks"), keepAlive: false },
       () =>
         withOpenClawStateReadOnlyLocation(
-          operation,
+          (database) => {
+            expect(database.db.isOpen).toBe(true);
+            return operation(database);
+          },
           pathname,
           location,
           undefined,
@@ -71,6 +78,15 @@ function fixture() {
     );
   const value = () => read(({ db }) => db.prepare("SELECT value FROM sample").get()?.value);
   const countOpens = () => opens.mock.calls.filter(([location]) => location === pathname).length;
+  const openedReaders = () =>
+    opens.mock.results.flatMap((result, index) =>
+      opens.mock.calls[index]?.[0] === pathname && result.type === "return" ? [result.value] : [],
+    );
+  const retire = () =>
+    withStateDatabaseCoordinatorRuntimeDirectory(
+      { directory: path.join(root, "locks"), keepAlive: false },
+      () => openClawStateDatabaseCache.closeOpenClawStateDatabaseByPath(pathname),
+    );
   const workerRead = (command: OpenClawStateReadRequest["command"]) =>
     worker.read({
       context: {
@@ -89,45 +105,115 @@ function fixture() {
     }
     return reply.row?.updated_at_ms;
   };
-  return { root, pathname, read, value, countOpens, workerValue, workerRead };
+  return {
+    root,
+    pathname,
+    read,
+    value,
+    countOpens,
+    openedReaders,
+    retire,
+    workerValue,
+    workerRead,
+  };
 }
 
-it("reuses one reader in registered worker commands, refreshes idle, and reopens after eviction", () => {
-  const { workerValue: value, countOpens } = fixture();
-  for (let index = 0; index < 10; index++) {
+it(
+  isBun
+    ? "closes each registered worker command reader without retaining idle handles"
+    : "reuses one reader in registered worker commands, refreshes idle, and reopens after eviction",
+  () => {
+    const { workerValue: value, countOpens, openedReaders } = fixture();
+    if (isBun) {
+      for (let index = 0; index < 10; index++) {
+        expect(value()).toBe(1);
+        expect(countOpens()).toBe(index + 1);
+        expect(openedReaders().every((reader) => !reader.isOpen)).toBe(true);
+      }
+      const readers = openedReaders();
+      expect(new Set(readers).size).toBe(10);
+      const closes = readers.map((reader) => vi.spyOn(reader, "close"));
+      vi.advanceTimersByTime(SQLITE_IDLE_HANDLE_TTL_MS - 1);
+      expect(value()).toBe(1);
+      expect(countOpens()).toBe(11);
+      vi.advanceTimersByTime(SQLITE_IDLE_HANDLE_TTL_MS - 1);
+      expect(countOpens()).toBe(11);
+      vi.advanceTimersByTime(1);
+      expect(value()).toBe(1);
+      expect(countOpens()).toBe(12);
+      expect(new Set(openedReaders()).size).toBe(12);
+      expect(openedReaders().every((reader) => !reader.isOpen)).toBe(true);
+      for (const close of closes) expect(close).not.toHaveBeenCalled();
+      return;
+    }
+    for (let index = 0; index < 10; index++) {
+      expect(value()).toBe(1);
+    }
+    expect(countOpens()).toBe(1);
+    vi.advanceTimersByTime(SQLITE_IDLE_HANDLE_TTL_MS - 1);
     expect(value()).toBe(1);
-  }
-  expect(countOpens()).toBe(1);
-  vi.advanceTimersByTime(SQLITE_IDLE_HANDLE_TTL_MS - 1);
-  expect(value()).toBe(1);
-  vi.advanceTimersByTime(SQLITE_IDLE_HANDLE_TTL_MS - 1);
-  expect(countOpens()).toBe(1);
-  vi.advanceTimersByTime(1);
-  expect(value()).toBe(1);
-  expect(countOpens()).toBe(2);
-});
+    vi.advanceTimersByTime(SQLITE_IDLE_HANDLE_TTL_MS - 1);
+    expect(countOpens()).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(value()).toBe(1);
+    expect(countOpens()).toBe(2);
+  },
+);
 
-it("observes peer commits and closes only the invalidated physical identity", () => {
-  const first = fixture();
-  const second = fixture();
-  expect(first.value()).toBe(1);
-  const reader = first.read(({ db }) => db);
-  const siblingReader = second.read(({ db }) => db);
-  const peer = sqlite.openNodeSqliteDatabase(first.pathname);
-  try {
-    peer.exec("UPDATE sample SET value = 2");
+it(
+  isBun
+    ? "observes peer commits through task-scoped readers without retaining either identity"
+    : "observes peer commits and closes only the invalidated physical identity",
+  () => {
+    const first = fixture();
+    const second = fixture();
+    if (isBun) {
+      expect(first.value()).toBe(1);
+      const reader = first.read(({ db }) => db);
+      expect(reader.isOpen).toBe(false);
+      const peer = sqlite.openNodeSqliteDatabase(first.pathname);
+      try {
+        peer.exec("UPDATE sample SET value = 2");
+        expect(first.value()).toBe(2);
+        const nextReader = first.read(({ db }) => db);
+        expect(nextReader === reader).toBe(false);
+        expect(nextReader.isOpen).toBe(false);
+        expect(peer.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get()?.busy).toBe(0);
+      } finally {
+        peer.close();
+      }
+      const close = vi.spyOn(reader, "close");
+      const siblingReader = second.read(({ db }) => {
+        closeRetainedOpenClawStateReadConnections(readDatabasePathIdentitySync(first.pathname).key);
+        expect(db.isOpen).toBe(true);
+        expect(db.prepare("SELECT value FROM sample").get()?.value).toBe(1);
+        return db;
+      });
+      expect(close).not.toHaveBeenCalled();
+      expect(siblingReader.isOpen).toBe(false);
+      expect(first.value()).toBe(2);
+      expect(second.value()).toBe(1);
+      return;
+    }
+    expect(first.value()).toBe(1);
+    const reader = first.read(({ db }) => db);
+    const siblingReader = second.read(({ db }) => db);
+    const peer = sqlite.openNodeSqliteDatabase(first.pathname);
+    try {
+      peer.exec("UPDATE sample SET value = 2");
+      expect(first.value()).toBe(2);
+      expect(first.read(({ db }) => db)).toBe(reader);
+      expect(peer.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get()?.busy).toBe(0);
+    } finally {
+      peer.close();
+    }
+    closeRetainedOpenClawStateReadConnections(readDatabasePathIdentitySync(first.pathname).key);
+    expect(reader.isOpen).toBe(false);
+    expect(siblingReader.isOpen).toBe(true);
     expect(first.value()).toBe(2);
-    expect(first.read(({ db }) => db)).toBe(reader);
-    expect(peer.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get()?.busy).toBe(0);
-  } finally {
-    peer.close();
-  }
-  closeRetainedOpenClawStateReadConnections(readDatabasePathIdentitySync(first.pathname).key);
-  expect(reader.isOpen).toBe(false);
-  expect(siblingReader.isOpen).toBe(true);
-  expect(first.value()).toBe(2);
-  expect(first.read(({ db }) => db) === reader).toBe(false);
-});
+    expect(first.read(({ db }) => db) === reader).toBe(false);
+  },
+);
 
 it("evicts failed reads and transaction survivors before the next operation", () => {
   const { read, value } = fixture();
@@ -146,29 +232,76 @@ it("evicts failed reads and transaction survivors before the next operation", ()
   expect(value()).toBe(1);
 });
 
-it("retries idle reader disposal while other databases remain active", () => {
-  const first = fixture();
-  const sibling = fixture();
-  const reader = first.read(({ db }) => db);
-  const siblingReader = sibling.read(({ db }) => db);
-  const close = vi.spyOn(reader, "close").mockImplementationOnce(() => {
-    throw new Error("synthetic reader close failure");
-  });
-  vi.advanceTimersByTime(SQLITE_IDLE_HANDLE_TTL_MS - 1);
-  expect(sibling.value()).toBe(1);
-  vi.advanceTimersByTime(1);
-  expect(reader.isOpen).toBe(true);
-  expect(close).toHaveBeenCalledTimes(1);
+it(
+  isBun
+    ? "retains failed immediate reader disposal for explicit retry without closing an active sibling"
+    : "retries idle reader disposal while other databases remain active",
+  () => {
+    const first = fixture();
+    const sibling = fixture();
+    if (isBun) {
+      const failure = new Error("synthetic reader close failure");
+      let failedReader: DatabaseSync | undefined;
+      const close = vi.fn<() => void>();
+      try {
+        expect(() =>
+          first.read(({ db }) => {
+            failedReader = db;
+            const nativeClose = db.close.bind(db);
+            close.mockImplementation(nativeClose).mockImplementationOnce(() => {
+              throw failure;
+            });
+            vi.spyOn(db, "close").mockImplementation(close);
+            return db.prepare("SELECT value FROM sample").get()?.value;
+          }),
+        ).toThrow(failure);
+        expect(failedReader?.isOpen).toBe(true);
+        expect(close).toHaveBeenCalledTimes(1);
+        vi.advanceTimersByTime(SQLITE_IDLE_HANDLE_TTL_MS * 2);
+        expect(failedReader?.isOpen).toBe(true);
+        expect(close).toHaveBeenCalledTimes(1);
+        const siblingReader = sibling.read(({ db }) => {
+          expect(db.prepare("SELECT value FROM sample").get()?.value).toBe(1);
+          expect(first.retire()).toBe(true);
+          expect(failedReader?.isOpen).toBe(false);
+          expect(db.isOpen).toBe(true);
+          expect(db.prepare("SELECT value FROM sample").get()?.value).toBe(1);
+          return db;
+        });
+        expect(close).toHaveBeenCalledTimes(2);
+        expect(siblingReader.isOpen).toBe(false);
+        vi.advanceTimersByTime(SQLITE_IDLE_HANDLE_TTL_MS * 2);
+        expect(close).toHaveBeenCalledTimes(2);
+        expect(first.retire()).toBe(false);
+        expect(first.value()).toBe(1);
+        expect(first.read(({ db }) => db) === failedReader).toBe(false);
+        expect(first.openedReaders().every((reader) => !reader.isOpen)).toBe(true);
+      } finally {
+        first.retire();
+      }
+      return;
+    }
+    const reader = first.read(({ db }) => db);
+    const siblingReader = sibling.read(({ db }) => db);
+    const close = vi.spyOn(reader, "close").mockImplementationOnce(() => {
+      throw new Error("synthetic reader close failure");
+    });
+    vi.advanceTimersByTime(SQLITE_IDLE_HANDLE_TTL_MS - 1);
+    expect(sibling.value()).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(reader.isOpen).toBe(true);
+    expect(close).toHaveBeenCalledTimes(1);
 
-  vi.advanceTimersByTime(SQLITE_IDLE_HANDLE_TTL_MS - 2);
-  expect(sibling.value()).toBe(1);
-  vi.advanceTimersByTime(2);
-  expect(reader.isOpen).toBe(false);
-  expect(close).toHaveBeenCalledTimes(2);
-  expect(siblingReader.isOpen).toBe(true);
-  expect(first.value()).toBe(1);
-  expect(first.read(({ db }) => db) === reader).toBe(false);
-});
+    vi.advanceTimersByTime(SQLITE_IDLE_HANDLE_TTL_MS - 2);
+    expect(sibling.value()).toBe(1);
+    vi.advanceTimersByTime(2);
+    expect(reader.isOpen).toBe(false);
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(siblingReader.isOpen).toBe(true);
+    expect(first.value()).toBe(1);
+    expect(first.read(({ db }) => db) === reader).toBe(false);
+  },
+);
 
 it("keeps missing registry reads noncreating after their cached file disappears", () => {
   const { pathname, read, workerRead } = fixture();

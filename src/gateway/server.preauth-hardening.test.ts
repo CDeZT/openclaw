@@ -4,7 +4,7 @@
 import http from "node:http";
 import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "../../packages/gateway-client/src/websocket.js";
 import {
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,

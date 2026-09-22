@@ -55,7 +55,8 @@ export function createHeldAnchorPreparation(
     preload,
     `
       import childProcess from "node:child_process";
-      import { registerHooks, syncBuiltinESMExports } from "node:module";
+      import { readFileSync } from "node:fs";
+      import Module, { syncBuiltinESMExports } from "node:module";
       import { Socket } from "node:net";
       const probe = new Socket({ fd: 6, readable: true, writable: true });
       probe.on("error", () => {});
@@ -83,27 +84,51 @@ export function createHeldAnchorPreparation(
           emit({ type: "duplicate-start" });
         }
       });
-      registerHooks({ load(url, context, nextLoad) {
-        let loaded;
-        try { loaded = nextLoad(url, context); } catch (error) {
-          emit({ type: "loader-error", url, error: error.message });
-          throw error;
-        }
-        if (url.includes("node-worker-lineage-completion")) {
-          emit({ type: "loader-match", url, format: loaded.format });
-        }
-        if (!/\\/node-worker-lineage-completion(?:-[A-Za-z0-9_-]+)?\\.[cm]?[jt]s$/.test(new URL(url).pathname)) {
-          return loaded;
-        }
-        const original = typeof loaded.source === "string"
-          ? loaded.source : Buffer.from(loaded.source).toString("utf8");
-        const gate = 'globalThis[Symbol.for("openclaw.anchor-preparation-test")]';
-        return {
-          ...loaded,
-          source: gate + '.emit({type:"lineage-loading"});\\nawait ' + gate + '.released;\\n'
-            + original + '\\n' + gate + '.emit({type:"lineage-loaded"});\\n',
-        };
-      }});
+      const gate = 'globalThis[Symbol.for("openclaw.anchor-preparation-test")]';
+      const lineageCompletionPattern =
+        /\\/node-worker-lineage-completion(?:-[A-Za-z0-9_-]+)?\\.[cm]?[jt]s$/;
+      const wrapLineageCompletion = original =>
+        gate + '.emit({type:"lineage-loading"});\\nawait ' + gate + '.released;\\n'
+          + original + '\\n' + gate + '.emit({type:"lineage-loaded"});\\n';
+      if (process.versions.bun) {
+        const { plugin } = await import("bun");
+        plugin({
+          name: "openclaw-anchor-preparation-test",
+          setup(builder) {
+            builder.onLoad({ filter: lineageCompletionPattern }, ({ path }) => {
+              emit({ type: "loader-match", url: path });
+              let original;
+              try { original = readFileSync(path, "utf8"); } catch (error) {
+                emit({ type: "loader-error", url: path, error: error.message });
+                throw error;
+              }
+              return {
+                contents: wrapLineageCompletion(original),
+              };
+            });
+          },
+        });
+      } else {
+        Module.registerHooks({ load(url, context, nextLoad) {
+          let loaded;
+          try { loaded = nextLoad(url, context); } catch (error) {
+            emit({ type: "loader-error", url, error: error.message });
+            throw error;
+          }
+          if (url.includes("node-worker-lineage-completion")) {
+            emit({ type: "loader-match", url, format: loaded.format });
+          }
+          if (!lineageCompletionPattern.test(new URL(url).pathname)) {
+            return loaded;
+          }
+          const original = typeof loaded.source === "string"
+            ? loaded.source : Buffer.from(loaded.source).toString("utf8");
+          return {
+            ...loaded,
+            source: wrapLineageCompletion(original),
+          };
+        }});
+      }
     `,
   );
   const anchorArgv = resolveRuntimeWorkerArgv(

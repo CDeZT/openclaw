@@ -2,7 +2,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import { describe, expect, it, vi } from "vitest";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "../../packages/gateway-client/src/websocket.js";
 import {
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,

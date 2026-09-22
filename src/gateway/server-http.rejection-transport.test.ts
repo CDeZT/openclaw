@@ -3,7 +3,11 @@ import { Agent, request, type ServerResponse } from "node:http";
 import { connect } from "node:net";
 import type { Duplex } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { createWebSocketStream, WebSocketServer, type WebSocket } from "ws";
+import {
+  createWebSocketStream,
+  WebSocketServer,
+  type WebSocket,
+} from "../../packages/gateway-client/src/websocket.js";
 import { readWebhookBodyOrReject } from "../plugin-sdk/webhook-request-guards.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { MAX_PREAUTH_PAYLOAD_BYTES } from "./server-constants.js";
