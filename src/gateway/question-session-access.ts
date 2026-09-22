@@ -99,7 +99,6 @@ export async function withPreparedQuestionSessions<T>(
 ): Promise<T> {
   const signal = getAsyncWorkSignal();
   while (true) {
-    signal?.throwIfAborted();
     operation.assertCurrent();
     const cfg = options.context.getRuntimeConfig();
     const accessRevision = readGatewayAccessRevision();
@@ -141,6 +140,10 @@ export async function withPreparedQuestionSessions<T>(
       groups.set(key, group);
       return { key, agentId, sessionKey, storePath, binding: question.sessionAccess };
     });
+    // An empty batch completes locally after a waiter closes. Actual reads still
+    // belong to the work scope; request authority is checked for both paths.
+    const readSignal = groups.size > 0 ? signal : undefined;
+    readSignal?.throwIfAborted();
     const keys = [...groups.keys()];
     // Reuse committed row publications without materializing the listing projection.
     // Unrelated session traffic must never restart this exact-target read.
@@ -168,7 +171,7 @@ export async function withPreparedQuestionSessions<T>(
     });
     try {
       const outcome = await withSessionEntriesFromStoresInWorker([...groups.values()], (reads) => {
-        signal?.throwIfAborted();
+        readSignal?.throwIfAborted();
         operation.assertCurrent();
         if (
           changed ||

@@ -10,6 +10,7 @@ import { addSessionMember } from "../../config/sessions/session-sharing-store.js
 import { historyPages } from "../../config/sessions/session-transcript-worker-resources.js";
 import { releaseAgentRunDelegatedAuthority } from "../../infra/agent-run-registry.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
+import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -613,6 +614,7 @@ it.each([
   "visibility",
   "metadata",
   "unrelated",
+  "publication delay",
   "database close",
   "database replacement",
 ] as const)(
@@ -646,12 +648,27 @@ it.each([
         return result;
       });
       const answer = { answers: { destination: ["Committed"] } };
+      const observation = manager.observe("ordinary-question")!;
+      const releaseAccess =
+        change === "publication delay"
+          ? vi.spyOn(observation.sessionAccess!, "release")
+          : undefined;
       const waiting = manager.waitAnswer("ordinary-question");
       manager.resolve("ordinary-question", answer);
       try {
         await entered.promise;
         expect(await waiting).toEqual({ status: "answered", answers: answer });
         expect(manager.get("ordinary-question")?.status).toBe("answered");
+        if (change === "publication delay") {
+          await vi.advanceTimersByTimeAsync(15_001);
+          expect(observation.isCurrent()).toBe(true);
+          expect(releaseAccess).not.toHaveBeenCalled();
+          expect(manager.get("ordinary-question")).toMatchObject({
+            status: "answered",
+            answers: answer,
+          });
+          expect(viewer.send).not.toHaveBeenCalled();
+        }
         if (change === "reset" || change === "reused id") {
           manager.reset();
         }
@@ -695,8 +712,21 @@ it.each([
         release.resolve();
         await manager.drain();
         expect(viewer.send).toHaveBeenCalledTimes(
-          change === "metadata" || change === "unrelated" ? 1 : 0,
+          change === "metadata" || change === "unrelated" || change === "publication delay" ? 1 : 0,
         );
+        if (change === "publication delay") {
+          expect(JSON.parse(String(viewer.send.mock.calls[0]?.[0]))).toMatchObject({
+            type: "event",
+            event: "question.resolved",
+            payload: { id: "ordinary-question", status: "answered", answers: answer },
+          });
+          await vi.advanceTimersByTimeAsync(14_999);
+          expect(observation.isCurrent()).toBe(true);
+          expect(releaseAccess).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+          expect(manager.get("ordinary-question")).toBeNull();
+          expect(releaseAccess).toHaveBeenCalledOnce();
+        }
         if (change === "unrelated") {
           expect(spy).toHaveBeenCalledOnce();
         }
@@ -713,45 +743,62 @@ it.each([
         release.resolve();
         await manager.drain();
         spy.mockRestore();
+        releaseAccess?.mockRestore();
       }
     });
   },
 );
 
-it("stops a live RPC when its owner closes during relevant invalidation", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const f = await fixture(state);
-    expect((await f.request())[0]).toBe(true);
-    const entered = createDeferredCore();
-    const release = createDeferredCore();
-    const run = historyPages.run.bind(historyPages);
-    const spy = vi.spyOn(historyPages, "run").mockImplementation(async (...args) => {
-      const result = await run(...args);
-      entered.resolve();
-      await release.promise;
-      return result;
-    });
-    let current = true;
-    const request = f.call("question.get", { id: "ordinary-question" }, f.owner, () => current);
-    const result = Promise.allSettled([request]);
-    try {
-      await entered.promise;
-      await f.write({ updatedAt: 2 });
-      current = false;
-      release.resolve();
-      expect((await result)[0]).toMatchObject({
-        status: "rejected",
-        reason: { message: "Gateway requester authority changed" },
+it.each(["request authority", "observer scope"] as const)(
+  "stops a live RPC when its %s closes during relevant invalidation",
+  async (owner) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const f = await fixture(state);
+      expect((await f.request())[0]).toBe(true);
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const run = historyPages.run.bind(historyPages);
+      const spy = vi.spyOn(historyPages, "run").mockImplementation(async (...args) => {
+        const result = await run(...args);
+        entered.resolve();
+        await release.promise;
+        return result;
       });
-      expect(spy).toHaveBeenCalledOnce();
-      expect(manager.get("ordinary-question")?.status).toBe("pending");
-    } finally {
-      release.resolve();
-      await result;
-      spy.mockRestore();
-    }
-  });
-});
+      let current = true;
+      const observer = new AsyncWorkScope();
+      broadcast.mockClear();
+      const request = observer.track(() =>
+        f.call("question.get", { id: "ordinary-question" }, f.owner, () => current),
+      );
+      const result = Promise.allSettled([request]);
+      try {
+        await entered.promise;
+        await f.write({ updatedAt: 2 });
+        if (owner === "request authority") {
+          current = false;
+        } else {
+          observer.beginClose();
+        }
+        release.resolve();
+        expect((await result)[0]).toMatchObject({
+          status: "rejected",
+          reason:
+            owner === "request authority"
+              ? { message: "Gateway requester authority changed" }
+              : { name: "AbortError" },
+        });
+        expect(spy).toHaveBeenCalledOnce();
+        expect(manager.get("ordinary-question")?.status).toBe("pending");
+        expect(broadcast).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        await result;
+        await observer.drain();
+        spy.mockRestore();
+      }
+    });
+  },
+);
 
 it.each(["admin", "system", "narrow"] as const)(
   "preserves %s creation semantics when optional worker facts are unavailable",

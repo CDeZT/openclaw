@@ -638,6 +638,97 @@ it.each(["fulfilled", "rejected"] as const)(
   },
 );
 
+it.each(["fulfilled", "rejected", "reset", "close", "reused id"] as const)(
+  "holds terminal grace through %s publication",
+  async (outcome) => {
+    resetGatewayWorkAdmission();
+    const failure = vi.fn();
+    manager = new QuestionManager(failure);
+    const parent = tryBeginGatewayRootWorkAdmission("question-delayed-publication");
+    expect(parent).not.toBeNull();
+    const gate = createDeferredCore();
+    const delivered = vi.fn();
+    const releaseSession = vi.fn();
+    const releaseWait = vi.fn(() => parent!.release());
+    let id = "";
+    await parent!.run(async () => {
+      id = manager.request({
+        questions,
+        timeoutMs: 60_000,
+        registerHumanInputWait: () => releaseWait,
+        sessionAccess: {
+          agentId: "main",
+          sessionKey: "agent:main:own",
+          assertSourceCurrent: () => {},
+          assertCurrent: () => {},
+          release: releaseSession,
+        },
+        onResolved: async (event, observation) => {
+          await gate.promise;
+          if (outcome === "rejected") {
+            throw new Error("Question publication fixture failure");
+          }
+          if (observation.isCurrent()) {
+            delivered(event);
+          }
+        },
+      }).id;
+    });
+    const observation = manager.observe(id)!;
+    const waiting = manager.waitAnswer(id);
+    expect(manager.resolve(id, answers)).toEqual({ status: "answered", answers });
+    expect(releaseWait).toHaveBeenCalledExactlyOnceWith(true);
+    expect(await waiting).toEqual({ status: "answered", answers });
+    try {
+      await vi.advanceTimersByTimeAsync(QUESTION_RESOLVED_ENTRY_GRACE_MS + 1);
+      expect(observation.isCurrent()).toBe(true);
+      expect(observation.record).toMatchObject({ status: "answered", answers });
+      expect(releaseSession).not.toHaveBeenCalled();
+      expect(delivered).not.toHaveBeenCalled();
+      expect(getActiveGatewayRootWorkCount()).toBe(1);
+      expect(() => manager.request({ id, questions, timeoutMs: 60_000 })).toThrow("already exists");
+      const retired = outcome === "reset" || outcome === "close" || outcome === "reused id";
+      if (retired) {
+        if (outcome === "close") {
+          manager.close();
+        } else {
+          manager.reset();
+        }
+        expect(observation.isCurrent()).toBe(false);
+        expect(releaseSession).toHaveBeenCalledOnce();
+      }
+      const replacement =
+        outcome === "reused id" ? manager.request({ id, questions, timeoutMs: 60_000 }) : null;
+      gate.resolve();
+      await manager.drain();
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
+      expect(failure).toHaveBeenCalledTimes(outcome === "rejected" ? 1 : 0);
+      if (outcome === "fulfilled") {
+        expect(delivered).toHaveBeenCalledExactlyOnceWith({ id, status: "answered", answers });
+      } else {
+        expect(delivered).not.toHaveBeenCalled();
+      }
+      expect(vi.getTimerCount()).toBe(retired && !replacement ? 0 : 1);
+      await vi.advanceTimersByTimeAsync(QUESTION_RESOLVED_ENTRY_GRACE_MS - 1);
+      if (!retired) {
+        expect(observation.isCurrent()).toBe(true);
+        expect(releaseSession).not.toHaveBeenCalled();
+      }
+      await vi.advanceTimersByTimeAsync(1);
+      expect(manager.get(id)).toBe(replacement);
+      expect(observation.isCurrent()).toBe(false);
+      expect(releaseSession).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(replacement ? 1 : 0);
+    } finally {
+      gate.resolve();
+      manager.close();
+      await manager.drain();
+      parent!.release();
+      resetGatewayWorkAdmission();
+    }
+  },
+);
+
 it.each(["answered", "cancelled", "expired"] as const)(
   "settles local %s waiters when reset retired the original publication root",
   async (status) => {

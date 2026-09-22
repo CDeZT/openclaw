@@ -491,31 +491,38 @@ export class QuestionManager {
     // Track before invoking: synchronous truth and callbacks retain their ordering,
     // while worker preparation and rejected publication are joined by Gateway shutdown.
     void this.publications
-      .track(() => {
+      .track(async () => {
         try {
-          return continuation ? continuation.run(publish) : publish();
+          let publication: Promise<void>;
+          try {
+            publication = continuation ? continuation.run(publish) : publish();
+          } finally {
+            // Root reset can refuse entry before publish starts. Local waiters still
+            // observe the committed terminal fact without admitting another root.
+            settle();
+          }
+          await publication;
         } finally {
-          // Root reset can refuse entry before publish starts. Local waiters still
-          // observe the committed terminal fact without admitting another root.
-          settle();
+          // Worker preparation still needs this entry. Start grace only after
+          // publication settles, and never resurrect an entry retired by a callback.
+          if (this.entries.get(entry.record.id) === entry) {
+            const cleanupTimer = setTimeout(() => {
+              if (
+                entry.cleanupTimer === cleanupTimer &&
+                this.entries.get(entry.record.id) === entry
+              ) {
+                this.entries.delete(entry.record.id);
+                entry.sessionAccess?.release();
+              }
+            }, QUESTION_RESOLVED_ENTRY_GRACE_MS);
+            entry.cleanupTimer = cleanupTimer;
+            unrefTimer(cleanupTimer);
+          }
         }
       })
       .catch(() => {
         continuation?.release();
         this.onPublicationError?.();
       });
-    // A resolution callback can reset/close the owner synchronously; it must
-    // not recreate a retention timer after that entry has been retired.
-    if (this.entries.get(entry.record.id) !== entry) {
-      return;
-    }
-    const cleanupTimer = setTimeout(() => {
-      if (entry.cleanupTimer === cleanupTimer && this.entries.get(entry.record.id) === entry) {
-        this.entries.delete(entry.record.id);
-        entry.sessionAccess?.release();
-      }
-    }, QUESTION_RESOLVED_ENTRY_GRACE_MS);
-    entry.cleanupTimer = cleanupTimer;
-    unrefTimer(cleanupTimer);
   }
 }

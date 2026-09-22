@@ -99,6 +99,7 @@ describe("question host consent", () => {
         expect(broadcast).toHaveBeenCalledWith(
           "question.requested",
           expect.objectContaining({ id, questions: [expect.objectContaining(question)] }),
+          { canReadQuestion: expect.any(Function), canReceiveQuestion: expect.any(Function) },
         );
         const displayed = await call("question.get", { id });
         expect(displayed).toMatchObject([true, { question: { questions: [question] } }, undefined]);
