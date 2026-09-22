@@ -153,6 +153,7 @@ describe("progress card request authorization", () => {
           isWebchatConnect: () => false,
           extraHandlers: createProgressCardHandlers(store),
         });
+        const settled = Promise.allSettled([pending]);
         try {
           await Promise.race([
             entered.promise,
@@ -167,17 +168,24 @@ describe("progress card request authorization", () => {
             client.invalidated = true;
           }
           release.resolve();
-          await pending;
-          expect(respond).toHaveBeenCalledExactlyOnceWith(
-            false,
-            undefined,
-            expect.objectContaining({
-              code: change === "visibility" ? "INVALID_REQUEST" : "UNAVAILABLE",
-            }),
-          );
+          const [result] = await settled;
+          if (change === "source") {
+            expect(result).toEqual({
+              status: "rejected",
+              reason: new Error("Gateway requester authority changed"),
+            });
+            expect(respond).not.toHaveBeenCalled();
+          } else {
+            expect(result).toEqual({ status: "fulfilled", value: undefined });
+            expect(respond).toHaveBeenCalledExactlyOnceWith(
+              false,
+              undefined,
+              expect.objectContaining({ code: "INVALID_REQUEST" }),
+            );
+          }
         } finally {
           release.resolve();
-          await pending;
+          await settled;
         }
       });
     },
@@ -427,9 +435,14 @@ describe("progress card request authorization", () => {
             expect(fresh).toHaveBeenCalledWith(
               false,
               undefined,
-              expect.objectContaining({
-                details: expect.objectContaining({ code: "SESSION_PARTICIPATION_REQUIRED" }),
-              }),
+              testCase.method === "progressCard.get"
+                ? {
+                    code: "INVALID_REQUEST",
+                    message: `Session "${target.sessionKey}" was not found.`,
+                  }
+                : expect.objectContaining({
+                    details: expect.objectContaining({ code: "SESSION_PARTICIPATION_REQUIRED" }),
+                  }),
             );
             expect(loadHandlers).toHaveBeenCalledOnce();
           } else {
