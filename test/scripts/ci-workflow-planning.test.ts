@@ -4537,9 +4537,8 @@ describe("ci workflow guards", () => {
     { cpus: 32, slots: 5 },
     { cpus: 2, slots: 1, fail: "1/4" },
   ])("bounds frozen legacy startup corpus admission: %j", (scenario) => {
-    const step = readCiWorkflow().jobs["checks-fast-core"].steps.find(
-      (candidate: WorkflowStep) => candidate.name === "Check startup corpus",
-    );
+    const steps: WorkflowStep[] = readCiWorkflow().jobs["checks-fast-core"].steps;
+    const step = steps.find((candidate) => candidate.name === "Check startup corpus");
     const script = expectDefined(step?.run, "startup corpus command").replace(
       /\$\{\{[\s\S]*?\}\}/gu,
       (expression) =>
