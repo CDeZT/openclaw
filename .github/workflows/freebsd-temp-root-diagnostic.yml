@@ -16,7 +16,7 @@ jobs:
       github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
       github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
       github.event.pull_request.number == 155285 &&
-      github.event.before == '7effec872cc03fa8af9d96dc71d63123a33ab0dc' &&
+      github.event.before == 'c5cfc1d5d7fe4bf58364bd02ea8e3918ee176a14' &&
       github.event.pull_request.state == 'open' && github.event.pull_request.draft &&
       github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
@@ -37,15 +37,15 @@ jobs:
       CANDIDATE_TREE: 282fcc4a3ee7d7af39c51fb39b97ca3545dff873
       PRODUCT_SHA: 10725d8613c64f5efdc8ea58eae70a3b8f4276ac
       PRODUCT_TREE: 74bddc0882c455c519931e40040c260df9951ee8
-      PREVIOUS_CARRIER_SHA: 7effec872cc03fa8af9d96dc71d63123a33ab0dc
-      PREVIOUS_CARRIER_TREE: 1cb3a786afe727743a5e991bfb29ebe3057a3172
+      PREVIOUS_CARRIER_SHA: c5cfc1d5d7fe4bf58364bd02ea8e3918ee176a14
+      PREVIOUS_CARRIER_TREE: 36f6f2c519db858d5440d4c56aef24690f304b8e
       CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
       WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 6
+          fetch-depth: 7
           persist-credentials: false
       - name: Bind the diagnostic derivative and sole workflow carrier
         run: |
@@ -55,7 +55,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
           test "$(git show -s --format=%P HEAD)" = "$PREVIOUS_CARRIER_SHA"
           test "$(git rev-parse "$PREVIOUS_CARRIER_SHA^{tree}")" = "$PREVIOUS_CARRIER_TREE"
-          test "$(git show -s --format=%P "$PREVIOUS_CARRIER_SHA")" = "$CANDIDATE_SHA"
+          test "$(git show -s --format=%P "$PREVIOUS_CARRIER_SHA")" = 7effec872cc03fa8af9d96dc71d63123a33ab0dc
+          test "$(git show -s --format=%P 7effec872cc03fa8af9d96dc71d63123a33ab0dc)" = "$CANDIDATE_SHA"
           test "$(git show -s --format=%P "$CANDIDATE_SHA")" = "$PRODUCT_SHA"
           test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
           test "$(git rev-parse "$PRODUCT_SHA^{tree}")" = "$PRODUCT_TREE"
@@ -230,20 +231,72 @@ jobs:
           const observed=new Set(),result={source:process.env.CANDIDATE_SHA,complete:false,emissionPassed:false,receipts:[],errors:[],debug:{maxBytes:MAX_DEBUG_BYTES,retainedBytes:0,excerpts:[]},scope:'actual packaged observer and relay sites; native failure reproduction remains unrun'};
           const marker='OPENCLAW_FREEBSD_TEMP_DIAGNOSTIC_V1 ';
           const member=(n,object,property)=>n?.type==='MemberExpression'&&!n.computed&&n.object?.type==='Identifier'&&n.object.name===object&&n.property?.name===property;
-          const builtinFs=n=>n?.type==='CallExpression'&&member(n.callee,'process','getBuiltinModule')&&n.arguments[0]?.value==='node:fs';
+          const fixedString=n=>n?.type==='Literal'&&typeof n.value==='string'?n.value:n?.type==='TemplateLiteral'&&n.expressions.length===0&&n.quasis.length===1?n.quasis[0].value.cooked:undefined;
           function walk(node,fn) {
             if(!node||typeof node!=='object')return;fn(node);
             for(const value of Object.values(node))if(Array.isArray(value))value.forEach(n=>walk(n,fn));else if(value&&typeof value==='object')walk(value,fn);
           }
-          function outputMarker(n,init,seen=new Set()) {
+          // This local index recognizes the exact emitted owner blocks, not arbitrary dataflow.
+          function bindings(block) {
+            const scopes=new WeakMap(),parents=new WeakMap();
+            const isFunction=n=>['FunctionExpression','FunctionDeclaration','ArrowFunctionExpression'].includes(n.type);
+            const child=(parent,fn=false)=>({parent,fn,names:new Map()});
+            const root=child(null,true);
+            function bind(pattern,scope,declaration,init=null) {
+              if(!pattern)return;
+              if(pattern.type==='Identifier') {
+                const record={declaration,init,changed:false};
+                const entries=scope.names.get(pattern.name)??[];entries.push(record);scope.names.set(pattern.name,entries);return;
+              }
+              if(pattern.type==='RestElement')bind(pattern.argument,scope,declaration);
+              else if(pattern.type==='AssignmentPattern')bind(pattern.left,scope,declaration);
+              else if(pattern.type==='ArrayPattern')pattern.elements.forEach(p=>bind(p,scope,declaration));
+              else if(pattern.type==='ObjectPattern')pattern.properties.forEach(p=>bind(p.type==='RestElement'?p.argument:p.value,scope,declaration));
+            }
+            function index(n,scope,parent) {
+              if(!n||typeof n.type!=='string')return;
+              parents.set(n,parent);
+              if(n.type==='FunctionDeclaration'||n.type==='ClassDeclaration')bind(n.id,scope,n);
+              if(isFunction(n)) {scope=child(scope,true);if(n.id)bind(n.id,scope,n);n.params.forEach(p=>bind(p,scope,n));}
+              else if(['BlockStatement','CatchClause','ForStatement','ForInStatement','ForOfStatement','SwitchStatement','ClassExpression','ClassDeclaration'].includes(n.type))scope=child(scope);
+              scopes.set(n,scope);
+              if(n.type==='CatchClause')bind(n.param,scope,n);
+              if(n.type==='VariableDeclaration')for(const d of n.declarations) {
+                let target=scope;if(n.kind==='var')while(target.parent&&!target.fn)target=target.parent;
+                bind(d.id,target,d,d.id.type==='Identifier'?d.init:null);
+              }
+              if(n.type==='ImportDeclaration')for(const specifier of n.specifiers)bind(specifier.local,scope,n);
+              for(const value of Object.values(n))if(Array.isArray(value))value.forEach(v=>index(v,scope,n));else if(value&&typeof value==='object')index(value,scope,n);
+            }
+            index(block,root,null);
+            function entries(ref) {
+              if(ref?.type!=='Identifier')return [];
+              for(let scope=scopes.get(ref);scope;scope=scope.parent)if(scope.names.has(ref.name))return scope.names.get(ref.name);
+              return [];
+            }
+            const resolve=ref=>{const found=entries(ref);return found.length===1?found[0]:undefined;};
+            walk(block,n=>{
+              if(n.type==='AssignmentExpression'||n.type==='UpdateExpression'||
+                  ((n.type==='ForInStatement'||n.type==='ForOfStatement')&&n.left.type!=='VariableDeclaration')) {
+                const target=n.type==='UpdateExpression'?n.argument:n.left;
+                walk(target,id=>{if(id.type==='Identifier'){const record=resolve(id);if(record)record.changed=true;}});
+              }
+            });
+            const init=ref=>{const record=resolve(ref);return record&&!record.changed&&record.declaration.start<ref.start?record.init:undefined;};
+            const unbound=ref=>{for(let scope=scopes.get(ref);scope;scope=scope.parent)if(scope.names.has(ref.name))return false;return true;};
+            return {entries,resolve,init,unbound,parents,isFunction,invalidMarkerBinding:false};
+          }
+          function outputMarker(n,scope,seen=new Set()) {
             if(!n)return false;
             if(n.type==='Literal')return typeof n.value==='string'&&n.value.includes(marker);
             if(n.type==='Identifier') {
-              if(seen.has(n.name))return false;
-              return outputMarker(init(n.name),init,new Set([...seen,n.name]));
+              const found=scope.entries(n);
+              const marked=found.some(binding=>!seen.has(binding)&&outputMarker(binding.init,scope,new Set([...seen,binding])));
+              if(marked&&(found.length!==1||!scope.init(n)))scope.invalidMarkerBinding=true;
+              return marked;
             }
-            if(n.type==='TemplateLiteral')return n.quasis.some(q=>(q.value.cooked??q.value.raw).includes(marker))||n.expressions.some(value=>outputMarker(value,init,seen));
-            return n.type==='BinaryExpression'&&n.operator==='+'&&(outputMarker(n.left,init,seen)||outputMarker(n.right,init,seen));
+            if(n.type==='TemplateLiteral')return n.quasis.some(q=>(q.value.cooked??q.value.raw).includes(marker))||n.expressions.some(value=>outputMarker(value,scope,seen));
+            return n.type==='BinaryExpression'&&n.operator==='+'&&(outputMarker(n.left,scope,seen)||outputMarker(n.right,scope,seen));
           }
           function excerpt(bytes,source,file,bundleSha,start,end,kind) {
             const byteStart=Buffer.byteLength(source.slice(0,start),'utf8'),byteEnd=Buffer.byteLength(source.slice(0,end),'utf8');
@@ -267,34 +320,45 @@ jobs:
                 if(!candidate.packageBuildEqual||bytes.length!==candidate.bytes||bundleSha!==candidate.sha256)fail('package-build-mismatch');
                 source=bytes.toString('utf8');assert(Buffer.from(source,'utf8').equals(bytes));
                 stage='ast-parse';const ast=parse(source,{ecmaVersion:'latest',sourceType:'module'}),owners=new Map();
+                // Index the complete module once so enclosing declarations cannot counterfeit globals.
+                const scope=bindings(ast);
                 receipt.parsed=true;stage='ast-check';
                 function visit(n,ancestors=[]) {
                   if(!n||typeof n!=='object')return;
                   const callee=n.callee;
                   if(n.type==='CallExpression'&&callee?.type==='MemberExpression'&&!callee.computed&&callee.property?.name==='writeSync'&&n.arguments[1]?.type==='Identifier') {
-                    const owner=ancestors.findLast(a=>a.type==='TryStatement');
-                    if(owner) {
-                      const declarations=new Map();
-                      walk(owner.block,d=>{if(d.type==='VariableDeclarator'&&d.id.type==='Identifier'){const values=declarations.get(d.id.name)??[];values.push(d.init);declarations.set(d.id.name,values)}});
-                      const init=name=>declarations.get(name)?.length===1?declarations.get(name)[0]:undefined;
-                      const fsOwner=callee.object.type==='Identifier'?init(callee.object.name):callee.object;
-                      const output=init(n.arguments[1].name);
-                      const bounded=ancestors.some(a=>a.type==='IfStatement'&&a.test?.type==='BinaryExpression'&&a.test.operator==='<='&&a.test.right?.value===8192&&a.test.left?.type==='CallExpression'&&member(a.test.left.callee,'Buffer','byteLength')&&a.test.left.arguments[0]?.name===n.arguments[1].name);
-                      if(outputMarker(output,init)) {
+                    const outputRef=n.arguments[1],owner=ancestors.findLast(a=>a.type==='TryStatement');
+                    scope.invalidMarkerBinding=false;
+                    if(owner&&outputMarker(outputRef,scope)) {
+                      const output=scope.init(outputRef);
+                      const outputBinding=scope.resolve(outputRef);
+                      const fsOwner=callee.object.type==='Identifier'?scope.init(callee.object):callee.object;
+                      const builtinFs=fsOwner?.type==='CallExpression'&&member(fsOwner.callee,'process','getBuiltinModule')&&scope.unbound(fsOwner.callee.object)&&fsOwner.arguments.length===1&&fixedString(fsOwner.arguments[0])==='node:fs';
+                      const bound=test=>test?.type==='BinaryExpression'&&test.operator==='<='&&test.right?.value===8192&&test.left?.type==='CallExpression'&&member(test.left.callee,'Buffer','byteLength')&&scope.unbound(test.left.callee.object)&&test.left.arguments.length===1&&outputBinding&&scope.resolve(test.left.arguments[0])===outputBinding;
+                      let bounded=false,branch=n;
+                      // Only a consequent or && right operand dominates this same-function write.
+                      for(let parent=scope.parents.get(branch);parent;branch=parent,parent=scope.parents.get(parent)) {
+                        if(scope.isFunction(parent))break;
+                        if(parent.type==='IfStatement'&&branch===parent.consequent&&bound(parent.test))bounded=true;
+                        if(parent.type==='LogicalExpression'&&parent.operator==='&&'&&branch===parent.right&&bound(parent.left))bounded=true;
+                      }
+                      {
                         receipt.markerWrites++;owners.set(`${owner.start}:${owner.end}`,owner);
-                        if(!builtinFs(fsOwner))fail('builtin-fs-writer-missing');
+                        if(!output||scope.invalidMarkerBinding)fail('output-binding-unverifiable');
+                        if(!builtinFs)fail('builtin-fs-writer-missing');
                         if(n.arguments[0]?.value!==2)fail('stderr-descriptor-missing');
                         if(!bounded)fail('output-bound-missing');
                         const origins=new Set();
                         walk(output,d=>{
-                          if(d.type!=='CallExpression'||!member(d.callee,'JSON','stringify')||d.arguments[0]?.type!=='Identifier')return;
-                          const record=init(d.arguments[0].name);
-                          if(record?.type!=='ObjectExpression')return;
-                          const origin=record.properties.find(p=>p.type==='Property'&&!p.computed&&(p.key.name??p.key.value)==='origin')?.value?.value;
+                          if(d.type!=='CallExpression'||!member(d.callee,'JSON','stringify')||!scope.unbound(d.callee.object)||d.arguments.length!==1||d.arguments[0]?.type!=='Identifier')return;
+                          const record=scope.init(d.arguments[0]);
+                          if(record?.type!=='ObjectExpression'||!record.properties.every(p=>p.type==='Property'&&!p.computed))return;
+                          const values=record.properties.filter(p=>(p.key.type==='Identifier'?p.key.name:fixedString(p.key))==='origin');
+                          const origin=values.length===1?fixedString(values[0].value):undefined;
                           if(['config-snapshot','config-validator-relay'].includes(origin))origins.add(origin);
                         });
                         if(!origins.size)fail('fixed-origin-missing');
-                        if(builtinFs(fsOwner)&&n.arguments[0]?.value===2&&bounded)for(const origin of origins){receipt.sites.push({origin,writeStart:n.start,writeEnd:n.end,maxBytes:8192});observed.add(origin)}
+                        if(builtinFs&&n.arguments[0]?.value===2&&bounded)for(const origin of origins){receipt.sites.push({origin,writeStart:n.start,writeEnd:n.end,maxBytes:8192});observed.add(origin)}
                       }
                     }
                   }
