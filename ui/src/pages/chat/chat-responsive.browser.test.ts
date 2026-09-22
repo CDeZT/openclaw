@@ -1571,7 +1571,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
             };
           });
 
-          expect(gaps.before).toBeCloseTo(0, 0);
+          expect(gaps.before).toBeCloseTo(width <= 768 ? 0 : 16, 0);
           expect(gaps.after).toBeCloseTo(8, 0);
         },
       );
@@ -1630,10 +1630,10 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
           workToReply: 8,
           expandedTextToTool: 6,
           workedForSeparator: 0,
-          turn: hasTouch ? 64 : 28,
-          persistentTurn: hasTouch ? 64 : 28,
-          revealedPersistentTurn: hasTouch ? 64 : 28,
-          simpleToPersistentTurn: hasTouch ? 64 : 28,
+          turn: hasTouch ? 64 : 44,
+          persistentTurn: hasTouch ? 64 : 44,
+          revealedPersistentTurn: hasTouch ? 64 : 44,
+          simpleToPersistentTurn: hasTouch ? 64 : 44,
         });
       },
     );
