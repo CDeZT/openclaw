@@ -72,6 +72,7 @@ export function evaluateWorkflowExpression(
     hostedRunnerProfileContract?: boolean;
     matrix?: Record<string, unknown>;
     preflightOutputs?: Record<string, string>;
+    jobResults?: Record<string, string>;
     pullRequestNumber?: number;
     ref?: string;
     resolveTargetOutputs?: Record<string, string>;
@@ -180,7 +181,11 @@ export function evaluateWorkflowExpression(
     steps: context.steps ?? {},
     needs: {
       resolve_target: { outputs: context.resolveTargetOutputs ?? {} },
+      "checks-baseline-ratchets": {
+        result: context.jobResults?.["checks-baseline-ratchets"] ?? "success",
+      },
       preflight: {
+        result: context.jobResults?.preflight ?? "success",
         outputs: {
           frozen_target: String(context.frozenTarget ?? false),
           hosted_runner_profile_contract: String(context.hostedRunnerProfileContract ?? true),
