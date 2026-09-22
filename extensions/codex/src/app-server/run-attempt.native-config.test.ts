@@ -8,12 +8,16 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import { createMockPluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { describe, expect, it, vi } from "vitest";
+import { createCodexAppServerAgentHarness } from "../../harness.js";
+import { resolveCodexAppServerHomeDir } from "./auth-start-options.js";
 import { CodexAppServerClient } from "./client.js";
 import { resolveCodexSupervisionAppServerRuntimeOptions } from "./config.js";
 import { setCodexTestToolFactory } from "./host-capability.test-support.js";
+import { buildCodexRuntimeModelParams } from "./model-runtime.js";
 import { buildCodexAppServerConnectionFingerprint } from "./plugin-app-cache-key.js";
 import { isJsonObject } from "./protocol.js";
 import {
+  bindProductionHarnessHostCapabilitiesForTest,
   createParams,
   createRuntimeDynamicTool,
   getMockRuntimeIdentity,
@@ -26,7 +30,10 @@ import {
   turnStartResult,
   userMessage,
 } from "./run-attempt-test-harness.js";
-import { writeCodexAppServerBinding } from "./session-binding.test-helpers.js";
+import {
+  testCodexAppServerBindingStore,
+  writeCodexAppServerBinding,
+} from "./session-binding.test-helpers.js";
 import * as settledTurnContext from "./settled-turn-context.js";
 import * as sharedClientModule from "./shared-client.js";
 import {
@@ -34,7 +41,11 @@ import {
   attachSqliteSessionTarget,
   readTranscriptMessagesByIdentity,
 } from "./sqlite-session.test-helpers.js";
-import { createClientHarness, createCodexTestModel } from "./test-support.js";
+import {
+  createClientHarness,
+  createCodexTestModel,
+  createCodexTestOAuthProfile,
+} from "./test-support.js";
 import { codexDynamicToolsFingerprint } from "./thread-fingerprints.js";
 
 const agentHarnessRuntimeMocks = vi.hoisted(() => ({ forceModelToolsUnsupported: false }));
@@ -54,6 +65,221 @@ vi.mock("openclaw/plugin-sdk/agent-harness-runtime", async (importOriginal) => {
 setupRunAttemptTestHooks();
 
 describe("Codex native configuration", () => {
+  it.each([
+    { permission: "denied", retryModel: "native-retry" },
+    { permission: "allowed", retryModel: "openai/native-retry" },
+    { permission: "revoked", retryModel: "native-retry" },
+  ])(
+    "binds the actual harness retry model when its permission is $permission",
+    async ({ permission, retryModel }) => {
+      const catalogModel = "catalog-primary";
+      const runtimeModel = "native-primary";
+      const allowedModels = new Set([
+        catalogModel,
+        ...(permission === "denied" ? [] : ["native-retry"]),
+      ]);
+      const policyListeners = new Set<() => void>();
+      const params = createParams(path.join(tempDir, "session.jsonl"), tempDir, {
+        provider: "openai",
+      });
+      params.agentDir = path.join(tempDir, "agent");
+      params.authProfileId = "openai:retry-policy";
+      params.authProfileStore.profiles[params.authProfileId] = {
+        ...createCodexTestOAuthProfile("synthetic-account"),
+        expires: Date.now() + 60 * 60 * 1_000,
+      };
+      params.modelId = catalogModel;
+      params.model = {
+        ...params.model,
+        id: catalogModel,
+        params: buildCodexRuntimeModelParams(catalogModel, runtimeModel),
+      };
+      setCodexTestToolFactory(params, () => []);
+      agentHarnessRuntimeMocks.forceModelToolsUnsupported = true;
+      await attachSqliteSessionTarget(
+        params,
+        path.join(tempDir, "retry-model-policy.sqlite"),
+        params.sessionId,
+      );
+      const closeHost = await bindProductionHarnessHostCapabilitiesForTest(params, {
+        profileId: "restricted-retry-fixture",
+        scopes: ["operator.write"],
+        assertCurrent: () => {},
+        get modelPolicy() {
+          const models = [...allowedModels].map((model) => ({ provider: "openai", model }));
+          return {
+            models,
+            allows: (ref: (typeof models)[number]) =>
+              models.some(
+                ({ provider, model }) => ref.provider === provider && ref.model === model,
+              ),
+          };
+        },
+        onModelPolicyChanged: (listener) => {
+          policyListeners.add(listener);
+          return () => {
+            policyListeners.delete(listener);
+          };
+        },
+      });
+      const allowedControl = params.hostCapabilities.bindModelExecution?.({
+        provider: "openai",
+        model: catalogModel,
+      });
+      const sourceControl = params.hostCapabilities.retainSourceAuthority?.();
+      const abortController = new AbortController();
+      params.abortSignal = abortController.signal;
+      const primaryStarted = createDeferred<void>();
+      const retryStarted = createDeferred<void>();
+      const turnModels: unknown[] = [];
+      let nativeResponse = threadStartResult("thread-policy", { cwd: tempDir });
+      const transport = createClientHarness({
+        onWrite: (line, send) => {
+          const message: unknown = JSON.parse(line);
+          if (!isJsonObject(message) || message.id === undefined) {
+            return;
+          }
+          const request = isJsonObject(message.params) ? message.params : {};
+          let result: unknown = {};
+          if (message.method === "initialize") {
+            result = {
+              userAgent: `codex-cli/${getMockRuntimeIdentity().serverVersion}`,
+              codexHome: resolveCodexAppServerHomeDir(params.agentDir),
+            };
+          } else if (message.method === "configRequirements/read") {
+            result = { requirements: null };
+          } else if (message.method === "config/read") {
+            result = { config: {}, origins: {}, layers: [] };
+          } else if (message.method === "account/login/start") {
+            result = { type: "chatgptAuthTokens" };
+          } else if (message.method === "account/read") {
+            result = {
+              account: { type: "chatgpt", email: "synthetic@example.test", planType: "team" },
+              requiresOpenaiAuth: true,
+            };
+          } else if (message.method === "thread/read") {
+            result = { thread: nativeResponse.thread };
+          } else if (message.method === "thread/start" || message.method === "thread/resume") {
+            if (typeof request.model !== "string") {
+              throw new Error("Expected the selected native model in the thread request");
+            }
+            nativeResponse = { ...nativeResponse, model: request.model };
+            send({
+              method: "thread/status/changed",
+              params: { threadId: "thread-policy", status: { type: "notLoaded" } },
+            });
+            result = nativeResponse;
+          } else if (message.method === "turn/start") {
+            turnModels.push(request.model);
+            result = turnStartResult(`turn-${turnModels.length}`);
+          } else if (message.method === "thread/backgroundTerminals/list") {
+            result = { data: [], nextCursor: null };
+          } else if (message.method === "thread/unsubscribe") {
+            result = { status: "unsubscribed" };
+          }
+          send({ id: message.id, result });
+          if (message.method === "turn/start") {
+            (turnModels.length === 1 ? primaryStarted : retryStarted).resolve();
+          } else if (message.method === "turn/interrupt") {
+            send({
+              method: "turn/completed",
+              params: {
+                threadId: "thread-policy",
+                turn: { id: request.turnId, status: "interrupted", items: [] },
+              },
+            });
+          }
+        },
+      });
+      vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(transport.client);
+      const harness = createCodexAppServerAgentHarness({
+        bindingStore: testCodexAppServerBindingStore,
+        pluginConfig: {
+          appServer: {
+            command: process.execPath,
+            args: ["app-server"],
+            homeScope: "agent",
+            cyberFailover: { mode: "auto", model: retryModel },
+          },
+        },
+      });
+      if (!harness.runAttempt) {
+        throw new Error("Registered Codex harness must support run attempts");
+      }
+      const run = harness.runAttempt(params);
+      const settled = run.then(
+        () => false,
+        () => false,
+      );
+      try {
+        await Promise.race([primaryStarted.promise, run]);
+        expect(turnModels).toEqual([runtimeModel]);
+        const error = { message: "Synthetic provider refusal", codexErrorInfo: "cyberPolicy" };
+        transport.send({
+          method: "error",
+          params: { threadId: "thread-policy", turnId: "turn-1", error, willRetry: false },
+        });
+        transport.send({
+          method: "turn/completed",
+          params: {
+            threadId: "thread-policy",
+            turn: { id: "turn-1", status: "failed", items: [], error },
+          },
+        });
+        const retried = await Promise.race([retryStarted.promise.then(() => true), settled]);
+        if (permission === "revoked") {
+          allowedModels.delete("native-retry");
+          for (const listener of policyListeners) {
+            listener();
+          }
+        }
+        expect(allowedControl?.signal.aborted).toBe(false);
+        expect(sourceControl?.signal?.aborted).toBe(false);
+        allowedControl?.assertCurrent();
+        sourceControl?.assertCurrent();
+        if (retried) {
+          transport.send({
+            method: "turn/completed",
+            params: {
+              threadId: "thread-policy",
+              turn: {
+                id: "turn-2",
+                status: "completed",
+                items: [
+                  { type: "agentMessage", id: "retry-answer", text: "Synthetic retry reply" },
+                ],
+              },
+            },
+          });
+        }
+        if (permission === "denied") {
+          expect(turnModels).toEqual([runtimeModel]);
+          await expect(run).rejects.toThrow("operator role cannot use this model");
+        } else {
+          expect(turnModels).toEqual([runtimeModel, "native-retry"]);
+          if (permission === "revoked") {
+            await expect(run).rejects.toThrow("operator role cannot use this model");
+          } else {
+            await expect(run).resolves.toMatchObject({ terminal: { kind: "ok" } });
+          }
+        }
+        expect(params.modelId).toBe(catalogModel);
+        expect(params.model.id).toBe(catalogModel);
+        const transcript = await readTranscriptMessagesByIdentity(params);
+        expect(transcript.filter((message) => message.role === "user")).toHaveLength(1);
+      } finally {
+        abortController.abort("test_cleanup");
+        await run.catch(() => undefined);
+        allowedControl?.release();
+        sourceControl?.release();
+        closeHost();
+        await harness.dispose?.();
+        await transport.client.closeAndWait();
+      }
+      expect(policyListeners.size).toBe(0);
+    },
+  );
+
   it.each<{
     transport: "stdio" | "proxy" | "websocket" | "unix";
     hasAnswer: boolean;

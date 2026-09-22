@@ -16,6 +16,7 @@ import { isCodexAppServerIndeterminateRequestCancellationError } from "./client.
 import { resolveCodexExplicitSkillInputs } from "./explicit-skill-input.js";
 import { CODEX_INFERENCE_GENERATION_KEY } from "./inference-context.js";
 import { getCodexInferenceThread } from "./inference-routing.js";
+import { readCodexRuntimeModelId } from "./model-runtime.js";
 import { assertCodexTurnStartResponse } from "./protocol-validators.js";
 import type { CodexTurnStartResponse } from "./protocol.js";
 import { readCodexRateLimitsRevision } from "./rate-limit-cache.js";
@@ -140,11 +141,6 @@ export async function prepareCodexAttemptTurnRequest(
     const nativeModel = usesSupervisionConnection
       ? requireCodexSupervisionModelSelection(resourceState.thread)
       : undefined;
-    connection.bindModelExecution(
-      nativeModel
-        ? { provider: nativeModel.modelProvider, model: nativeModel.model }
-        : { provider: params.provider, model: params.modelId },
-    );
     const selectedThread = resourceState.thread;
     const assertTurnCurrent = () => {
       connection.assertCurrent();
@@ -198,6 +194,20 @@ export async function prepareCodexAttemptTurnRequest(
         (tool) => tool.name === "session_status",
       ),
     });
+    // Prepared runtime mappings retain catalog authorization; a retry must
+    // authorize the model actually encoded for the substituted turn.
+    connection.bindModelExecution(
+      nativeModel
+        ? { provider: nativeModel.modelProvider, model: nativeModel.model }
+        : effectiveRuntimeModelId === readCodexRuntimeModelId(params.model, params.modelId)
+          ? { provider: params.provider, model: params.modelId }
+          : turnStartParams.model
+            ? {
+                provider: selectedThread.modelProvider ?? params.provider,
+                model: turnStartParams.model,
+              }
+            : undefined,
+    );
     if (inferenceRoute) {
       prompt.setParentLocalEgress();
       resourceState.releaseInferenceContext?.();

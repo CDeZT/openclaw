@@ -12,7 +12,10 @@ type AgentHarnessHostTestAttempt = Omit<
 export async function createAgentHarnessHostCapabilitiesForTest(params: {
   attempt: AgentHarnessHostTestAttempt;
   pluginId: string;
-  operatorSource?: Pick<AdmittedRunOperatorAuthority, "profileId" | "scopes" | "assertCurrent">;
+  operatorSource?: Pick<
+    AdmittedRunOperatorAuthority,
+    "profileId" | "scopes" | "assertCurrent" | "modelPolicy" | "onModelPolicyChanged"
+  >;
 }) {
   const {
     createAdmittedRunOperatorAuthority,
