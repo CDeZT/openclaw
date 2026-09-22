@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import { serialize } from "node:v8";
 import { MessageChannel, type MessagePort } from "node:worker_threads";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,7 +17,11 @@ import type { acquireSqliteWorkerLifecycle } from "../infra/sqlite-worker-lifecy
 import type { SqliteWorkerAdmissionRequest } from "../infra/sqlite-worker-operation-admission.js";
 import { createSqliteWorkerTransferOwner } from "../infra/sqlite-worker-transfer.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
-import type { OpenClawAgentDatabaseRegistrationCommit } from "./openclaw-agent-db-contract.js";
+import type {
+  OpenClawAgentDatabaseRegistrationCommit,
+  OpenClawAgentDatabaseRegistrationFacts,
+} from "./openclaw-agent-db-contract.js";
+import type { OpenClawAgentRegistrationTransactionOwner } from "./openclaw-agent-db-registry-listing.js";
 import type { AgentDatabaseExecutionOpen } from "./openclaw-agent-execution-contract.js";
 
 const edge = vi.hoisted(() => {
@@ -34,9 +39,16 @@ const edge = vi.hoisted(() => {
         options: unknown,
         lease: unknown,
         committed?: (receipt: OpenClawAgentDatabaseRegistrationCommit) => void,
+        registration?: OpenClawAgentRegistrationTransactionOwner,
       ) => typeof database
     >(),
     request: vi.fn<(request: SqliteWorkerAdmissionRequest) => void>(),
+    effect:
+      vi.fn<
+        typeof import("../infra/sqlite-worker-operation-admission.js").deferSqliteWorkerCommitEffect
+      >(),
+    pendingEffect: undefined as unknown,
+    committedEffects: [] as unknown[],
     nativeClose: vi.fn(() => {
       database.db.isOpen = false;
       return true;
@@ -85,6 +97,7 @@ vi.mock("../infra/sqlite-worker-operation-admission.js", async (importOriginal) 
   return {
     ...actual,
     requestSqliteWorkerOperationAdmission: edge.request,
+    deferSqliteWorkerCommitEffect: edge.effect,
     withSqliteWorkerOperationAdmission: edge.forbidden,
   };
 });
@@ -106,7 +119,13 @@ vi.mock("./openclaw-agent-db-identity.js", () => ({
   }),
 }));
 vi.mock("./openclaw-agent-db-lease.js", () => ({
-  prepareOpenClawAgentDatabaseWorkerLease: () => ({ receipt: { leaseId: "fixture" } }),
+  prepareOpenClawAgentDatabaseWorkerLease: () => ({
+    receipt: {
+      leaseId: "fixture",
+      sharedStatePath: "/synthetic/state.sqlite",
+      sharedStateIdentity: "file:state",
+    },
+  }),
 }));
 vi.mock("./openclaw-agent-db-lifecycle.js", () => ({
   closeOpenClawAgentDatabaseByPath: edge.nativeClose,
@@ -135,6 +154,28 @@ const receipt: OpenClawAgentDatabaseRegistrationCommit = {
   stateDatabasePath: input.stateDatabasePath,
   stateDatabaseIdentity: "file:state",
 };
+const registrationFacts: OpenClawAgentDatabaseRegistrationFacts = {
+  before: { agentId: input.agentId, path: input.databasePath, schemaVersion: 22 },
+  after: { agentId: input.agentId, path: input.databasePath, schemaVersion: 22 },
+  source: {
+    agentId: input.agentId,
+    path: input.databasePath,
+    physicalIdentity: "fixture",
+    birthtime: "1",
+    userVersion: 22,
+    schemaVersion: 22,
+    role: "agent",
+    schemaAgentId: input.agentId,
+  },
+};
+function commitRegistration(owner: OpenClawAgentRegistrationTransactionOwner | undefined) {
+  if (!owner) throw new Error("Missing canonical registration transaction owner");
+  owner.classify(registrationFacts);
+  // This existing transport fixture forbids SQLite; the effect recorder below is its explicit double.
+  owner.prepareReceipt?.(edge.database.db as DatabaseSync, receipt, registrationFacts);
+  owner.withCommit(() => edge.committedEffects.push(edge.pendingEffect));
+}
+
 const replies = new Map<number, Deferred<SqliteWorkerReply>>();
 let receive: (request: SqliteWorkerRequest) => void;
 let nextId = 0;
@@ -216,6 +257,11 @@ beforeAll(async () => {
 beforeEach(async () => {
   vi.clearAllMocks();
   nativeOpened = false;
+  edge.pendingEffect = undefined;
+  edge.committedEffects.length = 0;
+  edge.effect.mockImplementation((_database, effect) => {
+    edge.pendingEffect = effect;
+  });
   edge.database.db.isOpen = true;
   edge.request.mockImplementation(() => {});
   edge.publishReply.mockImplementation((reply: SqliteWorkerReply) => {
@@ -253,8 +299,8 @@ describe("committed agent registration across failed native opening", () => {
   it.each(["inline", "framed"] as const)(
     "retains the shared-state lifecycle location through %s command delivery",
     async (delivery) => {
-      edge.open.mockImplementation((_options, _lease, committed) => {
-        committed?.(receipt);
+      edge.open.mockImplementation((_options, _lease, _committed, registration) => {
+        commitRegistration(registration);
         nativeOpened = true;
         return edge.database;
       });
@@ -325,30 +371,38 @@ describe("committed agent registration across failed native opening", () => {
 
   it.each([
     { name: "failed open", openingSucceeds: false, reportRefused: false },
-    { name: "failed open and report", openingSucceeds: false, reportRefused: true },
-    { name: "successful open with refused report", openingSucceeds: true, reportRefused: true },
+    { name: "failed open and native retirement", openingSucceeds: false, reportRefused: true },
+    {
+      name: "successful open with refused native identity publication",
+      openingSucceeds: true,
+      reportRefused: true,
+    },
   ])(
     "reports the COMMIT and joins retirement after $name",
     async ({ openingSucceeds, reportRefused }) => {
       const openingError = new Error("Validation publication failed after registration COMMIT");
-      const reportingError = new Error("Original caller retired before receipt acknowledgement");
-      edge.open.mockImplementation((_options, _lease, committed) => {
-        committed?.(receipt);
+      const reportingError = new Error(
+        "Original caller retired before native identity publication",
+      );
+      const retirementError = new Error("Native retirement failed after committed registration");
+      edge.open.mockImplementation((_options, _lease, _committed, registration) => {
+        commitRegistration(registration);
         if (openingSucceeds) {
           nativeOpened = true;
           return edge.database;
         }
         throw openingError;
       });
-      const reported: unknown[] = [];
       edge.request.mockImplementation((request) => {
-        if (request.stage === "prepare" && request.facts && typeof request.facts === "object") {
-          if ("kind" in request.facts && request.facts.kind === "agent-registration-committed") {
-            reported.push(request.facts);
-            if (reportRefused) {
-              throw reportingError;
-            }
-          }
+        if (
+          reportRefused &&
+          request.stage === "prepare" &&
+          request.facts &&
+          typeof request.facts === "object" &&
+          "identity" in request.facts &&
+          !("kind" in request.facts)
+        ) {
+          throw reportingError;
         }
       });
       const reply = await send({
@@ -357,7 +411,48 @@ describe("committed agent registration across failed native opening", () => {
         type: "execute",
         input: serialize({ type: "database.prepareWrite", input: undefined }),
       });
-      expect(reported).toEqual([{ kind: "agent-registration-committed", registration: receipt }]);
+      const selectorRequest = edge.request.mock.calls.find(
+        ([request]) => request.stage === "transaction",
+      )?.[0];
+      expect(selectorRequest?.facts).toMatchObject({
+        kind: "agent-registration-selector",
+        registration: registrationFacts,
+      });
+      if (
+        !selectorRequest ||
+        !selectorRequest.facts ||
+        typeof selectorRequest.facts !== "object" ||
+        !("binding" in selectorRequest.facts)
+      )
+        throw new Error("Missing operation-local binding");
+      expect(selectorRequest.facts.binding).toEqual({
+        intentId: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+        ),
+        leaseId: input.leaseId,
+        agentId: input.agentId,
+        agentPath: input.databasePath,
+        stateDatabasePath: input.stateDatabasePath,
+        stateDatabaseIdentity: "file:state",
+      });
+      expect(edge.committedEffects).toEqual([
+        {
+          kind: "agent-registration",
+          binding: selectorRequest.facts.binding,
+          receipt,
+          registration: registrationFacts,
+        },
+      ]);
+      expect(
+        edge.request.mock.calls.some(
+          ([request]) =>
+            request.stage === "prepare" &&
+            request.facts &&
+            typeof request.facts === "object" &&
+            "kind" in request.facts &&
+            request.facts.kind === "agent-registration-committed",
+        ),
+      ).toBe(false);
       expect(reply.ok).toBe(false);
       if (reply.ok) {
         throw new Error("Failed native opening unexpectedly succeeded");
@@ -365,7 +460,7 @@ describe("committed agent registration across failed native opening", () => {
       if (!openingSucceeds) {
         expect(reply.error.message).toContain(openingError.message);
       }
-      if (reportRefused) {
+      if (reportRefused && openingSucceeds) {
         expect(reply.error.message).toContain(reportingError.message);
       }
       expect(reply.retire).toBe(true);
@@ -373,18 +468,27 @@ describe("committed agent registration across failed native opening", () => {
       const { retired, completion, reject, settleNative } = retireFailedReply(
         reply,
         { type: "execute", id: reply.id, actor, input: new Uint8Array() },
-        reportRefused ? reportingError : undefined,
+        reportRefused && openingSucceeds ? reportingError : undefined,
       );
       expect(reject).not.toHaveBeenCalled();
       expect(settleNative).not.toHaveBeenCalled();
-      retired.resolve();
+      if (!openingSucceeds && reportRefused) retired.reject(retirementError);
+      else retired.resolve();
       const failure = await completion.promise;
       expect(failure).toMatchObject({ code: "outcome-unknown" });
-      if (!openingSucceeds) {
+      if (!openingSucceeds && !reportRefused) {
         expect(String(failure)).toContain(openingError.message);
       }
-      if (reportRefused) {
+      if (reportRefused && openingSucceeds) {
         expect(String(failure)).toContain(reportingError.message);
+      }
+      if (!openingSucceeds && reportRefused) {
+        expect(failure).toBeInstanceOf(AggregateError);
+        if (!(failure instanceof AggregateError))
+          throw new Error("Expected retained cleanup aggregation");
+        const failures = failure.errors;
+        expect(String(failures[0])).toContain(openingError.message);
+        expect(failures[1]).toBe(retirementError);
       }
       expect(settleNative).toHaveBeenCalledExactlyOnceWith({
         kind: "unknown",
@@ -394,8 +498,8 @@ describe("committed agent registration across failed native opening", () => {
   );
 
   it("keeps a fully initialized actor available without reporting registration again", async () => {
-    edge.open.mockImplementation((_options, _lease, committed) => {
-      committed?.(receipt);
+    edge.open.mockImplementation((_options, _lease, _committed, registration) => {
+      commitRegistration(registration);
       nativeOpened = true;
       return edge.database;
     });
@@ -410,16 +514,10 @@ describe("committed agent registration across failed native opening", () => {
       ).toMatchObject({ ok: true });
     }
     expect(edge.open).toHaveBeenCalledOnce();
-    expect(
-      edge.request.mock.calls.filter(
-        ([request]) =>
-          request.stage === "prepare" &&
-          request.facts &&
-          typeof request.facts === "object" &&
-          "kind" in request.facts &&
-          request.facts.kind === "agent-registration-committed",
-      ),
-    ).toHaveLength(1);
+    expect(edge.committedEffects).toHaveLength(1);
+    expect(edge.request.mock.calls.filter(([request]) => request.stage === "commit")).toHaveLength(
+      1,
+    );
   });
 
   it("recognizes a separately evaluated backend's inner open refusal before completed settlement", async () => {
@@ -448,6 +546,7 @@ describe("committed agent registration across failed native opening", () => {
     vi.doMock("../infra/sqlite-worker-operation-admission.js", () => ({
       ...duplicateAdmission,
       requestSqliteWorkerOperationAdmission: edge.request,
+      deferSqliteWorkerCommitEffect: edge.effect,
       withSqliteWorkerOperationAdmission: edge.forbidden,
     }));
     const refused = new Error("Authority revoked after preflight and before native agent open");

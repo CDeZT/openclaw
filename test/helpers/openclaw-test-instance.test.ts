@@ -1036,6 +1036,7 @@ describe("openclaw test instance", () => {
     await Promise.race([control.reached, startup]);
     const child = instance.child;
     expect(child).toBeDefined();
+    const launchesBeforeCancel = control.launches.length;
     controller.abort(cancelled);
     expect(await outcome).toBe(cancelled);
     expect(instance.child).toBeUndefined();
@@ -1044,6 +1045,10 @@ describe("openclaw test instance", () => {
     expect(inspectManagedProcessGroup(child!, { errorPolicy: "indeterminate" })).toBe("dead");
     expect(isProcessAlive(child!.pid!)).toBe(false);
     await expect(fs.stat(instance.state.root)).resolves.toBeDefined();
+    await expect(trackOperation(instance.startGateway())).rejects.toThrow(
+      "test instance no longer accepts Gateway starts",
+    );
+    expect(control.launches).toHaveLength(launchesBeforeCancel);
   });
 
   it("rolls back readiness that completes after owner cancellation", async () => {

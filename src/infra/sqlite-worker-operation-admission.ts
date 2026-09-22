@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { serialize } from "node:v8";
 import {
   MessageChannel,
@@ -10,10 +11,14 @@ import {
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import { deferSqlitePostCommitPublication } from "./sqlite-post-commit.js";
+import {
+  deferSqlitePostCommitPublication,
+  stageSqliteTransactionState,
+} from "./sqlite-post-commit.js";
 import { SQLITE_WORKER_MAX_MESSAGE_BYTES, SqliteWorkerError } from "./sqlite-worker-contract.js";
 import type {
   RetainedWorkerTransactionAdmission,
+  SqliteWorkerNativeCommit,
   SqliteWorkerNativeSettlement,
   SqliteWorkerNativeSettlementOwner,
 } from "./sqlite-worker-operation-settlement.js";
@@ -43,6 +48,7 @@ export type SqliteWorkerOperationAdmission = SqliteWorkerNativeSettlementOwner &
   readonly port: MessagePort;
   readonly failure: unknown;
   readonly cleanupFailures: readonly unknown[];
+  wasGranted?(request: SqliteWorkerAdmissionRequest): boolean;
   service(): void;
   finish(): void;
 };
@@ -59,6 +65,7 @@ export function createSqliteWorkerOperationAdmission(
   const { port1, port2 } = new MessageChannel();
   const inOwnerContext = AsyncLocalStorage.snapshot();
   const decisions = new Set<Int32Array>();
+  const grants = new WeakSet<SqliteWorkerAdmissionRequest>();
   const cleanupFailures: unknown[] = [];
   let closed = false;
   let failure: unknown;
@@ -73,16 +80,45 @@ export function createSqliteWorkerOperationAdmission(
       cleanupFailures.push(error);
     }
   };
+  const retainCommitted = (next: SqliteWorkerNativeCommit) => {
+    const previousEffects = committed?.effects ?? [];
+    const nextEffects = next.effects ?? [];
+    const preservesPrefix =
+      nextEffects.length >= previousEffects.length &&
+      previousEffects.every((effect, index) => isDeepStrictEqual(effect, nextEffects[index]));
+    if (!preservesPrefix) {
+      failure ??= new SqliteWorkerError(
+        "SQLite worker committed effects regressed",
+        "outcome-unknown",
+      );
+      // A broken cumulative snapshot cannot erase facts already received on this
+      // operation's private port. Primary-result replacement remains separate.
+      committed = {
+        facts: next.facts,
+        ...(committed?.effects ? { effects: committed.effects } : {}),
+      };
+      return;
+    }
+    // Repeated cumulative publications are idempotent, including structured clones.
+    committed = next;
+  };
   const receive = (message: unknown) => {
     if (isRecord(message) && message.kind === "native-commit") {
-      if (!isRecord(message.committed) || settlement) {
+      if (
+        !isRecord(message.committed) ||
+        (message.committed.effects !== undefined && !Array.isArray(message.committed.effects)) ||
+        settlement
+      ) {
         failure ??= new SqliteWorkerError(
           "SQLite worker commit receipt is invalid",
           "outcome-unknown",
         );
         return;
       }
-      committed = { facts: message.committed.facts };
+      retainCommitted({
+        facts: message.committed.facts,
+        ...(Array.isArray(message.committed.effects) ? { effects: message.committed.effects } : {}),
+      });
       return;
     }
     if (isRecord(message) && message.kind === "native-settlement") {
@@ -90,7 +126,9 @@ export function createSqliteWorkerOperationAdmission(
       if (
         !isRecord(value) ||
         (value.kind !== "completed" && value.kind !== "unknown") ||
-        (value.committed !== undefined && !isRecord(value.committed)) ||
+        (value.committed !== undefined &&
+          (!isRecord(value.committed) ||
+            (value.committed.effects !== undefined && !Array.isArray(value.committed.effects)))) ||
         settlement
       ) {
         failure ??= new SqliteWorkerError(
@@ -100,7 +138,10 @@ export function createSqliteWorkerOperationAdmission(
         return;
       }
       if (isRecord(value.committed)) {
-        committed = { facts: value.committed.facts };
+        retainCommitted({
+          facts: value.committed.facts,
+          ...(Array.isArray(value.committed.effects) ? { effects: value.committed.effects } : {}),
+        });
       }
       settlement = {
         kind: value.kind,
@@ -136,6 +177,7 @@ export function createSqliteWorkerOperationAdmission(
       }
       const granted = Atomics.compareExchange(decision, 0, REQUESTED, GRANTED) === REQUESTED;
       if (granted) {
+        grants.add(request);
         Atomics.notify(decision, 0);
       }
       return granted;
@@ -162,6 +204,7 @@ export function createSqliteWorkerOperationAdmission(
   };
   return {
     port: port2,
+    wasGranted: (request) => grants.has(request),
     get failure() {
       return failure;
     },
@@ -169,8 +212,8 @@ export function createSqliteWorkerOperationAdmission(
       return cleanupFailures;
     },
     get committed() {
-      // Event callbacks can precede delivery of already queued commit facts.
-      service();
+      // finish drains queued facts before closing the original port.
+      if (!closed) service();
       return committed;
     },
     get settlement() {
@@ -197,6 +240,7 @@ export function createSqliteWorkerOperationAdmission(
     },
     service,
     finish() {
+      if (closed) return;
       closed = true;
       // Receipts remain observable; late requests can no longer obtain authority.
       service();
@@ -213,7 +257,7 @@ export function createSqliteWorkerOperationAdmission(
 
 export type SqliteWorkerOperationContext = {
   port: MessagePort;
-  committed?: { facts: unknown };
+  committed?: SqliteWorkerNativeCommit;
   settled?: true;
 };
 
@@ -222,6 +266,7 @@ type WorkerAdmissionScope = {
   port: MessagePort;
   owner: SqliteWorkerOperationContext;
   active: boolean;
+  prepared?: SqliteWorkerNativeCommit;
 };
 // Source brokers and built plugin backends can load separate module copies in
 // one Worker. Share the carrier, while each operation still owns its private port.
@@ -235,7 +280,7 @@ export function withSqliteWorkerOperationAdmission<T>(
   owner: SqliteWorkerOperationContext,
   operation: () => T,
 ): T {
-  const scope = { owner, port: owner.port, active: true };
+  const scope: WorkerAdmissionScope = { owner, port: owner.port, active: true };
   try {
     return currentAdmission.run(scope, operation);
   } finally {
@@ -243,27 +288,59 @@ export function withSqliteWorkerOperationAdmission<T>(
   }
 }
 
-/** Record facts only after the real transaction commits, before native settlement is announced. */
-export function deferSqliteWorkerCommitReceipt(database: DatabaseSync, facts: unknown): void {
+/** Prepare serialization before COMMIT; record the native fact before fallible transport. */
+function prepareSqliteWorkerCommit(
+  database: DatabaseSync,
+  update: (previous: SqliteWorkerNativeCommit | undefined) => SqliteWorkerNativeCommit,
+): void {
   const scope = currentAdmission.getStore();
   if (!scope?.active) {
     throw new SqliteWorkerError("SQLite receipt requires its retained admission", "unavailable");
   }
-  if (serialize(facts).byteLength > SQLITE_WORKER_MAX_MESSAGE_BYTES) {
+  const previous = scope.prepared;
+  const next = update(previous ?? scope.owner.committed);
+  if (serialize(next).byteLength > SQLITE_WORKER_MAX_MESSAGE_BYTES) {
     throw new SqliteWorkerError(
       "SQLite worker commit receipt exceeds the transport limit",
       "overloaded",
     );
   }
-  const captured = structuredClone(facts);
+  const captured = structuredClone(next);
   if (
+    !stageSqliteTransactionState(database, {
+      stage() {
+        scope.prepared = captured;
+      },
+      rollback() {
+        scope.prepared = previous;
+      },
+      nativeCommit() {
+        scope.owner.committed = captured;
+      },
+      commit() {},
+    }) ||
     !deferSqlitePostCommitPublication(database, () => {
-      scope.owner.committed = { facts: captured };
       scope.owner.port.postMessage({ kind: "native-commit", committed: scope.owner.committed }, []);
     })
   ) {
     throw new Error("SQLite worker receipt requires a transaction publication owner");
   }
+}
+
+/** Preserve other operation facts when a later owner records its primary result. */
+export function deferSqliteWorkerCommitReceipt(database: DatabaseSync, facts: unknown): void {
+  prepareSqliteWorkerCommit(database, (previous) => ({
+    facts,
+    ...(previous?.effects ? { effects: previous.effects } : {}),
+  }));
+}
+
+/** Add an independently bound fact without replacing the operation's existing result facts. */
+export function deferSqliteWorkerCommitEffect(database: DatabaseSync, effect: unknown): void {
+  prepareSqliteWorkerCommit(database, (previous) => ({
+    facts: previous?.facts,
+    effects: [...(previous?.effects ?? []), effect],
+  }));
 }
 
 /** The executing worker calls this only after its backend's native settlement check. */

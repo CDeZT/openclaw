@@ -201,6 +201,10 @@ export function createOpenClawAgentDatabaseAdmissionOwner(
     try {
       while (true) {
         const outcome = await withAdmission(async (assertCurrent, validation) => {
+          pending.assertWrite = () => {
+            assertCurrent();
+            assertOpenClawAgentDatabaseAdmissionCurrent(options, pending, check?.database);
+          };
           try {
             assertCurrent();
             assertOpenClawAgentDatabaseAdmissionCurrent(options, pending, check?.database);
@@ -349,6 +353,10 @@ export function createOpenClawAgentDatabaseAdmissionOwner(
   ): PendingAgentDatabaseOpen {
     const admission = createOpenClawAgentDatabaseAdmission(agentId, pathname);
     const { pending } = admission;
+    pending.assertWrite = () => {
+      assertOpenClawAgentDatabaseAdmissionCurrent(options, pending);
+      assertCurrent?.();
+    };
     const operation = openSteps(options, pending);
     void (async () => {
       assertAgentDatabaseOpenAuthority(operation, assertCurrent);

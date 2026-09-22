@@ -36,6 +36,7 @@ vi.mock("./openclaw-state-db-readonly.js", async (importOriginal) => ({
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import {
   invalidateRegisteredAgentDatabasesMemo,
+  invalidateRegisteredAgentDatabaseMetadata,
   listOpenClawRegisteredAgentDatabases,
   prepareOpenClawAgentDatabaseRegistrySnapshotRead,
   readOpenClawAgentDatabaseRegistryToken,
@@ -170,4 +171,47 @@ it("uses captured async scope and coordinator location when demand runs elsewher
       () => prepared.read(),
     ),
   );
+});
+
+it("preserves explicit selector validity but refuses a metadata-raced asynchronous cache fill", async () => {
+  await withTempDir("registry-selector-race-", async (stateDir) => {
+    const { captureOpenClawStateWorkerContext } = await vi.importActual<
+      typeof import("./openclaw-state-worker-context.js")
+    >("./openclaw-state-worker-context.js");
+    const { retainOpenClawStateDatabaseSelector } = await import("./openclaw-state-db-cache.js");
+    const local = {
+      path: path.join(stateDir, "state.sqlite"),
+      env: { OPENCLAW_STATE_DIR: stateDir },
+    };
+    const context = captureOpenClawStateWorkerContext(local);
+    const selector = retainOpenClawStateDatabaseSelector(context.admission);
+    try {
+      const other = { path: path.join(stateDir, "other.sqlite") };
+      const otherToken = readOpenClawAgentDatabaseRegistryToken(other);
+      const prepared = prepareOpenClawAgentDatabaseRegistrySnapshotRead(local, {
+        context,
+        selector,
+      });
+      expect(readOpenClawAgentDatabaseRegistryToken(other)).toBe(otherToken);
+      expect(mocks.read).not.toHaveBeenCalled();
+      mocks.read.mockImplementationOnce(async () => {
+        invalidateRegisteredAgentDatabaseMetadata(local);
+        selector.assertCurrent();
+        return { status: "available", entries };
+      });
+      await expect(prepared.read()).rejects.toThrow("registry changed");
+      selector.assertCurrent();
+      const fresh = [{ ...entry, lastSeenAt: 3, sizeBytes: 4 }];
+      mocks.read.mockResolvedValueOnce({ status: "available", entries: fresh });
+      const accepted = await prepared.read();
+      expect(accepted.result).toEqual({ status: "available", entries: fresh });
+      invalidateRegisteredAgentDatabaseMetadata(local);
+      accepted.assertCurrent();
+      invalidateRegisteredAgentDatabasesMemo(local);
+      expect(accepted.assertCurrent).toThrow("selector changed");
+      expect(mocks.read).toHaveBeenCalledTimes(2);
+    } finally {
+      selector.release();
+    }
+  });
 });

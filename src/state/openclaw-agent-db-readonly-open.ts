@@ -4,8 +4,14 @@ import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync-cache-state.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { sqlitePrimaryResultCode } from "../infra/sqlite-error-diagnostics.js";
-import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
-import { registerOpenClawAgentDatabaseIdentity } from "./openclaw-agent-db-identity.js";
+import type {
+  OpenClawAgentDatabaseOptions,
+  OpenClawAgentDatabaseReadFacts,
+} from "./openclaw-agent-db-contract.js";
+import {
+  registerOpenClawAgentDatabaseIdentity,
+  readOpenClawAgentDatabaseIdentity,
+} from "./openclaw-agent-db-identity.js";
 import { classifyOpenClawAgentDatabaseReadError } from "./openclaw-agent-db-read-error.js";
 import {
   assertCanonicalAgentPersistenceVersion,
@@ -51,15 +57,30 @@ export function readOpenClawAgentDatabase<T>(
 }
 
 /** Recheck committed admission facts before using an existing read-only connection. */
-export function hasOpenClawAgentReadOnlySchema(database: OpenClawAgentReadOnlyDatabase): boolean {
+export function readOpenClawAgentReadOnlySchemaFacts(
+  database: OpenClawAgentReadOnlyDatabase,
+): OpenClawAgentDatabaseReadFacts | undefined {
   const userVersion = assertSupportedAgentSchemaVersion(database.db, database.path);
   assertCanonicalAgentPersistenceVersion(database.db, database.path, userVersion);
   const schemaMeta = readExistingAgentSchemaMeta(database.db);
-  if (!schemaMeta) {
-    return false;
-  }
+  if (!schemaMeta) return undefined;
   assertExistingAgentSchemaOwner(schemaMeta, database.agentId, database.path);
-  return true;
+  const identity = readOpenClawAgentDatabaseIdentity(database);
+  if (typeof identity.identity !== "string" || identity.birthtime === undefined) return undefined;
+  return Object.freeze({
+    agentId: database.agentId,
+    path: database.path,
+    physicalIdentity: identity.identity,
+    birthtime: identity.birthtime,
+    userVersion,
+    schemaVersion: schemaMeta.schemaVersion,
+    role: schemaMeta.role,
+    schemaAgentId: schemaMeta.agentId,
+  });
+}
+
+export function hasOpenClawAgentReadOnlySchema(database: OpenClawAgentReadOnlyDatabase): boolean {
+  return readOpenClawAgentReadOnlySchemaFacts(database) !== undefined;
 }
 
 /** Fresh-only callers do not need the writable runtime's process-held connection cache. */

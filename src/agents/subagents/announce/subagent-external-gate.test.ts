@@ -44,3 +44,58 @@ it("keeps hidden concurrent results unavailable until the external owner release
     () => joined,
   );
 });
+
+it("fences held HTTP arrival and settles waiters on release, abort, and owner close", async ({
+  signal,
+}) => {
+  const gates = await createExternalGates();
+  const requests = new AbortController();
+  let request: Promise<string> | undefined;
+  let ownerClosed = false;
+  const close = async () => {
+    if (!ownerClosed) {
+      ownerClosed = true;
+      await gates.close();
+    }
+  };
+  try {
+    const gate = gates.create();
+    const arrived = gate.waitForWaiting(signal);
+    request = fetch(gate.url, {
+      signal: AbortSignal.any([signal, requests.signal]),
+    }).then((response) => response.text());
+    // The response must remain held after the owning handler signals arrival.
+    await Promise.race([
+      arrived,
+      request.then(() => {
+        throw new Error("gate response completed before release");
+      }),
+    ]);
+    expect(gate.snapshot()).toEqual({ requests: 1, waiting: 1, released: false });
+    // Registration after the handler ran must observe existing held state immediately.
+    await gate.waitForWaiting(signal);
+    gate.release("owned receipt");
+    await expect(request).resolves.toBe("owned receipt");
+    await expect(gate.waitForWaiting(signal)).rejects.toThrow("released before");
+
+    const unused = gates.create();
+    const cancelled = new AbortController();
+    const reason = new Error("arrival cancelled");
+    const cancellation = expect(unused.waitForWaiting(cancelled.signal)).rejects.toBe(reason);
+    cancelled.abort(reason);
+    await cancellation;
+    const released = expect(unused.waitForWaiting(signal)).rejects.toThrow("released before");
+    unused.release("no request");
+    await released;
+
+    const closed = expect(gates.create().waitForWaiting(signal)).rejects.toThrow(
+      "external gates closed",
+    );
+    await close();
+    await closed;
+  } finally {
+    requests.abort();
+    await close();
+    await request?.catch(() => {});
+  }
+});

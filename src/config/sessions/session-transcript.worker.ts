@@ -3,9 +3,12 @@ import type {
   UsageCostWorkerReply,
 } from "../../infra/session-cost-usage-worker.types.js";
 import { serveWorkerTasks } from "../../infra/worker-task-server.js";
+import { isIncognitoSessionKey } from "../../shared/incognito-session-key.js";
+import { isIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import type { SessionIdentityEvidenceResult } from "./session-accessor.sqlite-entry-availability.js";
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
+import { sessionExactReadSourceChange } from "./session-exact-read-source-error.js";
 import type { SessionHistoryWorkerResult } from "./session-history-types.js";
 import { sessionHistoryCleanupError } from "./session-history-worker-errors.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
@@ -20,12 +23,15 @@ import type {
   SessionExactEntriesWorkerInput,
   SessionStoreTargetWorkerInput,
   SessionTargetInventoryWorkerInput,
+  SessionConfiguredTargetWorkerInput,
   SessionIdentityEvidenceWorkerInput,
   SessionMembersWorkerInput,
   SessionPreviewWorkerInput,
   SessionTitleFieldsWorkerInput,
   SessionModelContextWorkerInput,
   SessionRowPresenceWorkerInput,
+  SessionRowEntryWorkerInput,
+  SessionRowEntryWorkerResult,
   SessionTranscriptHistoryWorkerInput,
   SessionTranscriptWorkerReply,
   SessionTranscriptWorkerValues,
@@ -97,11 +103,13 @@ serveWorkerTasks(
       | SessionExactEntriesWorkerInput
       | SessionStoreTargetWorkerInput
       | SessionTargetInventoryWorkerInput
+      | SessionConfiguredTargetWorkerInput
       | SessionIdentityEvidenceWorkerInput
       | SessionTranscriptHistoryWorkerInput
       | SessionPreviewWorkerInput
       | SessionTitleFieldsWorkerInput
       | SessionRowPresenceWorkerInput
+      | SessionRowEntryWorkerInput
       | SessionMembersWorkerInput
       | SessionUsageCacheWorkerInput
       | SessionTranscriptSearchWorkerInput
@@ -164,6 +172,11 @@ serveWorkerTasks(
             readExactSessionEntriesWithLifecycle(request),
           )),
         };
+      }
+      if (request.kind === "session-configured-target") {
+        const { readConfiguredSessionStoreTarget } =
+          await import("./session-store-target-inventory.js");
+        return { ok: true, value: readConfiguredSessionStoreTarget(request.request) };
       }
       if (request.kind === "session-target-inventory") {
         const { readSessionStoreTargetInventory } =
@@ -238,6 +251,40 @@ serveWorkerTasks(
               { ...request.database, env: request.env },
             );
             return result.found ? result.value : [];
+          })),
+        };
+      }
+      if (request.kind === "session-row-entry") {
+        const scope = request.scope;
+        if (
+          scope.databaseAgentId !== request.database.agentId ||
+          scope.storePath !== request.database.path ||
+          isIncognitoSessionKey(scope.sessionKey) ||
+          isIncognitoOpenClawAgentSqlitePath(scope.storePath, {
+            agentId: scope.agentId,
+            env: scope.env,
+          })
+        ) {
+          throw new Error("Session entry target is not its retained durable owner");
+        }
+        const { readExactSessionEntryFromSourceReadOnly } =
+          await import("./session-accessor.sqlite-exact-read.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase<SessionRowEntryWorkerResult>(request.database, () => {
+            const result = readExactSessionEntryFromSourceReadOnly({
+              readSource: request.database,
+              sessionKey: scope.sessionKey,
+              env: cloneEnvWithPlatformSemantics(scope.env),
+              continuation: request.continuation,
+              expectedIdentity: request.expectedIdentity,
+            });
+            return {
+              kind: "session-row-entry",
+              entry: result?.entry,
+              identity: result?.identity ?? null,
+              facts: result?.facts ?? null,
+            };
           })),
         };
       }
@@ -369,6 +416,20 @@ serveWorkerTasks(
         },
       );
     } catch (error) {
+      const sourceChange =
+        request.kind === "session-row-entry" ? sessionExactReadSourceChange(error) : undefined;
+      if (sourceChange) {
+        return {
+          ok: false,
+          error: {
+            kind: "source-changed",
+            reason: sourceChange,
+            // Keep the existing message-only failure diagnostics, including a
+            // joined close failure, alongside the bounded physical-owner fact.
+            message: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
       if (
         error instanceof SyntaxError &&
         request.kind === "history-page" &&

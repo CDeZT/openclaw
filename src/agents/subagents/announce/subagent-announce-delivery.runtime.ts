@@ -9,20 +9,21 @@ import { getRuntimeConfig } from "../../../config/config.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../../../config/legacy.default-agent-owner.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions.js";
 import { loadSessionEntryReadOnly as loadSessionEntry } from "../../../config/sessions/session-accessor.js";
+import { withConfiguredSessionEntryReader } from "../../../config/sessions/session-entry-configured-worker-read.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "../../../config/sessions/session-store-owner.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { callGateway } from "../../../gateway/call.js";
 import { bindGatewayLifecycleRequest } from "../../../gateway/server-recovery-runtime-context.js";
+import { sendMessage } from "../../../infra/outbound/message.js";
 import "../../../infra/outbound/best-effort-delivery.js";
 import "../../../infra/outbound/bound-delivery-router.js";
 import "../../../infra/outbound/conversation-id.js";
-import { sendMessage } from "../../../infra/outbound/message.js";
-import "../../../plugins/hook-runner-global.js";
 import {
   normalizeAgentId,
   normalizeMainKey,
   parseAgentSessionKey,
 } from "../../../routing/session-key.js";
+import "../../../plugins/hook-runner-global.js";
 import { resolveActiveEmbeddedRunSessionId } from "../../embedded-agent-runner/active-run-projections.js";
 import type { EmbeddedAgentQueueMessageOptions } from "../../embedded-agent-runner/run-state.js";
 import {
@@ -33,6 +34,7 @@ import {
   resolveEmbeddedRunAbandonment,
   type EmbeddedAgentQueueMessageOutcome,
 } from "../../embedded-agent-runner/runs.js";
+import { SourceOwnerChangedError } from "./subagent-announce-delivery-retry.js";
 import { dispatchGatewayMethodInProcess } from "./subagent-announce.runtime.js";
 import { resolveRequesterStoreKey } from "./subagent-requester-store-key.js";
 export { resolveQueueSettings } from "../../../auto-reply/reply/queue.js";
@@ -50,6 +52,7 @@ export type SubagentAnnounceDeliveryDeps = {
   getRequesterSessionActivity: (
     requesterSessionKey: string,
     requesterAgentId?: string,
+    preparedRequester?: RequesterSessionEntryResult,
   ) => {
     sessionId?: string;
     isActive: boolean;
@@ -59,7 +62,9 @@ export type SubagentAnnounceDeliveryDeps = {
     sessionId?: string,
   ) => ReturnType<typeof resolveEmbeddedRunAbandonment>;
   loadSessionEntry: typeof loadSessionEntry;
+  withConfiguredSessionEntryReader: typeof withConfiguredSessionEntryReader;
   loadRequesterSessionEntry: typeof loadRequesterSessionEntry;
+  withRequesterSessionReader: typeof withRequesterSessionReader;
   queueEmbeddedAgentMessageWithOutcome: (
     sessionId: string,
     text: string,
@@ -75,6 +80,19 @@ type RequesterSessionEntryResult = {
   canonicalKey: string;
   agentId?: string;
   storePath?: string;
+};
+
+export type SubagentRequesterSessionRead = {
+  requester: RequesterSessionEntryResult;
+  /** Accept this exact row in the consuming frame, after any intervening await. */
+  assertCurrent: () => void;
+};
+
+export type SubagentRequesterSessionReader = {
+  kind: "durable" | "incognito" | "unavailable";
+  read: () => SubagentRequesterSessionRead | Promise<SubagentRequesterSessionRead>;
+  /** Retained physical/routing ownership, not freshness of an earlier row. */
+  assertCurrent: () => void;
 };
 
 export function tryResolveSubagentRequesterAgentId(
@@ -108,10 +126,7 @@ export function tryResolveSubagentRequesterAgentId(
   );
 }
 
-function loadDefaultRequesterSessionEntry(
-  requesterSessionKey: string,
-  explicitAgentId?: string,
-): RequesterSessionEntryResult {
+function resolveRequesterSessionEntryTarget(requesterSessionKey: string, explicitAgentId?: string) {
   const cfg = subagentAnnounceDeliveryDeps.getRuntimeConfig();
   const rawStorageKey = requesterSessionKey.trim();
   const canonicalKey = resolveRequesterStoreKey(cfg, requesterSessionKey, explicitAgentId);
@@ -119,17 +134,103 @@ function loadDefaultRequesterSessionEntry(
   const storageKey =
     rawStorageKey === "main" || rawStorageKey === configuredMainKey ? canonicalKey : rawStorageKey;
   const agentId = tryResolveSubagentRequesterAgentId(cfg, rawStorageKey, explicitAgentId);
-  if (!agentId) {
-    return { cfg, entry: undefined, canonicalKey };
+  const storePath = agentId
+    ? resolveSessionStorePathCore(cfg.session?.store, { agentId })
+    : undefined;
+  return { cfg, canonicalKey, storageKey, agentId, storePath };
+}
+
+function loadDefaultRequesterSessionEntry(
+  requesterSessionKey: string,
+  explicitAgentId?: string,
+): RequesterSessionEntryResult {
+  const { storageKey, ...target } = resolveRequesterSessionEntryTarget(
+    requesterSessionKey,
+    explicitAgentId,
+  );
+  if (!target.agentId || !target.storePath) {
+    return { cfg: target.cfg, entry: undefined, canonicalKey: target.canonicalKey };
   }
-  const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId });
   const entry = subagentAnnounceDeliveryDeps.loadSessionEntry({
-    storePath,
+    storePath: target.storePath,
     sessionKey: storageKey,
-    agentId,
+    agentId: target.agentId,
     clone: false,
   });
-  return { cfg, entry, canonicalKey, agentId, storePath };
+  return { ...target, entry };
+}
+
+async function withDefaultRequesterSessionReader<T>(
+  requesterSessionKey: string,
+  explicitAgentId: string | undefined,
+  operation: (reader: SubagentRequesterSessionReader) => T | Promise<T>,
+): Promise<T> {
+  // Capture routing before the configured reader acquires physical custody or waits.
+  const before = resolveRequesterSessionEntryTarget(requesterSessionKey, explicitAgentId);
+  const assertRouting = () => {
+    const current = resolveRequesterSessionEntryTarget(requesterSessionKey, explicitAgentId);
+    if (
+      current.agentId !== before.agentId ||
+      current.canonicalKey !== before.canonicalKey ||
+      current.storageKey !== before.storageKey ||
+      current.storePath !== before.storePath
+    ) {
+      throw new SourceOwnerChangedError();
+    }
+  };
+  const result = (entry: RequesterSessionEntryResult["entry"]): RequesterSessionEntryResult => ({
+    cfg: before.cfg,
+    entry,
+    canonicalKey: before.canonicalKey,
+    agentId: before.agentId,
+    storePath: before.storePath,
+  });
+  if (!before.agentId || !before.storePath) {
+    return await operation({
+      kind: "unavailable",
+      assertCurrent: assertRouting,
+      read: () => {
+        assertRouting();
+        return { requester: result(undefined), assertCurrent: assertRouting };
+      },
+    });
+  }
+  return await subagentAnnounceDeliveryDeps.withConfiguredSessionEntryReader(
+    before.cfg,
+    {
+      agentId: before.agentId,
+      sessionKey: before.storageKey,
+      storePath: before.storePath,
+      env: { ...process.env },
+    },
+    async (owner) => {
+      const assertCurrent = () => {
+        owner.assertCurrent();
+        assertRouting();
+      };
+      assertCurrent();
+      return await operation({
+        kind: owner.kind,
+        assertCurrent,
+        read: () => {
+          assertCurrent();
+          const wrap = (
+            read: Awaited<ReturnType<typeof owner.readEntry>>,
+          ): SubagentRequesterSessionRead => {
+            const assertReadCurrent = () => {
+              read.assertCurrent();
+              assertRouting();
+            };
+            assertReadCurrent();
+            // Preserve the per-read guard through this adapter's promise boundary.
+            return { requester: result(read.entry), assertCurrent: assertReadCurrent };
+          };
+          const read = owner.readEntry();
+          return read instanceof Promise ? read.then(wrap) : wrap(read);
+        },
+      });
+    },
+  );
 }
 
 const defaultSubagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps = {
@@ -137,8 +238,8 @@ const defaultSubagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps = {
   dispatchGatewayMethodInProcess: ((...args) =>
     dispatchGatewayMethodInProcess(...args)) as typeof dispatchGatewayMethodInProcess,
   getRuntimeConfig: () => getRuntimeConfig(),
-  getRequesterSessionActivity: (requesterSessionKey: string, requesterAgentId?: string) => {
-    const cfg = getRuntimeConfig();
+  getRequesterSessionActivity: (requesterSessionKey, requesterAgentId, preparedRequester) => {
+    const cfg = preparedRequester?.cfg ?? getRuntimeConfig();
     const resolvedAgentId = tryResolveSubagentRequesterAgentId(
       cfg,
       requesterSessionKey,
@@ -147,8 +248,10 @@ const defaultSubagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps = {
     if (!resolvedAgentId) {
       return { isActive: false };
     }
-    const storedSessionId = loadRequesterSessionEntry(requesterSessionKey, resolvedAgentId).entry
-      ?.sessionId;
+    // A prepared exact row owns this lookup; do not reload durable state on the caller.
+    const storedSessionId = (
+      preparedRequester ?? loadRequesterSessionEntry(requesterSessionKey, resolvedAgentId)
+    ).entry?.sessionId;
     // Unscoped active-run keys are ambiguous across agents. An explicit owner
     // must use its logical store entry instead of accepting another agent's run.
     const activeSessionId = parseAgentSessionKey(requesterSessionKey)
@@ -163,7 +266,9 @@ const defaultSubagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps = {
   resolveRequesterSessionAbandonment: (requesterSessionKey, sessionId) =>
     resolveEmbeddedRunAbandonment({ sessionKey: requesterSessionKey, sessionId }),
   loadSessionEntry: (...args) => loadSessionEntry(...args),
+  withConfiguredSessionEntryReader,
   loadRequesterSessionEntry: loadDefaultRequesterSessionEntry,
+  withRequesterSessionReader: withDefaultRequesterSessionReader,
   queueEmbeddedAgentMessageWithOutcome: (...args) =>
     queueEmbeddedAgentMessageWithOutcomeAsync(...args),
   queueGuardedEmbeddedAgentMessageWithOutcome: (...args) =>
@@ -207,10 +312,12 @@ export function getSubagentAnnounceRuntimeConfig() {
 export function getSubagentRequesterSessionActivity(
   requesterSessionKey: string,
   requesterAgentId?: string,
+  preparedRequester?: RequesterSessionEntryResult,
 ) {
   return subagentAnnounceDeliveryDeps.getRequesterSessionActivity(
     requesterSessionKey,
     requesterAgentId,
+    preparedRequester,
   );
 }
 
@@ -231,6 +338,18 @@ export function loadRequesterSessionEntry(
   return subagentAnnounceDeliveryDeps.loadRequesterSessionEntry(
     requesterSessionKey,
     explicitAgentId,
+  );
+}
+
+export function withRequesterSessionReader<T>(
+  requesterSessionKey: string,
+  explicitAgentId: string | undefined,
+  operation: (reader: SubagentRequesterSessionReader) => T | Promise<T>,
+): Promise<T> {
+  return subagentAnnounceDeliveryDeps.withRequesterSessionReader(
+    requesterSessionKey,
+    explicitAgentId,
+    operation,
   );
 }
 

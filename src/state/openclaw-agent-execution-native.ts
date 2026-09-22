@@ -18,6 +18,12 @@ import {
   runSqliteWorkerStoreOperation,
   type SqliteWorkerStore,
 } from "../infra/sqlite-worker-store.js";
+import type {
+  OpenClawAgentDatabaseRegistrationFacts,
+  OpenClawAgentDatabaseRegistrationCommit,
+  OpenClawAgentDatabaseReadFacts,
+  OpenClawAgentDatabaseSelectorRow,
+} from "./openclaw-agent-db-contract.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-lease.js";
 import { captureOpenClawAgentDatabaseRegistration } from "./openclaw-agent-db-registry-listing.js";
 import {
@@ -42,12 +48,28 @@ type Registration = ReturnType<typeof captureOpenClawAgentDatabaseRegistration>;
 async function settleAgentRegistration<T>(
   registration: Registration,
   operation: () => Promise<T>,
+  reconcile: (operationSucceeded: boolean) => void,
 ): Promise<T> {
   let result: Result<T, unknown>;
   try {
     result = { ok: true, value: await operation() };
   } catch (error) {
     result = { ok: false, error };
+  }
+  try {
+    reconcile(result.ok);
+  } catch (error) {
+    registration.abandonPreservation();
+    result = {
+      ok: false,
+      error: result.ok
+        ? error
+        : createSqliteLifecycleAggregateError(
+            [result.error, error],
+            "Agent open and committed-fact reconciliation failed",
+            result.error,
+          ),
+    };
   }
   try {
     registration.finish();
@@ -65,6 +87,57 @@ async function settleAgentRegistration<T>(
     throw result.error;
   }
   return result.value;
+}
+
+function decodeRegistrationFacts(value: unknown): OpenClawAgentDatabaseRegistrationFacts {
+  const row = (input: unknown): OpenClawAgentDatabaseSelectorRow => {
+    if (
+      !isRecord(input) ||
+      typeof input.agentId !== "string" ||
+      typeof input.path !== "string" ||
+      typeof input.schemaVersion !== "number" ||
+      !Number.isSafeInteger(input.schemaVersion)
+    ) {
+      throw new Error("Invalid registration selector facts");
+    }
+    return { agentId: input.agentId, path: input.path, schemaVersion: input.schemaVersion };
+  };
+  if (!isRecord(value)) throw new Error("Missing canonical registration facts");
+  let source: OpenClawAgentDatabaseReadFacts | null = null;
+  if (value.source !== null) {
+    const observed = value.source;
+    if (
+      !isRecord(observed) ||
+      typeof observed.agentId !== "string" ||
+      typeof observed.path !== "string" ||
+      typeof observed.physicalIdentity !== "string" ||
+      typeof observed.birthtime !== "string" ||
+      typeof observed.userVersion !== "number" ||
+      !Number.isSafeInteger(observed.userVersion) ||
+      (observed.schemaVersion !== null &&
+        (typeof observed.schemaVersion !== "number" ||
+          !Number.isSafeInteger(observed.schemaVersion))) ||
+      (observed.role !== null && typeof observed.role !== "string") ||
+      (observed.schemaAgentId !== null && typeof observed.schemaAgentId !== "string")
+    ) {
+      throw new Error("Invalid registration physical/schema facts");
+    }
+    source = {
+      agentId: observed.agentId,
+      path: observed.path,
+      physicalIdentity: observed.physicalIdentity,
+      birthtime: observed.birthtime,
+      userVersion: observed.userVersion,
+      schemaVersion: observed.schemaVersion,
+      role: observed.role,
+      schemaAgentId: observed.schemaAgentId,
+    };
+  }
+  return {
+    before: value.before === null ? null : row(value.before),
+    after: row(value.after),
+    source,
+  };
 }
 
 export type AgentDatabaseExecutionScope = Pick<Store, "execute">;
@@ -105,6 +178,10 @@ export function createAgentDatabaseNativeGeneration(
   let nativeStopped: Promise<void> | undefined;
   let lease: OpenClawAgentDatabaseWorkerLeaseReceipt | undefined;
   let quickCheckPending = false;
+  const registrationSettlements = new WeakMap<
+    Registration,
+    (operationSucceeded: boolean) => void
+  >();
   let receiveValidation:
     | ReturnType<typeof captureOpenClawAgentDatabaseValidationTransfer>
     | undefined;
@@ -131,32 +208,81 @@ export function createAgentDatabaseNativeGeneration(
         context.admission.databasePath,
         context.admission.identity.canonicalPath,
       ];
+      let binding:
+        | {
+            intentId: string;
+            leaseId: string;
+            agentId: string;
+            agentPath: string;
+            stateDatabasePath: string;
+            stateDatabaseIdentity: string;
+          }
+        | undefined;
+      let commitRequest: SqliteWorkerAdmissionRequest | undefined;
+      let commitFacts: OpenClawAgentDatabaseRegistrationFacts | undefined;
       const authorizeNative = (request: SqliteWorkerAdmissionRequest): boolean => {
         const facts = request.facts;
         if (
-          request.stage === "prepare" &&
           isRecord(facts) &&
-          facts.kind === "agent-registration-committed"
+          (facts.kind === "agent-registration-mutation" ||
+            facts.kind === "agent-registration-selector" ||
+            facts.kind === "agent-registration-commit")
         ) {
-          const received = facts.registration;
+          assertCurrent();
+          assertCallerCurrent?.();
+          source.assertCurrent();
+          const received = facts.binding;
           if (
             !registration ||
             !lease ||
             !isRecord(received) ||
-            received.agentId !== input.agentId ||
-            received.agentPath !== pathname ||
-            received.stateDatabasePath !== lease.sharedStatePath ||
-            received.stateDatabaseIdentity !== lease.sharedStateIdentity
+            typeof received.intentId !== "string" ||
+            received.intentId.length === 0 ||
+            received.intentId.length > 128
           ) {
-            throw new Error("Agent registration commit differs from its admitted native owner");
+            throw new Error("Registration request has no admitted operation/lease binding");
           }
-          // Revocation governs future work; it cannot erase a witnessed COMMIT.
-          registration.recordCommitted({
+          const expected = {
+            intentId: binding?.intentId ?? received.intentId,
+            leaseId: input.leaseId,
             agentId: input.agentId,
             agentPath: pathname,
             stateDatabasePath: lease.sharedStatePath,
             stateDatabaseIdentity: lease.sharedStateIdentity,
-          });
+          };
+          if (!isDeepStrictEqual(received, expected))
+            throw new Error("Registration request changed its original owner");
+          binding ??= expected;
+          if (facts.kind === "agent-registration-mutation") {
+            if (request.stage !== "prepare")
+              throw new Error("Registration mutation request is out of order");
+            registration.beforeMutation();
+          } else {
+            if ((facts.kind === "agent-registration-commit") !== (request.stage === "commit")) {
+              throw new Error("Registration COMMIT request is out of order");
+            }
+            const canonical = decodeRegistrationFacts(facts.registration);
+            if (
+              canonical.after.agentId !== input.agentId ||
+              canonical.after.path !== pathname ||
+              (canonical.source &&
+                (canonical.source.agentId !== input.agentId || canonical.source.path !== pathname))
+            ) {
+              throw new Error("Registration facts differ from the captured source");
+            }
+            if (canonical.source)
+              assertExistingDatabaseIdentity(pathname, `file:${canonical.source.physicalIdentity}`);
+            registration.classify(canonical);
+            if (request.stage === "commit") {
+              if (commitRequest) throw new Error("Registration COMMIT grant was reused");
+              commitRequest = request;
+              commitFacts = structuredClone(canonical);
+            }
+          }
+          // A hard promotion may revoke the original requester: never bypass that W.
+          assertCurrent();
+          assertCallerCurrent?.();
+          source.assertCurrent();
           return true;
         }
         assertCurrent();
@@ -262,7 +388,7 @@ export function createAgentDatabaseNativeGeneration(
           registration?.begin();
         }
       };
-      return source.createAdmission({
+      const retained = source.createAdmission({
         nativeLocations,
         assertCurrent,
         authorize(request) {
@@ -277,6 +403,68 @@ export function createAgentDatabaseNativeGeneration(
           }
         },
       })(operation);
+      if (registration)
+        registrationSettlements.set(registration, (operationSucceeded) => {
+          const failures: unknown[] = [];
+          let validatedReceipt: OpenClawAgentDatabaseRegistrationCommit | undefined;
+          for (const effect of retained.admission.committed?.effects ?? []) {
+            if (!isRecord(effect) || typeof effect.kind !== "string" || effect.kind.length === 0) {
+              failures.push(new Error("Malformed native COMMIT effect"));
+              continue;
+            }
+            if (effect.kind !== "agent-registration") continue;
+            const receipt = {
+              agentId: input.agentId,
+              agentPath: pathname,
+              stateDatabasePath: context.admission.databasePath,
+              stateDatabaseIdentity: lease?.sharedStateIdentity,
+            };
+            try {
+              if (
+                !binding ||
+                !lease ||
+                !commitRequest ||
+                !commitFacts ||
+                !isDeepStrictEqual(effect.binding, binding) ||
+                !isDeepStrictEqual(effect.receipt, receipt) ||
+                !isDeepStrictEqual(effect.registration, commitFacts)
+              ) {
+                throw new Error("Unbound native registration COMMIT evidence");
+              }
+              if (!retained.admission.wasGranted?.(commitRequest)) {
+                throw new Error("Native registration COMMIT lacks its exact host grant");
+              }
+              if (validatedReceipt) {
+                throw new Error("Duplicate native registration COMMIT evidence");
+              }
+              validatedReceipt = {
+                ...receipt,
+                stateDatabaseIdentity: lease.sharedStateIdentity,
+              };
+            } catch (error) {
+              // Validate the entire set before publishing state. A bad neighbor
+              // must not hide an independently bound and actually granted fact.
+              failures.push(error);
+            }
+          }
+          if (operationSucceeded && commitRequest && !validatedReceipt) {
+            failures.push(new Error("Missing native registration COMMIT evidence"));
+          }
+          if (validatedReceipt) {
+            // Apply one proven fact once; duplicate claims still fail the operation
+            // without erasing that original COMMIT or minting another publication.
+            registration.recordCommitted(validatedReceipt);
+          }
+          if (failures.length === 1) throw failures[0];
+          if (failures.length) {
+            throw createSqliteLifecycleAggregateError(
+              failures,
+              "Native registration COMMIT evidence was rejected",
+              failures[0],
+            );
+          }
+        });
+      return retained;
     };
   const open = (
     source: AgentDatabaseRequestExecutionSource,
@@ -350,17 +538,22 @@ export function createAgentDatabaseNativeGeneration(
         agentPath: pathname,
         admission: context.admission,
       });
-      await settleAgentRegistration(registration, async () => {
-        await runSqliteWorkerStoreOperation(
-          store,
-          (scope) => scope.execute({ type: "database.prepareWrite", input: undefined }),
-          context,
-          assertCurrent,
-          admission(source, registration, assertCallerCurrent),
-        );
-        assertCurrent();
-        source.assertCurrent();
-      });
+      await settleAgentRegistration(
+        registration,
+        async () => {
+          await runSqliteWorkerStoreOperation(
+            store,
+            (scope) => scope.execute({ type: "database.prepareWrite", input: undefined }),
+            context,
+            assertCurrent,
+            admission(source, registration, assertCallerCurrent),
+          );
+          assertCurrent();
+          source.assertCurrent();
+        },
+        (operationSucceeded) => registrationSettlements.get(registration)?.(operationSucceeded),
+      );
+      registrationSettlements.delete(registration);
       if (quickCheckPending) {
         quickCheckPending = false;
         requestOpenClawAgentDatabaseQuickCheck({ path: pathname, env: input.environment });

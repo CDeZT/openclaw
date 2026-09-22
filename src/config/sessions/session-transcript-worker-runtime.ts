@@ -1,23 +1,24 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { expectDefined } from "@openclaw/normalization-core";
-import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import type { SessionCostUsageCacheReadResult } from "../../infra/session-cost-usage-cache-read.js";
-import {
-  UsageCostWorkerReplyError,
-  type UsageCostWorkerInput,
-  type UsageCostWorkerResult,
-} from "../../infra/session-cost-usage-worker.types.js";
-import { withSqliteWorkerCleanupFailure } from "../../infra/sqlite-worker-broker-reply.js";
 import { WorkerTaskError } from "../../infra/worker-task-pool.js";
-import type { WorkerTaskOptions, WorkerTaskResponse } from "../../infra/worker-task-pool.types.js";
-import { createDeferredCore } from "../../shared/deferred.js";
-import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
+import { isIncognitoSessionKey } from "../../shared/incognito-session-key.js";
+import type {
+  OpenClawAgentDatabaseOptions,
+  OpenClawAgentDatabaseReadFacts,
+} from "../../state/openclaw-agent-db-contract.js";
+import { assertOpenClawAgentReadFactsCurrent } from "../../state/openclaw-agent-db-identity.js";
 import { isIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
+import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import { resolveStateDir } from "../state-dir.js";
 import { loadSessionEntryReadOnlyInScope } from "./session-accessor.sqlite-entry.js";
+import {
+  sameExactSessionEntryReadIdentity,
+  type ExactSessionEntryReadIdentity,
+} from "./session-accessor.sqlite-exact-read.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import type { SessionAccessScope } from "./session-accessor.types.js";
+import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
 import type { SessionHistoryWorkerResult } from "./session-history-types.js";
 import {
   sessionHistoryCleanupError,
@@ -26,22 +27,19 @@ import {
 import { listSessionMembers } from "./session-sharing-store.js";
 import type { SessionMember } from "./session-sharing-store.kernel.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
-import type { SessionStoreTargetInventoryResult } from "./session-store-target-inventory.js";
+import type {
+  ConfiguredSessionStoreTargetResult,
+  SessionStoreTargetInventoryResult,
+} from "./session-store-target-inventory.js";
 import {
   acquireHistoryDatabaseResource,
   armDatabaseWorkerIdleRetirement,
   clearClosedDatabaseCustody,
-  costReadLane,
-  costRefreshLane,
   historyClearTimeout,
   historyLane,
   historyPages,
   pruneHistoryDatabases,
-  releaseRetiredDatabaseCustody,
   rotateDatabaseWorkers,
-  type HistoryDatabaseResource,
-  type SessionCostWorkerLane,
-  type SessionDatabaseCleanup,
 } from "./session-transcript-worker-resources.js";
 import type {
   SessionHistoryWorkerDatabase,
@@ -51,6 +49,8 @@ import type {
   SessionTitleFieldsWorkerInput,
   SessionTitleFieldsWorkerResult,
   SessionRowPresenceWorkerInput,
+  SessionRowEntryWorkerInput,
+  SessionRowEntryWorkerResult,
   SessionMembersWorkerInput,
   SessionEntryListWorkerInput,
   SessionExactEntriesWorkerInput,
@@ -64,21 +64,25 @@ import type {
 } from "./session-transcript-worker.types.js";
 
 export type { SessionHistoryWorkerDatabase } from "./session-transcript-worker.types.js";
+export {
+  withSessionCostUsageWorkerDatabases,
+  type SessionCostUsageWorkerScope,
+} from "./session-cost-usage-worker-runtime.js";
 
-type SessionCostUsageWorkerOptions = Pick<
-  WorkerTaskOptions<UsageCostWorkerInput>,
-  "signal" | "onRequest" | "inputBytes" | "timeoutMs" | "transferList" | "onInputConsumed"
-> & { beforeDispatch?: () => void };
-
-export type SessionCostUsageWorkerScope = {
-  assertCurrent: () => void;
-  run: (
-    input: UsageCostWorkerInput,
-    options: SessionCostUsageWorkerOptions,
-  ) => Promise<UsageCostWorkerResult>;
-  /** Register before acquisition can wait; a failed cleanup stays owned for close retry. */
-  retainCleanup: (close: () => Promise<void>) => () => void;
-};
+function captureSessionRowEntryScope(
+  input: SessionRowEntryWorkerInput["scope"],
+): SessionRowEntryWorkerInput["scope"] {
+  const capturedEnv = cloneEnvWithPlatformSemantics(input.env);
+  const env = { ...capturedEnv, OPENCLAW_STATE_DIR: resolveStateDir(capturedEnv) };
+  const scope = { ...input, env };
+  if (
+    isIncognitoSessionKey(scope.sessionKey) ||
+    isIncognitoOpenClawAgentSqlitePath(scope.storePath, { agentId: scope.agentId, env })
+  ) {
+    throw new WorkerTaskError("Incognito session entry requires its native owner", "unavailable");
+  }
+  return scope;
+}
 
 /** Capture the exact metadata owner before initial-writer admission can wait. */
 export function prepareSessionEntryPresenceRead(input: SessionAccessScope): Readonly<{
@@ -135,8 +139,11 @@ export async function listSessionMembersInWorker(
 function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOptions) {
   const owned = acquireHistoryDatabaseResource(options);
   const { database } = owned;
+  let released = false;
+  let sourceChanged = false;
+  let acceptedFacts: OpenClawAgentDatabaseReadFacts | undefined;
   const assertCurrent = () => {
-    if (owned.revoked) {
+    if (released || sourceChanged || owned.revoked) {
       throw new WorkerTaskError("Session history database read was revoked", "unavailable");
     }
   };
@@ -144,6 +151,9 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
   historyLane.pending++;
   owned.pending++;
   const release = () => {
+    if (released) return;
+    released = true;
+    acceptedFacts = undefined;
     owned.pending--;
     historyLane.pending--;
     pruneHistoryDatabases();
@@ -157,6 +167,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
         | Omit<SessionPreviewWorkerInput, "database">
         | Omit<SessionTitleFieldsWorkerInput, "database">
         | Omit<SessionRowPresenceWorkerInput, "database">
+        | Omit<SessionRowEntryWorkerInput, "database">
         | Omit<SessionMembersWorkerInput, "database">
         | Omit<SessionEntryListWorkerInput, "database">
         | Omit<SessionExactEntriesWorkerInput, "database">
@@ -174,7 +185,9 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
           | SessionEntryListWorkerResult
           | SessionExactEntriesWorkerResult
           | import("./session-store-target-inventory.js").SessionStoreTargetReadResult
+          | SessionRowEntryWorkerResult
           | SessionStoreTargetInventoryResult
+          | ConfiguredSessionStoreTargetResult
           | SessionIdentityEvidenceWorkerResult
           | SessionTranscriptSearchWorkerResult
           | SessionCostUsageCacheReadResult,
@@ -194,17 +207,25 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
           },
           { inputBytes, timeoutMs: 60_000 },
         );
+        if (!reply.ok && reply.error.kind === "source-changed") {
+          // This refusal was observed by the real exact-read owner. Latch it
+          // before any awaited retirement so restoring equal file facts cannot
+          // revive this particular borrow after the failed read is caught.
+          sourceChanged = true;
+        }
         const value = receive(
           unwrapSessionTranscriptWorkerReply<
             | "history-page"
             | "session-preview"
             | "session-title-fields"
             | "session-row-presence"
+            | "session-row-entry"
             | "session-members"
             | "session-entry-list"
             | "session-exact-entries"
             | "session-store-target"
             | "session-target-inventory"
+            | "session-configured-target"
             | "session-identity-evidence"
             | "usage-cache"
             | "transcript-search"
@@ -227,7 +248,27 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
         throw error;
       }
     };
+    let entryIdentity: ExactSessionEntryReadIdentity | null | undefined;
     const owner: SessionHistoryWorkerDatabase = {
+      acceptedSource() {
+        assertCurrent();
+        const facts = acceptedFacts;
+        if (!facts) return undefined;
+        return {
+          facts,
+          assertCurrent() {
+            assertCurrent();
+            if (acceptedFacts !== facts)
+              throw new WorkerTaskError("Accepted read was superseded", "unavailable");
+            try {
+              assertOpenClawAgentReadFactsCurrent(facts);
+            } catch (error) {
+              sourceChanged = true;
+              throw error;
+            }
+          },
+        };
+      },
       searchTranscripts: async (params) =>
         await runRequest(
           () => ({ kind: "transcript-search", params }),
@@ -255,7 +296,9 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             value.kind === "session-entry-list" ||
             value.kind === "session-exact-entries" ||
             value.kind === "session-store-target" ||
+            value.kind === "session-row-entry" ||
             value.kind === "session-target-inventory" ||
+            value.kind === "session-configured-target" ||
             value.kind === "session-target-registry-required" ||
             value.kind === "session-identity-evidence" ||
             value.kind === "transcript-search" ||
@@ -357,6 +400,72 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             return value;
           },
         ),
+      readEntry: async (input, continuation) => {
+        const scope = captureSessionRowEntryScope(input);
+        if (scope.databaseAgentId !== database.agentId || scope.storePath !== database.path) {
+          throw new WorkerTaskError(
+            "Session entry target differs from its retained owner",
+            "unavailable",
+          );
+        }
+        const accepted = await runRequest(
+          () => ({
+            kind: "session-row-entry",
+            scope,
+            continuation,
+            expectedIdentity: entryIdentity,
+          }),
+          JSON.stringify(scope).length * 2,
+          (value) => {
+            if (
+              typeof value === "boolean" ||
+              Array.isArray(value) ||
+              value.kind !== "session-row-entry"
+            ) {
+              throw new Error("Session history worker returned another result instead of an entry");
+            }
+            if (
+              entryIdentity !== undefined &&
+              !sameExactSessionEntryReadIdentity(entryIdentity, value.identity)
+            ) {
+              sourceChanged = true;
+              throw new WorkerTaskError("Exact session reader source changed", "unavailable");
+            }
+            return value;
+          },
+        );
+        // The receive callback decoded provisional facts; the final awaited guard accepts them.
+        assertCurrent();
+        if (
+          accepted.facts &&
+          (accepted.facts.agentId !== database.agentId ||
+            accepted.facts.path !== database.path ||
+            !accepted.identity ||
+            accepted.facts.physicalIdentity !== accepted.identity.identity ||
+            accepted.facts.birthtime !== accepted.identity.birthtime)
+        ) {
+          sourceChanged = true;
+          throw new WorkerTaskError(
+            "Exact read facts differ from their retained source",
+            "unavailable",
+          );
+        }
+        if (accepted.facts) {
+          try {
+            assertOpenClawAgentReadFactsCurrent(accepted.facts);
+          } catch (error) {
+            sourceChanged = true;
+            throw error;
+          }
+          if (acceptedFacts && JSON.stringify(acceptedFacts) !== JSON.stringify(accepted.facts)) {
+            sourceChanged = true;
+            throw new WorkerTaskError("Exact read schema/owner facts changed", "unavailable");
+          }
+        }
+        entryIdentity = accepted.identity;
+        if (accepted.facts && !acceptedFacts) acceptedFacts = Object.freeze({ ...accepted.facts });
+        return accepted.entry;
+      },
       readEntries: async (scope) =>
         await runRequest(
           () => ({ kind: "session-entry-list", scope }),
@@ -453,243 +562,4 @@ export function withSessionHistoryWorkerDatabase<T>(
   return withSessionHistoryWorkerDatabases([options], (owners) =>
     operation(expectDefined(owners[0], "retained session history reader")),
   );
-}
-
-/** Usage reads retain every physical store while compute and its admitted host effects settle. */
-export async function withSessionCostUsageWorkerDatabases<T>(
-  options: readonly OpenClawAgentDatabaseOptions[],
-  operation: (owner: SessionCostUsageWorkerScope) => Promise<T>,
-): Promise<T> {
-  if (options.length === 0) {
-    throw new Error("Usage cost work requires its database owners");
-  }
-  const resources = new Set<HistoryDatabaseResource>();
-  try {
-    for (const databaseOptions of options) {
-      const resource = acquireHistoryDatabaseResource(databaseOptions);
-      if (!resources.has(resource)) {
-        resources.add(resource);
-        resource.pending++;
-      }
-    }
-  } catch (error) {
-    for (const resource of resources) {
-      resource.pending--;
-    }
-    pruneHistoryDatabases();
-    throw error;
-  }
-  const pending = new Set<Promise<UsageCostWorkerResult>>();
-  const cleanups = new Set<SessionDatabaseCleanup>();
-  const lanes = new Map<SessionCostWorkerLane, { nativeThrough: number; failedThrough: number }>();
-  let phase: "open" | "closing" | "closed" = "open";
-  const assertCurrent = () => {
-    if (phase === "closed" || [...resources].some((resource) => resource.revoked)) {
-      throw new WorkerTaskError("Session usage database work was revoked", "unavailable");
-    }
-  };
-  const settle = async () => {
-    while (pending.size > 0) {
-      await Promise.allSettled(pending);
-    }
-    for (const [lane, custody] of lanes) {
-      if (custody.nativeThrough > lane.retiredSequence) {
-        await lane.rotation;
-      }
-      if (custody.failedThrough > lane.retiredSequence) {
-        await rotateDatabaseWorkers(lane);
-      }
-    }
-  };
-  const retainCleanup = (close: () => Promise<void>): (() => void) => {
-    if (phase === "closed") {
-      throw new WorkerTaskError("Session usage database scope is closed", "unavailable");
-    }
-    const runInContext = AsyncLocalStorage.snapshot();
-    let released = false;
-    let closing: Promise<void> | undefined;
-    const release = () => {
-      released = true;
-      cleanups.delete(cleanup);
-      for (const resource of resources) {
-        resource.cleanups.delete(cleanup);
-      }
-      pruneHistoryDatabases();
-    };
-    const cleanup: SessionDatabaseCleanup = {
-      run: () => {
-        if (released) {
-          return Promise.resolve();
-        }
-        closing ??= (async () => {
-          await settle();
-          await runInContext(close);
-          release();
-        })().catch((error: unknown) => {
-          closing = undefined;
-          throw error;
-        });
-        return closing;
-      },
-    };
-    cleanups.add(cleanup);
-    for (const resource of resources) {
-      resource.cleanups.add(cleanup);
-    }
-    return release;
-  };
-  const run = (
-    input: UsageCostWorkerInput,
-    runOptions: SessionCostUsageWorkerOptions,
-  ): Promise<UsageCostWorkerResult> => {
-    assertCurrent();
-    if (phase !== "open") {
-      throw new WorkerTaskError("Session usage database scope is closing", "unavailable");
-    }
-    const lane = input.operation.kind === "refresh" ? costRefreshLane : costReadLane;
-    const custody = lanes.get(lane) ?? { nativeThrough: 0, failedThrough: 0 };
-    lanes.set(lane, custody);
-    const controller = new AbortController();
-    const signal = runOptions.signal
-      ? AbortSignal.any([controller.signal, runOptions.signal])
-      : controller.signal;
-    const abort = () =>
-      controller.abort(
-        new WorkerTaskError("Session usage database work was revoked", "unavailable"),
-      );
-    for (const resource of resources) {
-      resource.aborters.add(abort);
-    }
-    historyClearTimeout(lane.idleTimer);
-    lane.pending++;
-    const hostEffects = new Set<Promise<WorkerTaskResponse>>();
-    const onRequest = runOptions.onRequest;
-    let sequence = 0;
-    let executionSettled = false;
-    const task = (async (): Promise<UsageCostWorkerResult> => {
-      try {
-        const reply = await lane.pool.run(
-          () => {
-            assertCurrent();
-            signal.throwIfAborted();
-            runOptions.beforeDispatch?.();
-            sequence = ++lane.nativeSequence;
-            custody.nativeThrough = sequence;
-            for (const resource of resources) {
-              resource.nativeSequences.set(lane, sequence);
-            }
-            return { ...input, databases: [...resources].map((resource) => resource.database) };
-          },
-          {
-            ...runOptions,
-            signal,
-            onExecutionSettled: ({ retired }) => {
-              executionSettled = true;
-              if (retired && sequence > 0) {
-                releaseRetiredDatabaseCustody(lane, sequence);
-              }
-            },
-            onRequest: onRequest
-              ? (value, context) => {
-                  const effect = createDeferredCore<WorkerTaskResponse>();
-                  hostEffects.add(effect.promise);
-                  for (const resource of resources) {
-                    resource.hostEffects.add(effect.promise);
-                  }
-                  const releaseEffect = () => {
-                    hostEffects.delete(effect.promise);
-                    for (const resource of resources) {
-                      resource.hostEffects.delete(effect.promise);
-                    }
-                  };
-                  void effect.promise.then(releaseEffect, releaseEffect);
-                  try {
-                    assertCurrent();
-                    context.signal.throwIfAborted();
-                    effect.resolve(onRequest(value, context));
-                  } catch (error) {
-                    effect.reject(error);
-                  }
-                  return effect.promise;
-                }
-              : undefined,
-          },
-        );
-        if (!reply.ok) {
-          throw new UsageCostWorkerReplyError(reply.error);
-        }
-        clearClosedDatabaseCustody(lane, sequence, reply.closedDatabases);
-        signal.throwIfAborted();
-        assertCurrent();
-        return reply.value;
-      } catch (error) {
-        if (sequence > 0 && !executionSettled) {
-          custody.failedThrough = Math.max(custody.failedThrough, sequence);
-          try {
-            await rotateDatabaseWorkers(lane);
-          } catch (cleanupError) {
-            throw withSqliteWorkerCleanupFailure(
-              toErrorObject(error, "Usage cost worker failed"),
-              cleanupError,
-            );
-          }
-        }
-        throw error;
-      } finally {
-        // Native worker exit does not settle an already admitted host write.
-        await Promise.allSettled(hostEffects);
-        for (const resource of resources) {
-          resource.aborters.delete(abort);
-        }
-        lane.pending--;
-        pruneHistoryDatabases();
-        armDatabaseWorkerIdleRetirement(lane);
-      }
-    })();
-    pending.add(task);
-    void task.then(
-      () => pending.delete(task),
-      () => pending.delete(task),
-    );
-    return task;
-  };
-  let result: { ok: true; value: T } | { ok: false; error: unknown };
-  try {
-    assertCurrent();
-    const value = await operation({ assertCurrent, run, retainCleanup });
-    assertCurrent();
-    result = { ok: true, value };
-  } catch (error) {
-    result = { ok: false, error };
-  }
-  phase = "closing";
-  try {
-    await settle();
-    for (const cleanup of cleanups) {
-      await cleanup.run();
-    }
-    if (result.ok) {
-      assertCurrent();
-    }
-  } catch (cleanupError) {
-    throw result.ok
-      ? cleanupError
-      : withSqliteWorkerCleanupFailure(
-          toErrorObject(result.error, "Usage cost operation failed"),
-          cleanupError,
-        );
-  } finally {
-    phase = "closed";
-    for (const resource of resources) {
-      resource.pending--;
-    }
-    pruneHistoryDatabases();
-    for (const lane of lanes.keys()) {
-      armDatabaseWorkerIdleRetirement(lane);
-    }
-  }
-  if (!result.ok) {
-    throw result.error;
-  }
-  return result.value;
 }

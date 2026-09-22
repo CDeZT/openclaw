@@ -27,6 +27,8 @@ import {
   type SessionStoreReadCandidate,
 } from "./session-store-read-candidates.js";
 import type {
+  ConfiguredSessionStoreTargetRequest,
+  ConfiguredSessionStoreTargetResult,
   SessionStoreTargetInventoryRequest,
   SessionStoreTargetReadRequest,
   SessionStoreTargetReadResult,
@@ -37,11 +39,13 @@ import type {
   SessionExactEntriesWorkerInput,
   SessionStoreTargetWorkerInput,
   SessionTargetInventoryWorkerInput,
+  SessionConfiguredTargetWorkerInput,
   SessionIdentityEvidenceWorkerInput,
   SessionMembersWorkerInput,
   SessionPreviewWorkerInput,
   SessionTitleFieldsWorkerInput,
   SessionRowPresenceWorkerInput,
+  SessionRowEntryWorkerInput,
   SessionTranscriptHistoryWorkerInput,
   SessionTranscriptWorkerReply,
   SessionUsageCacheWorkerInput,
@@ -54,11 +58,13 @@ export const historyPages = new WorkerTaskPool<
   | SessionPreviewWorkerInput
   | SessionTitleFieldsWorkerInput
   | SessionRowPresenceWorkerInput
+  | SessionRowEntryWorkerInput
   | SessionMembersWorkerInput
   | SessionEntryListWorkerInput
   | SessionExactEntriesWorkerInput
   | SessionStoreTargetWorkerInput
   | SessionTargetInventoryWorkerInput
+  | SessionConfiguredTargetWorkerInput
   | SessionIdentityEvidenceWorkerInput
   | SessionUsageCacheWorkerInput
   | SessionTranscriptSearchWorkerInput,
@@ -67,11 +73,13 @@ export const historyPages = new WorkerTaskPool<
     | "session-preview"
     | "session-title-fields"
     | "session-row-presence"
+    | "session-row-entry"
     | "session-members"
     | "session-entry-list"
     | "session-exact-entries"
     | "session-store-target"
     | "session-target-inventory"
+    | "session-configured-target"
     | "session-identity-evidence"
     | "usage-cache"
     | "transcript-search"
@@ -312,6 +320,9 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
     readStoreTarget: (
       request: SessionStoreTargetReadRequest,
     ) => Promise<SessionStoreTargetReadResult>;
+    readConfiguredTarget: (
+      request: ConfiguredSessionStoreTargetRequest,
+    ) => Promise<ConfiguredSessionStoreTargetResult>;
     readTargetInventory: (
       request: SessionStoreTargetInventoryRequest,
     ) => Promise<SessionStoreTargetInventoryResult>;
@@ -391,11 +402,13 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
             | "session-preview"
             | "session-title-fields"
             | "session-row-presence"
+            | "session-row-entry"
             | "session-members"
             | "session-entry-list"
             | "session-exact-entries"
             | "session-store-target"
             | "session-target-inventory"
+            | "session-configured-target"
             | "session-identity-evidence"
             | "usage-cache"
             | "transcript-search"
@@ -409,6 +422,48 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
             throw new Error(
               "Session history worker returned another result instead of store target",
             );
+          }
+          assertCurrent();
+          return result;
+        },
+        readConfiguredTarget: async (request) => {
+          const reply = await historyPages.run(
+            () => {
+              assertCurrent();
+              dispatched = true;
+              historyLane.nativeSequence++;
+              return { kind: "session-configured-target", request };
+            },
+            { inputBytes: JSON.stringify(request).length * 2, timeoutMs: 60_000 },
+          );
+          const result = unwrapSessionTranscriptWorkerReply<
+            | "history-page"
+            | "session-preview"
+            | "session-title-fields"
+            | "session-row-presence"
+            | "session-row-entry"
+            | "session-members"
+            | "session-entry-list"
+            | "session-exact-entries"
+            | "session-store-target"
+            | "session-target-inventory"
+            | "session-configured-target"
+            | "session-identity-evidence"
+            | "usage-cache"
+            | "transcript-search"
+          >(reply);
+          if (
+            typeof result === "boolean" ||
+            Array.isArray(result) ||
+            (result.kind !== "session-configured-target" &&
+              result.kind !== "session-target-registry-required")
+          ) {
+            throw new Error(
+              "Session worker returned another result instead of a configured target",
+            );
+          }
+          if (result.kind === "session-target-registry-required") {
+            await retire();
           }
           assertCurrent();
           return result;
@@ -431,11 +486,13 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
             | "session-preview"
             | "session-title-fields"
             | "session-row-presence"
+            | "session-row-entry"
             | "session-members"
             | "session-entry-list"
             | "session-exact-entries"
             | "session-store-target"
             | "session-target-inventory"
+            | "session-configured-target"
             | "session-identity-evidence"
             | "usage-cache"
             | "transcript-search"

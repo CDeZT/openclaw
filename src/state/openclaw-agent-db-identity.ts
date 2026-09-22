@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import type { OpenClawAgentDatabaseReadFacts } from "./openclaw-agent-db-contract.js";
 
 type AgentDatabaseOwner = { db: DatabaseSync };
 export type OpenClawAgentDatabaseIdentity = string | symbol;
@@ -97,4 +98,16 @@ export function createOpenClawAgentDatabaseClaim(
       }
     },
   };
+}
+
+/** Recheck the exact accepted file, not a later connection or equal pathname. */
+export function assertOpenClawAgentReadFactsCurrent(facts: OpenClawAgentDatabaseReadFacts): void {
+  const current = statSync(facts.path, { bigint: true, throwIfNoEntry: false });
+  if (
+    !current ||
+    `${current.dev}:${current.ino}` !== facts.physicalIdentity ||
+    current.birthtimeNs.toString() !== facts.birthtime
+  ) {
+    throw new Error("Accepted agent read physical source changed");
+  }
 }

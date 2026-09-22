@@ -4,6 +4,7 @@ import { readSqliteBusyTimeout } from "../infra/sqlite-busy-timeout.js";
 import { runWithSqliteCoordinator } from "../infra/sqlite-coordinator.js";
 import { withSqlitePostCommitPublications } from "../infra/sqlite-post-commit.js";
 import {
+  assertSyncTransactionResult,
   logSlowSqliteCoordinatorWait,
   runSqliteImmediateTransactionSync,
   type SqliteTransactionOptions,
@@ -17,6 +18,33 @@ const coordinatedStateTransactions = resolveGlobalSingleton(
   Symbol.for("openclaw.coordinatedStateTransactions"),
   () => new WeakSet<DatabaseSync>(),
 );
+
+/** Participants join the existing outer transaction, not a nested savepoint COMMIT. */
+export type OpenClawStateCommitParticipant = {
+  assertWrite(): void;
+  classify(): void;
+  prepare(): void;
+};
+type StateCommitFrame = {
+  participants: OpenClawStateCommitParticipant[];
+  guards: NonNullable<SqliteTransactionOptions["withCommit"]>[];
+  committing: boolean;
+};
+const commitParticipants = resolveGlobalSingleton(
+  Symbol.for("openclaw.stateCommitParticipants"),
+  () => new WeakMap<DatabaseSync, StateCommitFrame>(),
+);
+
+export function joinOpenClawStateCommit(
+  database: DatabaseSync,
+  participant: OpenClawStateCommitParticipant,
+): void {
+  const frame = commitParticipants.get(database);
+  if (!frame || frame.committing || !database.isTransaction) {
+    throw new Error("State COMMIT participant requires its coordinated outer transaction");
+  }
+  frame.participants.push(participant);
+}
 
 export function withSharedStateWriteCoordinator<T>(
   params: {
@@ -61,13 +89,71 @@ export function runCoordinatedStateTransaction<T>(
 ): T {
   return withSqlitePostCommitPublications(database, () => {
     const outer = !database.isTransaction;
+    const frame: StateCommitFrame | undefined = outer
+      ? { participants: [], guards: [], committing: false }
+      : commitParticipants.get(database);
+    if (!frame || frame.committing) {
+      throw new Error("Missing coordinated state COMMIT owner");
+    }
+    const { participants, guards } = frame;
+    const start = participants.length;
+    const guardStart = guards.length;
+    if (options.withCommit) guards.push(options.withCommit);
     if (outer) {
       coordinatedStateTransactions.add(database);
+      commitParticipants.set(database, frame);
     }
     try {
-      return runSqliteImmediateTransactionSync(database, operation, options);
+      return runSqliteImmediateTransactionSync(database, operation, {
+        ...options,
+        withCommit: outer
+          ? (commit) => {
+              frame.committing = true;
+              // Check every W, then classify all impacts before preparing any receipt.
+              for (const participant of participants) participant.assertWrite();
+              for (const participant of participants) participant.classify();
+              for (const participant of participants) participant.assertWrite();
+              for (const participant of participants) participant.prepare();
+              for (const participant of participants) participant.assertWrite();
+              let committed = false;
+              const enterGuard = (index: number): void => {
+                const guard = guards[index];
+                if (guard) {
+                  let entered = false;
+                  let active = true;
+                  try {
+                    assertSyncTransactionResult(
+                      guard(() => {
+                        if (!active) throw new Error("State COMMIT guard has expired");
+                        if (entered) throw new Error("State COMMIT guard was reused");
+                        entered = true;
+                        enterGuard(index + 1);
+                      }),
+                    );
+                    if (!entered) throw new Error("State COMMIT guard did not commit");
+                  } finally {
+                    active = false;
+                  }
+                } else {
+                  if (committed) throw new Error("State COMMIT was reused");
+                  for (const participant of participants) participant.assertWrite();
+                  committed = true;
+                  commit();
+                }
+              };
+              enterGuard(0);
+            }
+          : options.withCommit,
+      });
+    } catch (error) {
+      // Savepoint rollback abandons only its participants; selector hard epochs
+      // themselves are irreversible and deliberately are not rewound here.
+      participants.length = start;
+      guards.length = guardStart;
+      throw error;
     } finally {
       if (outer) {
+        commitParticipants.delete(database);
         coordinatedStateTransactions.delete(database);
       }
     }

@@ -36,9 +36,11 @@ import {
 import * as embeddedRuns from "../../embedded-agent-runner/runs.js";
 import { FailoverError } from "../../failover-error.js";
 import { textAssistant } from "../../test-helpers/sparse-transcript.test-support.js";
+import { visibleAgentResponse } from "./subagent-announce-delivery-outcomes.test-support.js";
 import { testing as subagentAnnounceDeliveryTesting } from "./subagent-announce-delivery.test-support.js";
 import { runSubagentAnnounceDispatch } from "./subagent-announce-dispatch.js";
 import { testing as subagentAnnounceOutputTesting } from "./subagent-announce-output.test-support.js";
+import { createConfiguredSessionEntryReaderForTest } from "./subagent-announce-retained-reader.test-support.js";
 
 type AgentCallRequest = {
   method?: string;
@@ -90,20 +92,6 @@ type SessionEntryFixture = Partial<Omit<SessionEntry, "updatedAt">> & {
   lastThreadId?: string | number;
 };
 type SessionStoreFixture = Record<string, SessionEntryFixture | undefined>;
-
-function visibleAgentResponse(runId = "run-main") {
-  return {
-    runId,
-    status: "ok",
-    result: {
-      payloads: [{ text: "announced" }],
-      didSendViaMessagingTool: true,
-      messagingToolSentTexts: ["announced"],
-      didDeliverSourceReplyViaMessageTool: true,
-      messagingToolSourceReplyPayloads: [{ text: "announced", sourceReplyFinal: true }],
-    },
-  };
-}
 
 function expectInputProvenance(
   params: Record<string, unknown> | undefined,
@@ -458,12 +446,16 @@ describe("subagent announce formatting", () => {
       }
       return {};
     });
+    const readSessionEntry: Parameters<typeof createConfiguredSessionEntryReaderForTest>[0] = (
+      scope,
+    ) => loadSessionStoreFixture()[scope.sessionKey];
     subagentAnnounceDeliveryTesting.setDepsForTest({
       callGateway: async <T = Record<string, unknown>>(
         req: Parameters<typeof gatewayCall.callGateway>[0],
       ) => (await callGatewaySpy(req)) as T,
       getRuntimeConfig: () => configOverride,
-      loadSessionEntry: (scope) => loadSessionStoreFixture()[scope.sessionKey],
+      loadSessionEntry: readSessionEntry,
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(readSessionEntry),
       getRequesterSessionActivity: (requesterSessionKey: string) => {
         const entry = loadSessionStoreFixture()[requesterSessionKey];
         const sessionId = entry?.sessionId;

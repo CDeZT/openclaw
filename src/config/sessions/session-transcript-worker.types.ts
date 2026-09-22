@@ -11,6 +11,7 @@ import type {
 } from "../../infra/session-cost-usage-cache-read.js";
 import type { SensitiveTextRedactionSnapshot } from "../../logging/redact.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
+import type { OpenClawAgentDatabaseReadFacts } from "../../state/openclaw-agent-db-contract.js";
 import type { SessionLifecycleTimestamps } from "./lifecycle.types.js";
 import type {
   SessionBranchSummaryReadRequest,
@@ -20,6 +21,7 @@ import type {
   SessionIdentityEvidenceIdentity,
   SessionIdentityEvidenceResult,
 } from "./session-accessor.sqlite-entry-availability.js";
+import type { ExactSessionEntryReadIdentity } from "./session-accessor.sqlite-exact-read.js";
 import type {
   readSessionTranscriptModelContext,
   SessionModelContextLimits,
@@ -32,12 +34,15 @@ import type {
   SessionTranscriptRuntimeTarget,
 } from "./session-accessor.types.js";
 import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
+import type { SessionExactReadSourceChange } from "./session-exact-read-source-error.js";
 import type {
   SessionHistoryWorkerRequest,
   SessionHistoryWorkerResult,
 } from "./session-history-types.js";
 import type { SessionMember } from "./session-sharing-store.kernel.js";
 import type {
+  ConfiguredSessionStoreTargetRequest,
+  ConfiguredSessionStoreTargetResult,
   SessionStoreTargetInventoryRequest,
   SessionStoreTargetInventoryResult,
   SessionStoreTargetReadRequest,
@@ -48,6 +53,7 @@ import type {
   SessionTranscriptSearchResult,
 } from "./session-transcript-search.types.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
+import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 export type SessionTranscriptSearchWorkerInput = {
   kind: "transcript-search";
@@ -127,6 +133,30 @@ export type SessionRowPresenceWorkerInput = {
   scope: SessionAccessScope & { databaseAgentId: string };
 };
 
+/** Prepared exact target; physical ownership must not be re-derived from ambient config. */
+export type SessionRowEntryWorkerScope = {
+  agentId: string;
+  databaseAgentId: string;
+  sessionKey: string;
+  storePath: string;
+  env: NodeJS.ProcessEnv;
+};
+
+export type SessionRowEntryWorkerInput = {
+  kind: "session-row-entry";
+  database: { agentId: string; path: string };
+  scope: SessionRowEntryWorkerScope;
+  continuation?: CanonicalSessionReaderContinuation;
+  expectedIdentity?: ExactSessionEntryReadIdentity | null;
+};
+
+export type SessionRowEntryWorkerResult = {
+  kind: "session-row-entry";
+  entry: SessionEntry | undefined;
+  identity: ExactSessionEntryReadIdentity | null;
+  facts?: OpenClawAgentDatabaseReadFacts | null;
+};
+
 export type SessionMembersWorkerInput = {
   kind: "session-members";
   database: { agentId: string; path: string };
@@ -178,6 +208,11 @@ export type SessionTargetInventoryWorkerInput = {
   request: SessionStoreTargetInventoryRequest;
 };
 
+export type SessionConfiguredTargetWorkerInput = {
+  kind: "session-configured-target";
+  request: ConfiguredSessionStoreTargetRequest;
+};
+
 export type SessionIdentityEvidenceWorkerInput = {
   kind: "session-identity-evidence";
   database: { agentId: string; path: string };
@@ -203,11 +238,13 @@ export type SessionTranscriptWorkerValues = {
   "session-preview": SessionPreviewWorkerResult;
   "session-title-fields": SessionTitleFieldsWorkerResult;
   "session-row-presence": boolean;
+  "session-row-entry": SessionRowEntryWorkerResult;
   "session-members": SessionMember[];
   "session-entry-list": SessionEntryListWorkerResult;
   "session-exact-entries": SessionExactEntriesWorkerResult;
   "session-store-target": SessionStoreTargetReadResult;
   "session-target-inventory": SessionStoreTargetInventoryResult;
+  "session-configured-target": ConfiguredSessionStoreTargetResult;
   "session-identity-evidence": SessionIdentityEvidenceWorkerResult;
   "usage-cache": SessionCostUsageCacheReadResult;
   "model-context": ReturnType<typeof readSessionTranscriptModelContext>;
@@ -229,10 +266,14 @@ export type SessionTranscriptWorkerReply<Kind extends keyof SessionTranscriptWor
         | { kind: "cold"; sessionId: string }
         | { kind: "projection"; sessionId: string }
         | { kind: "fence"; message: string }
+        | { kind: "source-changed"; reason: SessionExactReadSourceChange; message: string }
         | { kind: "syntax"; message: string };
     };
 
 export type SessionHistoryWorkerDatabase = {
+  acceptedSource: () =>
+    | { facts: OpenClawAgentDatabaseReadFacts; assertCurrent: () => void }
+    | undefined;
   searchTranscripts: (
     params: SessionTranscriptSearchWorkerInput["params"],
   ) => Promise<SessionTranscriptSearchWorkerResult["result"]>;
@@ -249,6 +290,10 @@ export type SessionHistoryWorkerDatabase = {
     input: Omit<SessionTitleFieldsWorkerInput, "kind" | "database">,
   ) => Promise<SessionTitleFieldsWorkerResult["fields"]>;
   readEntryPresence: (scope: SessionRowPresenceWorkerInput["scope"]) => Promise<boolean>;
+  readEntry: (
+    scope: SessionRowEntryWorkerInput["scope"],
+    continuation?: CanonicalSessionReaderContinuation,
+  ) => Promise<SessionRowEntryWorkerResult["entry"]>;
   readIdentityEvidence: (
     input: Omit<SessionIdentityEvidenceWorkerInput, "kind" | "database">,
   ) => Promise<SessionIdentityEvidenceResult[]>;

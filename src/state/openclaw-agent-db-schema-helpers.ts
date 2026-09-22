@@ -181,11 +181,30 @@ const SESSION_KEY_CONTRACT_SCHEMA_START = "CREATE TABLE IF NOT EXISTS session_ke
 const SESSION_KEY_CONTRACT_SCHEMA_END = "CREATE TABLE IF NOT EXISTS session_windows (";
 
 /** Ensure the additive session-key contract table inside the caller's transaction. */
-export function ensureSessionKeyContractSchemaInTransaction(db: DatabaseSync): void {
+export function ensureSessionKeyContractSchemaInTransaction(
+  db: DatabaseSync,
+  beforeMutation?: () => void,
+): void {
   const start = OPENCLAW_AGENT_SCHEMA_SQL.indexOf(SESSION_KEY_CONTRACT_SCHEMA_START);
   const end = OPENCLAW_AGENT_SCHEMA_SQL.indexOf(SESSION_KEY_CONTRACT_SCHEMA_END, start);
   if (start === -1 || end === -1) {
     throw new Error("OpenClaw agent session-key contract schema markers are missing.");
+  }
+  const schemaObject = db.prepare("SELECT 1 FROM sqlite_schema WHERE type = ? AND name = ?");
+  const contractPresent = Boolean(schemaObject.get("table", "session_key_contract"));
+  const seedPresent =
+    contractPresent && Boolean(db.prepare("SELECT 1 FROM session_key_contract WHERE id = 1").get());
+  if (
+    !seedPresent ||
+    [
+      "session_nodes_entry_valid_after_insert",
+      "session_nodes_entry_valid_after_entry_update",
+      "session_nodes_entry_valid_after_identity_update",
+    ].some((name) => !schemaObject.get("trigger", name))
+  ) {
+    // A missing seed is real row convergence even when every column and schema
+    // version is current. Do not let INSERT OR IGNORE hide that write authority.
+    beforeMutation?.();
   }
   db.exec(OPENCLAW_AGENT_SCHEMA_SQL.slice(start, end)); // sqlite-allow-raw -- Idempotent additive lazy ensure.
 }

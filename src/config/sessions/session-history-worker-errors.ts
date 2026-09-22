@@ -1,5 +1,6 @@
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
+import { SessionExactReadSourceChangedError } from "./session-exact-read-source-error.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence.js";
 import type {
@@ -21,6 +22,9 @@ export function unwrapSessionTranscriptWorkerReply<
   }
   if (reply.error.kind === "syntax") {
     throw new SyntaxError(reply.error.message);
+  }
+  if (reply.error.kind === "source-changed") {
+    throw new SessionExactReadSourceChangedError(reply.error.reason, reply.error.message);
   }
   throw new SessionTranscriptReadFenceError(reply.error.message);
 }

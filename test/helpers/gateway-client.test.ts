@@ -234,23 +234,35 @@ it("retains acquisition ownership when the caller aborts inside its hello callba
     expect(peer.stopCount()).toBe(1);
   }));
 
-it("keeps caller hello callbacks on reconnect after successful handoff and later abort", (context) =>
+it("keeps caller close and hello callbacks after successful handoff and later abort", (context) =>
   withAcquisitionPeer(context, async (peer) => {
     const controller = new AbortController();
     const verifyCleanup = vi.fn((cleanup: () => Promise<void>) => cleanup());
     const reconnected = createDeferred();
+    const closed = createDeferred<{ code: number; reason: string }>();
     let helloCount = 0;
     const onHelloOk = vi.fn(() => {
       if (++helloCount === 2) {
         reconnected.resolve();
       }
     });
-    const acquisition = peer.acquire({ signal: controller.signal, verifyCleanup }, onHelloOk);
+    const acquisition = peer.acquire(
+      {
+        signal: controller.signal,
+        verifyCleanup,
+        onClose: (code, reason) => closed.resolve({ code, reason }),
+      },
+      onHelloOk,
+    );
     const connection = await peer.connection;
     peer.sendHello(connection);
     const client = await acquisition;
     controller.abort(new Error("cancel after handoff"));
     connection.socket.close(1012, "synthetic reconnect");
+    expect(await withTestTimeout(closed.promise, 1_000, "caller did not receive close")).toEqual({
+      code: 1012,
+      reason: "synthetic reconnect",
+    });
     peer.sendHello(await withTestTimeout(peer.reconnection, 5_000, "client did not reconnect"));
     await withTestTimeout(reconnected.promise, 1_000, "caller did not receive reconnect hello");
     expect(onHelloOk).toHaveBeenCalledTimes(2);

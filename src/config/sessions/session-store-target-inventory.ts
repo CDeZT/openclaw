@@ -5,6 +5,7 @@ import { isIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-d
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import {
   retainLegacyDefaultAgentId,
+  resolveSessionStoreCompatibilityAgentId,
   tryGetLegacyDefaultAgentId,
 } from "../legacy.default-agent-owner.js";
 import { resolveStateDir } from "../state-dir.js";
@@ -230,6 +231,86 @@ export function readSessionStoreTargetInventory(
         });
         return { agentId, result, reads: result.available ? reads : [] };
       }),
+    };
+  } catch (error) {
+    if (error instanceof SessionStoreRegistryReadRequired) {
+      return { kind: "session-target-registry-required" };
+    }
+    throw error;
+  }
+}
+
+export type ConfiguredSessionStoreTargetRequest = {
+  agentId: string;
+  defaultAgentId: string;
+  storePath: string;
+  env: NodeJS.ProcessEnv;
+  candidates: SessionStoreReadCandidate[];
+  registeredDatabases: SessionStoreRegistryRead;
+};
+
+export type ConfiguredSessionStoreTargetResult =
+  | { kind: "session-target-registry-required" }
+  | { kind: "session-configured-target"; database: { agentId: string; path: string } };
+
+/** Capture one configured locator and its ownership family, never fallback session stores. */
+export function prepareConfiguredSessionStoreTargetRead(
+  cfg: OpenClawConfig,
+  input: { agentId: string; storePath: string; env: NodeJS.ProcessEnv },
+): Omit<ConfiguredSessionStoreTargetRequest, "registeredDatabases"> {
+  const capturedEnv = cloneEnvWithPlatformSemantics(input.env);
+  const env = { ...capturedEnv, OPENCLAW_STATE_DIR: resolveStateDir(capturedEnv) };
+  const agentId = normalizeAgentId(input.agentId);
+  const storePath = path.resolve(input.storePath);
+  if (
+    path.resolve(resolveSessionStorePathCore(cfg.session?.store, { agentId, env })) !== storePath
+  ) {
+    throw new Error("Configured session store changed before exact reader admission");
+  }
+  const target = resolveUnsuffixedSqliteTargetFromSessionStorePath(storePath);
+  if (isIncognitoOpenClawAgentSqlitePath(target.path, { agentId, env })) {
+    throw new Error("Incognito configured target requires its retained native owner");
+  }
+  const candidates = new Map<string, SessionStoreReadCandidate>();
+  const add = (candidate: SessionStoreReadCandidate) =>
+    candidates.set(JSON.stringify(candidate), candidate);
+  if (!target.agentId && !storePath.endsWith(".sqlite")) {
+    add(captureSessionStoreReadCandidate(target.path, "sibling-family"));
+  }
+  add(captureSessionStoreReadCandidate(target.path));
+  for (const candidate of listSqliteTargetCandidatePathsForSessionStorePath(storePath)) {
+    add(captureSessionStoreReadCandidate(candidate));
+  }
+  return {
+    agentId,
+    defaultAgentId: resolveSessionStoreCompatibilityAgentId(cfg),
+    storePath,
+    env,
+    candidates: [...candidates.values()],
+  };
+}
+
+/** Worker-only configured ownership resolution: no session row inventory or fallback selection. */
+export function readConfiguredSessionStoreTarget(
+  request: ConfiguredSessionStoreTargetRequest,
+): ConfiguredSessionStoreTargetResult {
+  try {
+    const selected = resolveSqliteTargetFromSessionStorePath(request.storePath, {
+      agentId: request.agentId,
+      defaultAgentId: request.defaultAgentId,
+      env: cloneEnvWithPlatformSemantics(request.env),
+      registeredDatabases: request.registeredDatabases,
+      readCandidates: request.candidates,
+    });
+    if (!selected.agentId || (!selected.shared && selected.agentId !== request.agentId)) {
+      throw new Error("Configured session store physical owner does not match its logical target");
+    }
+    return {
+      kind: "session-configured-target",
+      database: {
+        agentId: selected.agentId,
+        path: assertSessionStoreReadCandidate(selected.path, request.candidates),
+      },
     };
   } catch (error) {
     if (error instanceof SessionStoreRegistryReadRequired) {

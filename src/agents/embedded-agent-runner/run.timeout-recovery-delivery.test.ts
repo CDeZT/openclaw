@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { testing as deliveryTesting } from "../subagents/announce/subagent-announce-delivery.test-support.js";
 import { sendSubagentAnnounceDirectly } from "../subagents/announce/subagent-announce-direct-delivery.js";
+import { createRequesterSessionReaderForTest } from "../subagents/announce/subagent-announce-retained-reader.test-support.js";
 import {
   clearActiveEmbeddedRun,
   isEmbeddedAgentRunActive,
@@ -34,6 +35,14 @@ describe("timeout recovery completion delivery", () => {
 
   it("defers during recovery, delivers to the successor, and restores terminal suppression", async () => {
     const dispatchGatewayMethodInProcess = vi.fn();
+    const readRequesterEntry: Parameters<typeof createRequesterSessionReaderForTest>[0] = (
+      requestedKey,
+    ) => ({
+      cfg: {} as never,
+      entry: undefined,
+      canonicalKey: requestedKey,
+      agentId: "main",
+    });
     deliveryTesting.setDepsForTest({
       dispatchGatewayMethodInProcess,
       getRuntimeConfig: () => ({}) as never,
@@ -41,12 +50,8 @@ describe("timeout recovery completion delivery", () => {
         sessionId,
         isActive: isEmbeddedAgentRunActive(sessionId),
       }),
-      loadRequesterSessionEntry: (requestedKey) => ({
-        cfg: {} as never,
-        entry: undefined,
-        canonicalKey: requestedKey,
-        agentId: "main",
-      }),
+      loadRequesterSessionEntry: readRequesterEntry,
+      withRequesterSessionReader: createRequesterSessionReaderForTest(readRequesterEntry),
     });
 
     const timedOutHandle = createEmbeddedRunHandle({ runId: "run-timeout" });

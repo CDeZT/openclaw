@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { MessageChannel, receiveMessageOnPort } from "node:worker_threads";
 import type { Result } from "@openclaw/normalization-core/result";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
@@ -9,11 +10,12 @@ import {
 } from "../infra/sqlite-worker-identity.js";
 import {
   requestSqliteWorkerOperationAdmission,
+  deferSqliteWorkerCommitEffect,
   SqliteWorkerOpenRefusedError,
 } from "../infra/sqlite-worker-operation-admission.js";
 import type {
   OpenClawAgentDatabase,
-  OpenClawAgentDatabaseRegistrationCommit,
+  OpenClawAgentDatabaseRegistrationFacts,
 } from "./openclaw-agent-db-contract.js";
 import { readOpenClawAgentDatabaseIdentity } from "./openclaw-agent-db-identity.js";
 import { prepareOpenClawAgentDatabaseWorkerLease } from "./openclaw-agent-db-lease.js";
@@ -22,6 +24,7 @@ import {
   retainAgentDatabase,
 } from "./openclaw-agent-db-lifecycle.js";
 import { ensureOpenClawAgentDatabasePermissions } from "./openclaw-agent-db-permissions.js";
+import type { OpenClawAgentRegistrationTransactionOwner } from "./openclaw-agent-db-registry-listing.js";
 import {
   getOpenClawAgentDatabaseValidation,
   type OpenClawAgentDatabaseValidation,
@@ -74,6 +77,7 @@ export function openExistingSqliteWorkerBackend(
   let sharedBorrow: ReturnType<typeof retainOpenClawStateDatabase> | undefined;
   let releaseBorrow: (() => void) | undefined;
   let identity: AgentDatabaseExecutionIdentity | undefined;
+  let identityPublished = false;
   let openingFailure: { error: unknown } | undefined;
   const openWriter = () => {
     let validation: OpenClawAgentDatabaseValidation | undefined;
@@ -115,36 +119,73 @@ export function openExistingSqliteWorkerBackend(
         port2.close();
       }
       assertFileIdentity();
-      let registration: OpenClawAgentDatabaseRegistrationCommit | undefined;
+      const intentId = randomUUID();
+      const binding = {
+        intentId,
+        leaseId: input.leaseId,
+        agentId: input.agentId,
+        agentPath: input.databasePath,
+        stateDatabasePath: lease.receipt.sharedStatePath,
+        stateDatabaseIdentity: lease.receipt.sharedStateIdentity,
+      };
+      let finalFacts: OpenClawAgentDatabaseRegistrationFacts | undefined;
+      let transactionAdmitted = false;
+      const requestRegistration = (
+        stage: "prepare" | "transaction" | "commit",
+        kind:
+          | "agent-registration-mutation"
+          | "agent-registration-selector"
+          | "agent-registration-commit",
+        facts?: OpenClawAgentDatabaseRegistrationFacts,
+      ) => {
+        assertFileIdentity();
+        requestSqliteWorkerOperationAdmission({
+          stage,
+          facts: { kind, binding, registration: facts },
+        });
+      };
+      const registration: OpenClawAgentRegistrationTransactionOwner = {
+        assertWrite: assertFileIdentity,
+        beforeMutation() {
+          requestRegistration("prepare", "agent-registration-mutation");
+        },
+        classify(facts) {
+          requestRegistration(
+            transactionAdmitted ? "prepare" : "transaction",
+            "agent-registration-selector",
+            facts,
+          );
+          transactionAdmitted = true;
+          finalFacts = facts;
+        },
+        prepareEvent() {},
+        retainTransaction() {
+          return { commit() {}, rollback() {} };
+        },
+        prepareReceipt(db, receipt, facts) {
+          deferSqliteWorkerCommitEffect(db, {
+            kind: "agent-registration",
+            binding,
+            receipt,
+            registration: facts,
+          });
+        },
+        withCommit(commit) {
+          if (!finalFacts) throw new Error("Registration COMMIT has no canonical selector facts");
+          requestRegistration("commit", "agent-registration-commit", finalFacts);
+          assertFileIdentity();
+          commit();
+        },
+      };
       let openingResult: Result<OpenClawAgentDatabase, unknown>;
       try {
-        const opened = openOpenClawAgentDatabase(options, lease, (receipt) => {
-          registration = receipt;
-        });
+        const opened = openOpenClawAgentDatabase(options, lease, undefined, registration);
         database = opened;
         releaseBorrow = retainAgentDatabase(opened.db);
         openingResult = { ok: true, value: opened };
       } catch (error) {
-        // The opener can retain a failed native handle before returning one to this actor.
         openingFailure = { error };
         openingResult = { ok: false, error };
-      }
-      if (registration) {
-        try {
-          requestSqliteWorkerOperationAdmission({
-            stage: "prepare",
-            facts: { kind: "agent-registration-committed", registration },
-          });
-        } catch (error) {
-          if (!openingResult.ok) {
-            throw createSqliteLifecycleAggregateError(
-              [openingResult.error, error],
-              `${String(openingResult.error)}; committed registration reporting failed: ${String(error)}`,
-              openingResult.error,
-            );
-          }
-          throw error;
-        }
       }
       if (!openingResult.ok) {
         throw openingResult.error;
@@ -176,7 +217,14 @@ export function openExistingSqliteWorkerBackend(
     if (!database || !database.db.isOpen || getOpenClawAgentDatabaseIfOpen(options) !== database) {
       throw new Error("Agent execution lost its retained native database");
     }
-    requestSqliteWorkerOperationAdmission({ stage: "prepare", facts: { identity, validation } });
+    try {
+      requestSqliteWorkerOperationAdmission({ stage: "prepare", facts: { identity, validation } });
+      identityPublished = true;
+    } catch (error) {
+      // A refused first native-identity publication still requires native retirement.
+      if (!identityPublished) openingFailure = { error };
+      throw error;
+    }
     return database;
   };
   const domain = createAgentDatabaseDomainOwner({

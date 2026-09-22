@@ -60,6 +60,7 @@ import {
   withOpenClawStateStartupCheckpointConnection,
 } from "./openclaw-state-db-startup-checkpoint.js";
 import {
+  joinOpenClawStateCommit,
   runCoordinatedStateTransaction,
   withSharedStateWriteCoordinator,
 } from "./openclaw-state-db-write-coordination.js";
@@ -435,7 +436,7 @@ export function runOpenClawStateWriteTransaction<T>(
   options: OpenClawStateDatabaseOptions = {},
   transactionOptions: Pick<
     SqliteTransactionOptions,
-    "busyTimeoutMs" | "operationLabel" | "slowTransactionHoldMs"
+    "busyTimeoutMs" | "operationLabel" | "slowTransactionHoldMs" | "withCommit"
   > = {},
 ): T {
   getOpenClawDatabaseMaintenanceScope()?.assertAdmission();
@@ -460,13 +461,21 @@ export function runOpenClawStateWriteTransaction<T>(
         result = runCoordinatedStateTransaction(
           acquired.db,
           () => {
-            assertStateDatabaseSchemaAdmission(acquired);
-            assertOpenClawStateWriteAllowed({
-              database: acquired.db,
-              databasePath: acquired.path,
-              env: options.env ?? process.env,
-              schemaReady:
-                !options.database && acquired === getOpenClawStateDatabaseIfOpen(options),
+            const assertWrite = () => {
+              assertStateDatabaseSchemaAdmission(acquired);
+              assertOpenClawStateWriteAllowed({
+                database: acquired.db,
+                databasePath: acquired.path,
+                env: options.env ?? process.env,
+                schemaReady:
+                  !options.database && acquired === getOpenClawStateDatabaseIfOpen(options),
+              });
+            };
+            assertWrite();
+            joinOpenClawStateCommit(acquired.db, {
+              assertWrite,
+              classify() {},
+              prepare() {},
             });
             observeOpenClawDatabaseMaintenanceResource(acquired.db);
             return operation(acquired);

@@ -5,6 +5,7 @@ import { defaultRuntime } from "../../../runtime.js";
 import type { EmbeddedAgentQueueMessageOutcome } from "../../embedded-agent-runner/runs.js";
 import { taskCompletionEvents } from "../../subagent-test-fixtures.test-helpers.js";
 import { deliverSubagentAnnouncement, testing } from "./subagent-announce-delivery.test-support.js";
+import { createRequesterSessionReaderForTest } from "./subagent-announce-retained-reader.test-support.js";
 
 const requesterSessionKey = "agent:main:slack:channel:C123";
 const origin = { channel: "slack", to: "channel:C123", accountId: "acct-1" };
@@ -47,17 +48,21 @@ function prepareDelivery(
       deliveredAtMs: 4_200,
     }),
   );
+  const readRequesterEntry: Parameters<typeof createRequesterSessionReaderForTest>[0] = (
+    sessionKey,
+  ) => ({
+    cfg,
+    entry: undefined,
+    canonicalKey: sessionKey,
+    agentId: "main",
+  });
   testing.setDepsForTest({
     callGateway: callGateway as typeof runtimeCallGateway,
     getRuntimeConfig: () => cfg,
     getRequesterSessionActivity: () => activity,
     resolveRequesterSessionAbandonment: () => undefined,
-    loadRequesterSessionEntry: (sessionKey) => ({
-      cfg,
-      entry: undefined,
-      canonicalKey: sessionKey,
-      agentId: "main",
-    }),
+    loadRequesterSessionEntry: readRequesterEntry,
+    withRequesterSessionReader: createRequesterSessionReaderForTest(readRequesterEntry),
     queueEmbeddedAgentMessageWithOutcome,
   });
   return { callGateway, queueEmbeddedAgentMessageWithOutcome };

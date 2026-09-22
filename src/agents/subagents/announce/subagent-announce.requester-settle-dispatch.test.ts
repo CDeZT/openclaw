@@ -38,6 +38,7 @@ import {
 } from "../requester-final-attachment.js";
 import { setSubagentAnnounceDeliveryDepsForTest } from "./subagent-announce-delivery.runtime.js";
 import { sendSubagentAnnounceDirectly } from "./subagent-announce-direct-delivery.js";
+import { createRequesterSessionReaderForTest } from "./subagent-announce-retained-reader.test-support.js";
 
 const startTurn = vi.hoisted(() => vi.fn());
 const deliver = vi.hoisted(() => vi.fn());
@@ -536,14 +537,16 @@ describe("requester settle dispatch deadline", () => {
       });
       io.emitFinal([true, { status: "ok", result: { payloads: [{ text }] } }]);
     });
+    const readRequesterEntry: Parameters<typeof createRequesterSessionReaderForTest>[0] = () => ({
+      cfg,
+      canonicalKey: REQUESTER_KEY,
+      agentId: "main",
+      entry: loadSessionEntry(target),
+    });
     setSubagentAnnounceDeliveryDepsForTest({
       getRuntimeConfig: () => cfg,
-      loadRequesterSessionEntry: () => ({
-        cfg,
-        canonicalKey: REQUESTER_KEY,
-        agentId: "main",
-        entry: loadSessionEntry(target),
-      }),
+      loadRequesterSessionEntry: readRequesterEntry,
+      withRequesterSessionReader: createRequesterSessionReaderForTest(readRequesterEntry),
       getRequesterSessionActivity: () => ({ sessionId: "requester-session", isActive: false }),
     });
     deliver.mockImplementation(sendSubagentAnnounceDirectly);
@@ -673,14 +676,16 @@ describe("requester settle dispatch deadline", () => {
           registration.cleanup();
         }
       });
+      const readRequesterEntry: Parameters<typeof createRequesterSessionReaderForTest>[0] = () => ({
+        cfg,
+        canonicalKey: REQUESTER_KEY,
+        agentId: "main",
+        entry: { sessionId: "requester-session", updatedAt: 1 },
+      });
       setSubagentAnnounceDeliveryDepsForTest({
         getRuntimeConfig: () => cfg,
-        loadRequesterSessionEntry: () => ({
-          cfg,
-          canonicalKey: REQUESTER_KEY,
-          agentId: "main",
-          entry: { sessionId: "requester-session", updatedAt: 1 },
-        }),
+        loadRequesterSessionEntry: readRequesterEntry,
+        withRequesterSessionReader: createRequesterSessionReaderForTest(readRequesterEntry),
         getRequesterSessionActivity: () => ({ sessionId: "requester-session", isActive: false }),
       });
       deliver.mockImplementation(sendSubagentAnnounceDirectly);

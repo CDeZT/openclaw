@@ -1,6 +1,7 @@
 import path from "node:path";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it } from "vitest";
+import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import {
   registerOpenClawAgentDatabase,
@@ -13,6 +14,10 @@ import {
   replaceSessionEntry,
 } from "./session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
+import {
+  prepareConfiguredSessionStoreTargetRead,
+  readConfiguredSessionStoreTarget,
+} from "./session-store-target-inventory.js";
 
 describe("explicit SQLite session target ownership", () => {
   it("keeps scoped rows for multiple agents in one exact SQLite locator", async () => {
@@ -99,4 +104,56 @@ describe("explicit SQLite session target ownership", () => {
       });
     },
   );
+});
+
+it("resolves only the configured shared target without enumerating session rows", async () => {
+  await withTempHome(async (home) => {
+    const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(home, ".openclaw") };
+    const storePath = path.join(home, "configured.sqlite");
+    const database = openOpenClawAgentDatabase({ agentId: "main", env, path: storePath });
+    for (const key of ["agent:logical:work-item", "agent:main:unrelated"]) {
+      await replaceSessionEntry(
+        {
+          agentId: key.includes(":logical:") ? "logical" : "main",
+          env,
+          storePath,
+          sessionKey: key,
+        },
+        { sessionId: key, updatedAt: 1 },
+      );
+    }
+    const captured = prepareConfiguredSessionStoreTargetRead(
+      { session: { store: storePath } },
+      { agentId: "logical", env, storePath },
+    );
+    const statements = trackSqliteStatementExecutions(database.db, ["sessionRows"], (sql) =>
+      /session_nodes/i.test(sql) ? "sessionRows" : null,
+    );
+    try {
+      expect(
+        readConfiguredSessionStoreTarget({
+          ...captured,
+          registeredDatabases: { status: "deferred" },
+        }),
+      ).toEqual({ kind: "session-target-registry-required" });
+      const result = readConfiguredSessionStoreTarget({
+        ...captured,
+        registeredDatabases: [{ agentId: "main", path: storePath }],
+      });
+      expect(result).toEqual({
+        kind: "session-configured-target",
+        database: { agentId: "main", path: storePath },
+      });
+      expect(statements.counts.sessionRows).toBe(0);
+      expect(() =>
+        readConfiguredSessionStoreTarget({
+          ...captured,
+          registeredDatabases: { status: "unavailable" },
+        }),
+      ).toThrow("unavailable");
+      expect(captured.candidates.every((candidate) => candidate.path === storePath)).toBe(true);
+    } finally {
+      statements.restore();
+    }
+  });
 });

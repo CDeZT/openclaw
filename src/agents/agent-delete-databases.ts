@@ -116,6 +116,13 @@ export async function prepareAgentDeleteDatabases(
   agentDir: string,
   options: OpenClawStateDatabaseOptions = {},
 ): Promise<AgentDeleteDatabasePlan> {
+  // Journaled deletion already fences new native admission. Revoke held incognito
+  // capabilities before the first await, not after unrelated durable resources drain.
+  // The existing close owner revokes synchronously and still joins native cleanup.
+  await closeOpenClawAgentDatabaseByPathAsync(
+    resolveIncognitoOpenClawAgentSqlitePath({ agentId, env: options.env }),
+    agentId,
+  );
   const registeredDatabases = readAgentDeleteDatabaseRegistry(options);
   const survivingDatabaseFilePaths = resolveSurvivingDatabaseFilePaths(
     registeredDatabases,
@@ -137,11 +144,6 @@ export async function prepareAgentDeleteDatabases(
   for (const databasePath of registeredDatabasePaths) {
     await closeOpenClawAgentDatabaseByPathAsync(databasePath, agentId);
   }
-  // Incognito has no registry row or files, but retained statements must also be retired.
-  await closeOpenClawAgentDatabaseByPathAsync(
-    resolveIncognitoOpenClawAgentSqlitePath({ agentId, env: options.env }),
-    agentId,
-  );
   const databasePaths = [...registeredDatabasePaths].filter((pathname) =>
     resolveSqliteDatabaseFilePaths(pathname).every(
       (filePath) =>

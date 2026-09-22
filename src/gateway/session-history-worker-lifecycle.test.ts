@@ -3,21 +3,25 @@ import path from "node:path";
 import type { Worker } from "node:worker_threads";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
   replaceSessionEntry,
   replaceTranscriptEvents,
   waitForSessionTranscriptProjection,
 } from "../config/sessions/session-accessor.js";
+import { patchSessionEntryTarget } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { readSessionColdTranscript } from "../config/sessions/session-cold-storage-state.js";
 import { runSessionColdStorageMaintenance } from "../config/sessions/session-cold-storage.js";
 import {
   createSessionColdStorageFixture,
   maintenanceConfig,
 } from "../config/sessions/session-cold-storage.test-support.js";
+import { withConfiguredSessionEntryReader } from "../config/sessions/session-entry-configured-worker-read.js";
 import {
   prepareSessionEntryPresenceRead,
   withSessionHistoryWorkerDatabase,
 } from "../config/sessions/session-transcript-worker-runtime.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { DEFAULT_WORKER_PENDING_BYTES } from "../infra/worker-task-capacity.js";
 import { KeyedAsyncQueue } from "../plugin-sdk/keyed-async-queue.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -38,6 +42,11 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import { readChatHistoryPage } from "./server-methods/chat-history-pages.js";
 import { readChatHistoryMessageId } from "./session-history-tail.js";
+import {
+  awaitRetainedReaderBoundary,
+  proveRetainedHistoryAbort,
+  proveRetainedHistoryWorker,
+} from "./session-history-worker-retained.test-support.js";
 
 const observed = vi.hoisted(() => ({
   timers: vi.spyOn(globalThis, "setTimeout"),
@@ -55,7 +64,9 @@ vi.mock("node:worker_threads", async (importOriginal) => {
       override postMessage(...args: Parameters<Worker["postMessage"]>): void {
         const kind = asOptionalRecord(asOptionalRecord(args[0])?.input)?.kind;
         if (
-          (kind === "history-page" || kind === "session-row-presence") &&
+          (kind === "history-page" ||
+            kind === "session-row-presence" ||
+            kind === "session-row-entry") &&
           !observed.workers.includes(this)
         ) {
           observed.workers.push(this);
@@ -86,13 +97,32 @@ vi.mock("../config/sessions/session-cold-storage-read.js", async (importOriginal
 
 afterAll(() => observed.timers.mockRestore());
 
-afterEach(() => {
-  observed.dispatch = undefined;
-  observed.restoration = undefined;
-  for (const worker of observed.workers.splice(0)) {
-    expect(worker.threadId).toBe(-1);
+// The existing observer reset must wait even if the runner already aborted its test body.
+let finishRetainedTest: (() => Promise<void>) | undefined;
+async function resetHistoryWorkerObservations(): Promise<void> {
+  try {
+    await finishRetainedTest?.();
+  } finally {
+    finishRetainedTest = undefined;
+    observed.dispatch = undefined;
+    observed.restoration = undefined;
+    for (const worker of observed.workers.splice(0)) {
+      expect(worker.threadId).toBe(-1);
+    }
   }
-});
+}
+afterEach(resetHistoryWorkerObservations);
+
+function retainedHistoryFixtureBindings() {
+  return {
+    observed,
+    seed,
+    setFinish: (finish: () => Promise<void>) => {
+      finishRetainedTest = finish;
+    },
+    reset: resetHistoryWorkerObservations,
+  };
+}
 
 it.each([false, true])(
   "reads exact row presence without creating a database (incognito=%s)",
@@ -178,7 +208,13 @@ it("joins native worker exit when metadata-read custody is revoked during dispat
   });
 });
 
-async function seed(state: OpenClawTestState, agentId: string, sessionId: string) {
+async function seed(
+  state: OpenClawTestState,
+  agentId: string,
+  sessionId: string,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
   const target = {
     agentId,
     sessionId,
@@ -187,6 +223,7 @@ async function seed(state: OpenClawTestState, agentId: string, sessionId: string
   };
   const entry = { sessionId, updatedAt: 1 };
   await replaceSessionEntry(target, entry);
+  signal?.throwIfAborted();
   await replaceTranscriptEvents(target, [
     { type: "session", version: 3, id: sessionId },
     {
@@ -196,7 +233,9 @@ async function seed(state: OpenClawTestState, agentId: string, sessionId: string
       message: { role: "user", content: sessionId },
     },
   ]);
+  signal?.throwIfAborted();
   await waitForSessionTranscriptProjection(target);
+  signal?.throwIfAborted();
   const params = {
     entry,
     provider: undefined,
@@ -555,5 +594,99 @@ it.each([false, true])(
         );
       }
     });
+  },
+);
+
+it("keeps A's same-source late read usable after B retires their shared history worker", async (context) => {
+  await proveRetainedHistoryWorker(context, retainedHistoryFixtureBindings());
+}, 10_000);
+
+it.for(["before-entry", "worker-cleanup"] as const)(
+  "joins retained native history cancellation at %s before resetting observers",
+  { timeout: 10_000 },
+  async (phase, context) => {
+    await proveRetainedHistoryAbort(phase, context, retainedHistoryFixtureBindings());
+  },
+);
+
+it.for(["source-close", "source-replacement"] as const)(
+  "refuses A's retained late read after real %s even if row facts are copied",
+  { timeout: 10_000 },
+  async (change, { signal, onTestFinished }) => {
+    signal.throwIfAborted();
+    const entered = createDeferredCore();
+    const dispatch = createDeferredCore();
+    const releaseHeldFences = () => {
+      entered.resolve();
+      dispatch.resolve();
+    };
+    let fixture: Promise<void> | undefined;
+    const finish = async () => {
+      releaseHeldFences();
+      try {
+        await fixture;
+      } finally {
+        signal.removeEventListener("abort", releaseHeldFences);
+      }
+    };
+    signal.addEventListener("abort", releaseHeldFences, { once: true });
+    onTestFinished(finish);
+    finishRetainedTest = finish;
+    if (signal.aborted) {
+      releaseHeldFences();
+    }
+    fixture = withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      signal.throwIfAborted();
+      const a = await seed(state, "main", "replaced-requester-a", signal);
+      signal.throwIfAborted();
+      const scope = {
+        agentId: "main",
+        sessionKey: "agent:main:replaced-requester-a",
+        env: state.env,
+        storePath: resolveSessionStorePathCore(undefined, { agentId: "main", env: state.env }),
+      };
+      let acceptedLateRead = false;
+      const pending = withConfiguredSessionEntryReader({}, scope, async (retained) => {
+        signal.throwIfAborted();
+        const initial = await retained.readEntry();
+        signal.throwIfAborted();
+        initial.assertCurrent();
+        expect(initial.entry?.sessionId).toBe("replaced-requester-a");
+        entered.resolve();
+        await racePromiseWithAbortSignal(dispatch.promise, signal);
+        signal.throwIfAborted();
+        retained.assertCurrent();
+        const late = await retained.readEntry();
+        signal.throwIfAborted();
+        late.assertCurrent();
+        acceptedLateRead = true;
+      });
+      const failure = expect(pending).rejects.toThrow(/revoked|changed|no longer current/);
+      let closing: ReturnType<typeof closeOpenClawAgentDatabaseByPathAsync> | undefined;
+      try {
+        await awaitRetainedReaderBoundary(entered.promise, pending, signal);
+        closing = closeOpenClawAgentDatabaseByPathAsync(a.path, "main");
+        await racePromiseWithAbortSignal(closing, signal);
+        signal.throwIfAborted();
+        if (change === "source-replacement") {
+          fs.copyFileSync(a.path, `${a.path}.replacement`);
+          fs.renameSync(a.path, `${a.path}.previous`);
+          fs.renameSync(`${a.path}.replacement`, a.path);
+        }
+        dispatch.resolve();
+        await racePromiseWithAbortSignal(failure, signal);
+        signal.throwIfAborted();
+        expect(acceptedLateRead).toBe(false);
+      } finally {
+        releaseHeldFences();
+        // Do not replace the primary boundary/assertion error with a cleanup rejection.
+        await Promise.allSettled([pending, failure, closing]);
+      }
+    });
+    try {
+      await fixture;
+    } finally {
+      await finish();
+    }
   },
 );

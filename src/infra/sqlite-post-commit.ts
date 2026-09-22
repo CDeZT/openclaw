@@ -9,8 +9,39 @@ const pendingPublications = resolveGlobalSingleton(
 const pendingTransactionState = resolveGlobalSingleton(
   Symbol.for("openclaw.sqliteTransactionState"),
   () =>
-    new WeakMap<DatabaseSync, Array<{ commit: () => void; rollback: (error: unknown) => void }>>(),
+    new WeakMap<
+      DatabaseSync,
+      Array<{ commit: () => void; rollback: (error: unknown) => void; nativeCommit?: () => void }>
+    >(),
 );
+
+const committedTransactions = resolveGlobalSingleton(
+  Symbol.for("openclaw.sqliteCommittedTransactionPublications"),
+  () => new WeakMap<DatabaseSync, { publications: number; states: number }>(),
+);
+
+/** The transaction primitive calls this immediately after successful native COMMIT. */
+export function recordSqliteTransactionCommitted(db: DatabaseSync): void {
+  const states = pendingTransactionState.get(db);
+  if (!states) return;
+  const previous = committedTransactions.get(db);
+  committedTransactions.set(db, {
+    publications: pendingPublications.get(db)?.length ?? 0,
+    states: states.length,
+  });
+  const errors: unknown[] = [];
+  // Only prepared factual recorders run here. Existing state/cache publication
+  // remains after guard unwind and scope removal, before observers as before.
+  for (const state of states.slice(previous?.states ?? 0)) {
+    try {
+      state.nativeCommit?.();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length) throw new AggregateError(errors, "Committed SQLite bookkeeping failed");
+}
 
 /** Snapshots read within this managed transaction can still roll back. */
 export function hasSqlitePostCommitScope(db: DatabaseSync): boolean {
@@ -33,23 +64,36 @@ export function deferSqlitePostCommitPublication(db: DatabaseSync, publish: () =
  */
 export function stageSqliteTransactionState(
   db: DatabaseSync,
-  state: { stage: () => void; rollback: (error: unknown) => void; commit: () => void },
+  state: {
+    stage: () => void;
+    rollback: (error: unknown) => void;
+    commit: () => void;
+    /** Assignment-only recorder at actual native COMMIT; never an authority check. */
+    nativeCommit?: () => void;
+  },
 ): boolean {
   const pending = pendingTransactionState.get(db);
   if (!pending) {
     return false;
   }
   state.stage();
-  pending.push({ commit: state.commit, rollback: state.rollback });
+  pending.push({
+    commit: state.commit,
+    rollback: state.rollback,
+    nativeCommit: state.nativeCommit,
+  });
   return true;
 }
 
 /** A lost transaction invalidates every savepoint's staged state and observers. */
 export function discardSqliteTransactionState(db: DatabaseSync, error: unknown): void {
-  pendingPublications.get(db)?.splice(0);
-  const rolledBackState = pendingTransactionState.get(db)?.splice(0) ?? [];
-  pendingPublications.delete(db);
-  pendingTransactionState.delete(db);
+  const committed = committedTransactions.get(db);
+  pendingPublications.get(db)?.splice(committed?.publications ?? 0);
+  const rolledBackState = pendingTransactionState.get(db)?.splice(committed?.states ?? 0) ?? [];
+  if (!committed) {
+    pendingPublications.delete(db);
+    pendingTransactionState.delete(db);
+  }
   for (const state of rolledBackState.toReversed()) {
     state.rollback(error);
   }
@@ -66,29 +110,46 @@ export function withSqlitePostCommitPublications<T>(db: DatabaseSync, transactio
     pendingPublications.set(db, publications);
     pendingTransactionState.set(db, transactionState);
   }
-  let result: T;
+  let outcome: { value: T } | { error: unknown };
   try {
-    result = transaction();
+    outcome = { value: transaction() };
   } catch (error) {
-    publications?.splice(publicationStart);
-    const rolledBackState = transactionState?.splice(stateStart) ?? [];
-    for (const state of rolledBackState.toReversed()) {
-      state.rollback(error);
-    }
-    throw error;
+    const committed = nested ? undefined : committedTransactions.get(db);
+    publications?.splice(committed?.publications ?? publicationStart);
+    const rolledBackState = transactionState?.splice(committed?.states ?? stateStart) ?? [];
+    for (const state of rolledBackState.toReversed()) state.rollback(error);
+    if (!committed) throw error;
+    // Keep only the actually committed prefix if a later transaction/guard fails.
+    outcome = { error };
   } finally {
     if (!nested) {
       pendingPublications.delete(db);
       pendingTransactionState.delete(db);
+      committedTransactions.delete(db);
     }
   }
   if (!nested) {
+    const failures = "error" in outcome ? [outcome.error] : [];
     for (const state of transactionState ?? []) {
-      state.commit();
+      try {
+        state.commit();
+      } catch (error) {
+        failures.push(error);
+      }
     }
     for (const publish of publications ?? []) {
-      publish();
+      try {
+        publish();
+      } catch (error) {
+        failures.push(error);
+      }
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length)
+      throw new AggregateError(failures, "SQLite committed publication failed", {
+        cause: failures[0],
+      });
   }
-  return result;
+  if ("error" in outcome) throw outcome.error;
+  return outcome.value;
 }

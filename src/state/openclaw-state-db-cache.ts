@@ -550,6 +550,9 @@ export function registerOpenClawStateDatabaseAsyncResource(
 
 /** Capture the canonical read generation before any asynchronous worker admission. */
 export const captureOpenClawStateDatabaseReadAdmission = asyncResources.capture;
+export const retainOpenClawStateDatabaseSelector = asyncResources.retainSelector;
+export const beginOpenClawStateDatabaseSelectorMutation = asyncResources.beginSelectorMutation;
+export const invalidateOpenClawStateDatabaseSelectors = asyncResources.invalidateSelectors;
 
 /** Bind worker-created storage to its captured admission without publishing a native handle. */
 export function publishOpenClawStateDatabaseWorkerAdmission(

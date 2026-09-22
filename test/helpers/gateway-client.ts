@@ -12,6 +12,8 @@ export async function acquireGatewayTestClient(
     closeMessage: string;
     unrefTimeout?: boolean;
     signal?: AbortSignal;
+    /** The caller owns connection failure after the acquisition handoff. */
+    onClose?: GatewayClientOptions["onClose"];
     verifyCleanup?: (cleanup: () => Promise<void>) => Promise<void>;
   },
 ): Promise<GatewayClient> {
@@ -61,8 +63,13 @@ export async function acquireGatewayTestClient(
         settle({ client });
       },
       onConnectError: (error) => settle({ error }),
-      onClose: (code, reason) =>
-        settle({ error: new Error(`${wait.closeMessage} (${code}): ${reason}`) }),
+      onClose: (code, reason, info) => {
+        const handedOff = state === "handed-off";
+        settle({ error: new Error(`${wait.closeMessage} (${code}): ${reason}`) });
+        if (handedOff) {
+          wait.onClose?.(code, reason, info);
+        }
+      },
     });
     const timer = setTimeout(
       () => settle({ error: new Error(wait.timeoutMessage) }),

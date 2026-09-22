@@ -20,6 +20,7 @@ import {
   GATEWAY_INGRESS_ARGS,
   type ProviderModelNormalizationParams,
 } from "./agent-command.compaction.test-support.js";
+import { proveNativeFollowupTaskRetirement } from "./agent-command.native-retirement.test-support.js";
 import type { CompactionAccountingFact } from "./embedded-agent-runner/run/internal-params.js";
 import { waitForSessionMaintenance } from "./session-maintenance/coordinator.js";
 
@@ -84,6 +85,17 @@ async function commitAttemptCompaction(
 }
 
 describe("agentCommand compaction transcript rotation", () => {
+  it("keeps a native follow-up task live through command cleanup", ({ signal }) =>
+    proveNativeFollowupTaskRetirement({
+      signal,
+      state,
+      replaceSessionEntry,
+      requireStorePath,
+      makeResult,
+      findStoredSessionEntry,
+      waitForSessionMaintenance,
+    }));
+
   it.each([
     ["settles a precreated baseline claim before embedded execution", false],
     ["does not execute after baseline work-start invalidation", true],

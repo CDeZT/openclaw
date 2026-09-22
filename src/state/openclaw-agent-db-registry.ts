@@ -4,7 +4,10 @@ import { resolveStateDir } from "../config/paths.js";
 import { probePathSuffixAliasesSync, resolvePathPrefixSync } from "../infra/fs-safe-advanced.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { isPathInside } from "../infra/path-guards.js";
-import { stageSqliteTransactionState } from "../infra/sqlite-post-commit.js";
+import {
+  stageSqliteTransactionState,
+  deferSqlitePostCommitPublication,
+} from "../infra/sqlite-post-commit.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import {
   assertAgentDeletionPathFence,
@@ -13,14 +16,26 @@ import {
 import {
   OPENCLAW_AGENT_SCHEMA_VERSION,
   type OpenClawAgentDatabaseRegistrationCommit,
+  type OpenClawAgentDatabaseReadFacts,
+  type OpenClawAgentDatabaseRegistrationFacts,
 } from "./openclaw-agent-db-contract.js";
-import { invalidateRegisteredAgentDatabasesMemo } from "./openclaw-agent-db-registry-listing.js";
+import {
+  invalidateRegisteredAgentDatabasesMemo,
+  invalidateRegisteredAgentDatabaseMetadata,
+  captureOpenClawAgentDatabaseRegistration,
+  stageOpenClawAgentRegistryMutation,
+  type OpenClawAgentRegistrationTransactionOwner,
+} from "./openclaw-agent-db-registry-listing.js";
 import {
   invalidateOpenClawAgentDatabaseValidation,
   invalidateOpenClawAgentDatabaseValidationsForAgent,
 } from "./openclaw-agent-db-validation-cache.js";
-import { requireOpenClawStateDatabaseIdentity } from "./openclaw-state-db-cache.js";
+import {
+  requireOpenClawStateDatabaseIdentity,
+  captureOpenClawStateDatabaseReadAdmission,
+} from "./openclaw-state-db-cache.js";
 import type { OpenClawStateDatabase } from "./openclaw-state-db-contract.js";
+import { joinOpenClawStateCommit } from "./openclaw-state-db-write-coordination.js";
 import type { DB as OpenClawStateKyselyDatabase } from "./openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "./openclaw-state-db.js";
 import {
@@ -280,6 +295,10 @@ export function registerOpenClawAgentDatabase(
     schemaVersion?: number;
   },
   onCommitted?: (receipt: OpenClawAgentDatabaseRegistrationCommit) => void,
+  registration?: {
+    owner: OpenClawAgentRegistrationTransactionOwner;
+    readSource(): OpenClawAgentDatabaseReadFacts | undefined;
+  },
 ): void {
   if (!isPersistentOpenClawAgentDatabasePath(params.path, params.env)) {
     return;
@@ -300,49 +319,124 @@ export function registerOpenClawAgentDatabase(
       assertAgentDeletionPathFence(database, deletionFence);
       const storedPath = resolveOpenClawAgentDatabaseStoredPath(database.path, params.path);
       const db = getNodeSqliteKysely<OpenClawAgentRegistryDatabase>(database.db);
-      executeSqliteQuerySync(
-        database.db,
-        db
-          .insertInto("agent_databases")
-          .values({
-            agent_id: params.agentId,
-            path: storedPath,
-            schema_version: params.schemaVersion ?? OPENCLAW_AGENT_SCHEMA_VERSION,
-            last_seen_at: lastSeenAt,
-            size_bytes: sizeBytes,
+      const readSelector = () => {
+        const row = executeSqliteQuerySync(
+          database.db,
+          db
+            .selectFrom("agent_databases")
+            .select(["agent_id", "path", "schema_version"])
+            .where("agent_id", "=", params.agentId)
+            .where("path", "=", storedPath),
+        ).rows[0];
+        return row
+          ? {
+              agentId: row.agent_id,
+              path: resolveOpenClawRegisteredAgentDatabasePath(database.path, row.path),
+              schemaVersion: row.schema_version,
+            }
+          : null;
+      };
+      const before = readSelector();
+      const expected = {
+        agentId: params.agentId,
+        path: resolveOpenClawRegisteredAgentDatabasePath(database.path, storedPath),
+        schemaVersion: params.schemaVersion ?? OPENCLAW_AGENT_SCHEMA_VERSION,
+      };
+      const local = registration
+        ? undefined
+        : captureOpenClawAgentDatabaseRegistration({
+            agentId: params.agentId,
+            agentPath: params.path,
+            admission: captureOpenClawStateDatabaseReadAdmission(database.path),
+            publish: false,
+          });
+      const owner = registration?.owner ?? local!;
+      try {
+        local?.begin();
+        let facts: OpenClawAgentDatabaseRegistrationFacts = {
+          before,
+          after: expected,
+          source: registration?.readSource() ?? null,
+        };
+        owner.classify(facts);
+        owner.assertWrite();
+        const retained = owner.retainTransaction();
+        if (
+          !stageSqliteTransactionState(database.db, {
+            stage() {},
+            rollback: retained.rollback,
+            commit: retained.commit,
           })
-          .onConflict((conflict) =>
-            conflict.columns(["agent_id", "path"]).doUpdateSet({
+        ) {
+          retained.rollback();
+          throw new Error("Agent registration requires its coordinated transaction owner");
+        }
+        executeSqliteQuerySync(
+          database.db,
+          db
+            .insertInto("agent_databases")
+            .values({
+              agent_id: params.agentId,
+              path: storedPath,
               schema_version: params.schemaVersion ?? OPENCLAW_AGENT_SCHEMA_VERSION,
               last_seen_at: lastSeenAt,
               size_bytes: sizeBytes,
-            }),
-          ),
-      );
-      invalidateRegisteredAgentDatabasesMemo({ env: params.env });
-      if (onCommitted) {
+            })
+            .onConflict((conflict) =>
+              conflict.columns(["agent_id", "path"]).doUpdateSet({
+                schema_version: params.schemaVersion ?? OPENCLAW_AGENT_SCHEMA_VERSION,
+                last_seen_at: lastSeenAt,
+                size_bytes: sizeBytes,
+              }),
+            ),
+        );
+        invalidateRegisteredAgentDatabaseMetadata({ path: database.path });
+        const event = { all: true as const, scope: "stores" };
         const receipt = Object.freeze({
           agentId: params.agentId,
           agentPath: params.path,
           stateDatabasePath: database.path,
           stateDatabaseIdentity: requireOpenClawStateDatabaseIdentity(database).key,
         });
-        // Record the native fact before fallible observers; the recorder never performs work.
+        joinOpenClawStateCommit(database.db, {
+          assertWrite() {
+            owner.assertWrite();
+            assertAgentDeletionPathFence(database, deletionFence);
+            if (
+              requireOpenClawStateDatabaseIdentity(database).key !== receipt.stateDatabaseIdentity
+            ) {
+              throw new Error("Agent registration shared owner changed before COMMIT");
+            }
+          },
+          classify() {
+            const after = readSelector();
+            if (!after) throw new Error("Agent registration disappeared before COMMIT");
+            facts = { before, after, source: registration?.readSource() ?? null };
+            owner.classify(facts);
+          },
+          prepare() {
+            owner.prepareEvent(event);
+            owner.prepareReceipt?.(database.db, receipt, facts);
+          },
+        });
+        // The existing callback is an observer, not a COMMIT guard or permission request.
+        // Its failure cannot prevent this canonical stores publication.
         if (
-          !stageSqliteTransactionState(database.db, {
-            stage() {},
-            rollback() {},
-            commit: () => onCommitted(receipt),
+          !deferSqlitePostCommitPublication(database.db, () => {
+            try {
+              onCommitted?.(receipt);
+            } finally {
+              sessionChanges.emit(event);
+            }
           })
-        ) {
-          throw new Error(
-            "Agent registration requires its canonical transaction publication scope",
-          );
-        }
+        )
+          throw new Error("Agent registration lost its canonical publication scope");
+      } finally {
+        local?.finish();
       }
-      sessionChanges.emit({ all: true, scope: "stores" }, database.db);
     },
     { env: params.env },
+    registration ? { withCommit: registration.owner.withCommit } : {},
   );
   invalidateOpenClawAgentDatabaseValidation(params.path);
 }
@@ -390,6 +484,8 @@ export function unregisterOpenClawAgentDatabase(params: {
       const storedPath = resolveOpenClawAgentDatabaseStoredPath(database.path, params.path);
       const matchingPaths = [...new Set([storedPath, params.path, path.resolve(params.path)])];
       const db = getNodeSqliteKysely<OpenClawAgentRegistryDatabase>(database.db);
+      stageOpenClawAgentRegistryMutation(database);
+      invalidateRegisteredAgentDatabasesMemo({ path: database.path });
       executeSqliteQuerySync(
         database.db,
         db
@@ -417,6 +513,8 @@ export function unregisterOpenClawAgentDatabases(params: {
   };
   const removedPaths = runOpenClawStateWriteTransaction((database) => {
     const db = getNodeSqliteKysely<OpenClawAgentRegistryDatabase>(database.db);
+    stageOpenClawAgentRegistryMutation(database);
+    invalidateRegisteredAgentDatabasesMemo(options);
     const removed = executeSqliteQuerySync(
       database.db,
       db.deleteFrom("agent_databases").where("agent_id", "=", params.agentId).returning("path"),

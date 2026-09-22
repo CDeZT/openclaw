@@ -21,7 +21,10 @@ import {
   sqliteExtendedResultCode,
   sqlitePrimaryResultCode,
 } from "./sqlite-error-diagnostics.js";
-import { discardSqliteTransactionState } from "./sqlite-post-commit.js";
+import {
+  discardSqliteTransactionState,
+  recordSqliteTransactionCommitted,
+} from "./sqlite-post-commit.js";
 
 const DEFAULT_SLOW_BUSY_WAIT_MS = 1_000;
 const DEFAULT_SLOW_TRANSACTION_HOLD_MS = 1_000;
@@ -187,7 +190,7 @@ export type SqliteTransactionOptions = {
 type SqliteTransactionStep = "begin" | "commit";
 type SqliteTransactionMode = "deferred" | "immediate";
 
-function assertSyncTransactionResult(value: unknown): void {
+export function assertSyncTransactionResult(value: unknown): void {
   if (isPromiseLike(value)) {
     throw new Error(
       "SQLite write transactions must be synchronous; Promise returns are not supported.",
@@ -294,6 +297,7 @@ function execTimedTransactionStep(params: {
   options?: SqliteTransactionOptions;
   sql: string;
   step: SqliteTransactionStep;
+  onNativeSuccess?: () => void;
 }): number {
   const startedAt = Date.now();
   const beginAdmission =
@@ -306,6 +310,7 @@ function execTimedTransactionStep(params: {
     } else {
       params.db.exec(params.sql);
     }
+    params.onNativeSuccess?.();
     const elapsedMs = Date.now() - startedAt;
     logSlowTransactionStep({
       beginAdmission,
@@ -358,12 +363,14 @@ function beginTransaction(
 function commitImmediateTransaction(
   db: DatabaseSync,
   options: SqliteTransactionOptions | undefined,
+  onNativeSuccess: () => void,
 ): void {
   execTimedTransactionStep({
     db,
     options,
     sql: "COMMIT",
     step: "commit",
+    onNativeSuccess,
   });
 }
 
@@ -427,6 +434,16 @@ function runSqliteTransactionSync<T>(
 
   beginTransaction(db, options, mode);
   const transactionStartedAt = Date.now();
+  let nativeCommitted = false;
+  let commitActive = true;
+  const commit = () => {
+    if (!commitActive) throw new Error("SQLite COMMIT capability has expired");
+    if (nativeCommitted) throw new Error("SQLite COMMIT cannot be reused");
+    commitImmediateTransaction(db, options, () => {
+      nativeCommitted = true;
+      recordSqliteTransactionCommitted(db);
+    });
+  };
   try {
     const result = operation();
     assertSyncTransactionResult(result);
@@ -436,17 +453,19 @@ function runSqliteTransactionSync<T>(
       options,
     });
     if (options?.withCommit) {
-      assertSyncTransactionResult(
-        options.withCommit(() => commitImmediateTransaction(db, options)),
-      );
+      assertSyncTransactionResult(options.withCommit(commit));
+      if (!nativeCommitted) throw new Error("SQLite COMMIT guard did not commit");
     } else {
-      commitImmediateTransaction(db, options);
+      commit();
     }
     return result;
   } catch (error) {
+    if (nativeCommitted) throw error;
     abortImmediateTransaction(db, error);
     assertTransactionUsable(db);
     throw error;
+  } finally {
+    commitActive = false;
   }
 }
 

@@ -1,7 +1,15 @@
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
+import { withSqlitePostCommitPublications } from "../../infra/sqlite-post-commit.js";
+import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import type { OpenClawAgentDatabaseReadFacts } from "../../state/openclaw-agent-db-contract.js";
+import {
+  readOpenClawAgentDatabaseIdentity,
+  type OpenClawAgentDatabaseIdentity,
+} from "../../state/openclaw-agent-db-identity.js";
 import { SessionMetadataUnavailableError } from "../../state/openclaw-agent-db-read-error.js";
+import { readOpenClawAgentReadOnlySchemaFacts } from "../../state/openclaw-agent-db-readonly-open.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   openOpenClawAgentDatabase,
@@ -26,7 +34,10 @@ import type { SessionEntryReadScope, SessionEntryReadSource } from "./session-ac
 import {
   assertCanonicalSqliteSessionKeysCurrent,
   readWithCanonicalSessionAdmission,
+  readWithCanonicalSessionReaderContinuation,
+  type CanonicalSessionReaderContinuation,
 } from "./session-canonical-key.js";
+import { SessionExactReadSourceChangedError } from "./session-exact-read-source-error.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 type ResolvedSqliteSessionEntry = {
@@ -72,6 +83,92 @@ export function resolveSessionEntry(
       : { existing: undefined, legacyKeys: [], normalizedKey: resolved.sessionKey };
   }
   return read(openOpenClawAgentDatabase(toDatabaseOptions(resolved)));
+}
+
+export type ExactSessionEntryReadIdentity = {
+  identity: OpenClawAgentDatabaseIdentity;
+  incarnation: string;
+  birthtime: string | undefined;
+};
+
+// Worker/cache retirement may replace a read transport connection without replacing
+// its source. Live source generations are fenced by the retained resource owner.
+export function sameExactSessionEntryReadIdentity(
+  left: ExactSessionEntryReadIdentity | null,
+  right: ExactSessionEntryReadIdentity | null,
+): boolean {
+  return left === null || right === null
+    ? left === right
+    : left.identity === right.identity && left.birthtime === right.birthtime;
+}
+
+/** One connection-bound admission kernel serves native and worker exact readers. */
+export function readExactSessionEntryWithContinuation(
+  database: Pick<OpenClawAgentDatabase, "agentId" | "db" | "path">,
+  sessionKey: string,
+  continuation?: CanonicalSessionReaderContinuation,
+  expectedIdentity?: ExactSessionEntryReadIdentity | null,
+): {
+  entry: SessionEntry | undefined;
+  identity: ExactSessionEntryReadIdentity;
+  facts?: OpenClawAgentDatabaseReadFacts;
+} {
+  const { identity, incarnation, birthtime } = readOpenClawAgentDatabaseIdentity(database);
+  const current = { identity, incarnation, birthtime };
+  if (
+    expectedIdentity !== undefined &&
+    !sameExactSessionEntryReadIdentity(expectedIdentity, current)
+  ) {
+    throw new SessionExactReadSourceChangedError("replaced");
+  }
+  const accepted = readWithCanonicalSessionReaderContinuation(database, continuation, () =>
+    withSqlitePostCommitPublications(database.db, () =>
+      runSqliteDeferredTransactionSync(database.db, () => {
+        const entry = readExactSessionEntryRowValidated(database, sessionKey, "full")?.entry;
+        // Warm canonical admission can run without a transaction. This capability
+        // explicitly binds the row and its checked schema facts to one snapshot.
+        const facts = readOpenClawAgentReadOnlySchemaFacts(database);
+        return { entry, facts };
+      }),
+    ),
+  );
+  return { ...accepted, identity: current };
+}
+
+/** Reads the bound physical owner, preserving absence and canonical admission separately. */
+export function readExactSessionEntryFromSourceReadOnly(params: {
+  readSource: SessionEntryReadSource;
+  sessionKey: string;
+  env: NodeJS.ProcessEnv;
+  continuation?: CanonicalSessionReaderContinuation;
+  expectedIdentity?: ExactSessionEntryReadIdentity | null;
+}):
+  | {
+      entry: SessionEntry | undefined;
+      identity: ExactSessionEntryReadIdentity;
+      facts?: OpenClawAgentDatabaseReadFacts;
+    }
+  | undefined {
+  const result = withOpenClawAgentDatabaseReadOnly(
+    (database) =>
+      readExactSessionEntryWithContinuation(
+        database,
+        params.sessionKey,
+        params.continuation,
+        params.expectedIdentity,
+      ),
+    { ...params.readSource, env: params.env },
+  );
+  if (result.found) {
+    return result.value;
+  }
+  if (result.reason === "schema-missing") {
+    throw new SessionMetadataUnavailableError("schema-missing");
+  }
+  if (params.expectedIdentity !== undefined && params.expectedIdentity !== null) {
+    throw new SessionExactReadSourceChangedError("missing");
+  }
+  return undefined;
 }
 
 type PhysicalSessionEntryReadScope = {

@@ -4,13 +4,19 @@ export type SqliteWorkerOperationSettlement =
   | { kind: "not-entered"; error: unknown }
   | { kind: "unknown"; error: unknown };
 
+export type SqliteWorkerNativeCommit = {
+  facts: unknown;
+  /** Bounded independent facts from the same private operation; never admission. */
+  effects?: readonly unknown[];
+};
+
 /** Private operation receipts describe completed work; they never grant write authority. */
 export type SqliteWorkerNativeSettlement =
-  | { kind: "completed"; committed?: { facts: unknown } }
-  | { kind: "unknown"; committed?: { facts: unknown } };
+  | { kind: "completed"; committed?: SqliteWorkerNativeCommit }
+  | { kind: "unknown"; committed?: SqliteWorkerNativeCommit };
 
 export type SqliteWorkerNativeSettlementOwner = {
-  readonly committed: { facts: unknown } | undefined;
+  readonly committed: SqliteWorkerNativeCommit | undefined;
   readonly settlement: SqliteWorkerNativeSettlement | undefined;
   waitForSettlement(
     deadlineMs: number,

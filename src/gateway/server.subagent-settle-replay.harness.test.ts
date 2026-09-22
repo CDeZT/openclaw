@@ -1,8 +1,16 @@
 // Real Gateway admission/replay and SQLite settlement with controlled agent-command execution.
 import path from "node:path";
+import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
+import { isGatewayEventFrame } from "@openclaw/gateway-protocol/frame-guards";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WebSocket, type RawData } from "ws";
+import { createGatewaySnapshotFence } from "../../test/helpers/gateway-snapshot-fence.js";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { buildRestartRecoveryTerminalDeliveryEvidence } from "../agents/agent-command-restart-recovery.js";
+import {
+  buildCurrentRunRestartRecoveryClaim,
+  buildRestartRecoveryTerminalDeliveryEvidence,
+} from "../agents/agent-command-restart-recovery.js";
 import { buildAnnounceIdempotencyKey } from "../agents/announce-idempotency.js";
 import type { AgentCommandOpts } from "../agents/command/types.js";
 import type { AgentDeliveryEvidence } from "../agents/embedded-agent-runner/delivery-evidence.js";
@@ -23,10 +31,12 @@ import {
   appendTranscriptMessage,
   loadSessionEntryReadOnly,
   loadTranscriptEventsSync,
+  persistSessionTranscriptTurn,
   updateSessionEntry,
 } from "../config/sessions/session-accessor.js";
 import { resolvePhysicalSessionStorePath } from "../config/sessions/session-store-path.js";
 import { bindGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
+import { extractAssistantPhaseText } from "../shared/chat-message-content.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugin-in-process-dispatch.js";
@@ -35,6 +45,7 @@ import {
   agentCommandMock,
   installGatewayTestHooks,
   prepareGatewayReplyRuntimeForTest,
+  rpcReq,
   testState,
   writeSessionStore,
 } from "./test-helpers.js";
@@ -162,6 +173,128 @@ describe("public yielded settle replay with real Gateway admission", () => {
     };
   }
 
+  it("wakes the history fence from the actual last committed transcript publication", async ({
+    signal,
+  }) => {
+    const { ws } = await harness.openClient();
+    const changes = createGatewaySnapshotFence();
+    const messageId = `quiet-last-message-${sequence}`;
+    const finalText = `Quiet last committed assistant result ${sequence}`;
+    const committedIds: string[] = [];
+    const receivedIds: string[] = [];
+    const initialSnapshot = createDeferred();
+    const scope = {
+      agentId: "main",
+      sessionKey: requesterSessionKey,
+      sessionId: requesterSessionId,
+      storePath: testState.sessionStorePath!,
+    };
+    let reads = 0;
+    const onMessage = (data: RawData) => {
+      try {
+        const frame: unknown = JSON.parse(rawDataToString(data));
+        if (!isGatewayEventFrame(frame) || frame.event !== "session.message") {
+          return;
+        }
+        const payload = asOptionalRecord(frame.payload);
+        if (payload?.sessionKey !== requesterSessionKey || payload.messageId !== messageId) {
+          return;
+        }
+        // Only this real producer's received frame may invalidate the fence.
+        // No later lifecycle, task, tick or unrelated message can rescue it.
+        expect(committedIds).toEqual([messageId]);
+        receivedIds.push(payload.messageId);
+        changes.onEvent(frame);
+      } catch (error) {
+        changes.close(error);
+      }
+    };
+    const onClose = () => changes.close(new Error("quiet-last observer closed"));
+    ws.on("message", onMessage);
+    ws.once("close", onClose);
+    let observed: Promise<{ messages: unknown[] } | { error: unknown }> | undefined;
+    try {
+      signal.throwIfAborted();
+      const subscription = await rpcReq(ws, "sessions.subscribe", { agentId: "main" });
+      expect(subscription.ok).toBe(true);
+      const waiting = changes.waitForSnapshot({
+        signal,
+        read: async () => {
+          signal.throwIfAborted();
+          const response = await rpcReq<{ messages: unknown[] }>(ws, "chat.history", {
+            sessionKey: requesterSessionKey,
+          });
+          signal.throwIfAborted();
+          if (!response.ok || !response.payload) {
+            throw new Error("quiet-last authoritative history read failed");
+          }
+          reads += 1;
+          return response.payload.messages;
+        },
+        ready: (messages) => {
+          initialSnapshot.resolve();
+          return messages.some((message) => extractAssistantPhaseText(message) === finalText);
+        },
+      });
+      observed = waiting.then(
+        (messages) => ({ messages }),
+        (error: unknown) => ({ error }),
+      );
+      await Promise.race([
+        initialSnapshot.promise,
+        observed.then((result) => {
+          if ("error" in result) {
+            throw result.error;
+          }
+          throw new Error("history fence settled before the last write was admitted");
+        }),
+      ]);
+      expect(reads).toBe(1);
+      expect(receivedIds).toEqual([]);
+      signal.throwIfAborted();
+      // This native owner commits the exact row and publishes its own update.
+      // Do not use raw appendTranscriptMessage plus a fabricated event.
+      const committed = await persistSessionTranscriptTurn(scope, {
+        expectedSessionId: requesterSessionId,
+        updateMode: "inline",
+        messages: [
+          {
+            eventId: messageId,
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: finalText }],
+              stopReason: "stop",
+            },
+          },
+        ],
+        onMessageCommitted: (message) => {
+          committedIds.push(message.messageId);
+        },
+      });
+      expect(committed).toMatchObject({ appendedCount: 1 });
+      expect(committedIds).toEqual([messageId]);
+      expect(JSON.stringify(loadTranscriptEventsSync(scope))).toContain(finalText);
+      const result = await observed;
+      if ("error" in result) {
+        throw result.error;
+      }
+      expect(result.messages.map(extractAssistantPhaseText)).toContain(finalText);
+      expect(receivedIds).toEqual([messageId]);
+      expect(reads).toBe(2);
+      expect(agentCommandMock).not.toHaveBeenCalled();
+    } finally {
+      changes.close(new Error("quiet-last fixture cleanup"));
+      await observed;
+      ws.off("message", onMessage);
+      ws.off("close", onClose);
+      if (ws.readyState !== WebSocket.CLOSED) {
+        const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()));
+        ws.terminate();
+        await closed;
+      }
+    }
+  });
+
   it.each(["success", "failure"] as const)(
     "retains real in_flight replay custody and reconciles terminal %s",
     async (outcome) => {
@@ -281,6 +414,157 @@ describe("public yielded settle replay with real Gateway admission", () => {
     });
     expect(loadSubagentRegistryFromSqlite().get(child.runId)?.requesterSettleWake).toBeUndefined();
   });
+
+  it.for([
+    "visible final",
+    "visible final after rejection",
+    "active claim",
+    "failed recovery",
+    "unrelated source",
+    "revoked batch",
+  ] as const)(
+    "reconciles late requester recovery through the persisted wake (%s)",
+    async (recovery, { signal }) => {
+      const returned = createDeferred<string>();
+      const release = createDeferred();
+      const releaseOnAbort = () => release.resolve();
+      signal.addEventListener("abort", releaseOnAbort, { once: true });
+      const scope = {
+        agentId: "main",
+        sessionId: requesterSessionId,
+        sessionKey: requesterSessionKey,
+        storePath: testState.sessionStorePath!,
+      };
+      const originalExecution = structuredClone(child.execution);
+      const runId = buildAnnounceIdempotencyKey(
+        `requester-settle:main:${requesterSessionKey}:${child.runId}:yield-1`,
+      );
+      agentCommandMock.mockImplementationOnce(async (input) => {
+        const command = input as AgentCommandOpts;
+        await command.userTurnTranscriptRecorder!.persistApproved();
+        command.onExecutionStarted?.();
+        return { payloads: [], meta: { durationMs: 1 } };
+      });
+      const realDispatch = announceDeliveryRuntime.dispatchSubagentAnnounceAgent;
+      const heldDispatch = vi
+        .spyOn(announceDeliveryRuntime, "dispatchSubagentAnnounceAgent")
+        .mockImplementationOnce(async (params, options) => {
+          expect(params.idempotencyKey).toBe(runId);
+          expect(options?.settleWakeReplay?.sourceSessionKeys).toEqual([child.childSessionKey]);
+          // Keep admission, keyed transcript persistence and execution real. Only
+          // delay the old observer's response while another owner publishes its receipt.
+          const response = await realDispatch(params, options);
+          expect(response).toMatchObject({ status: "ok" });
+          options?.settleWakeReplay?.assertCurrent();
+          returned.resolve(runId);
+          await release.promise;
+          if (recovery === "visible final after rejection") {
+            throw new Error("Session transcript keyed user is outside the current turn: original");
+          }
+          return response;
+        });
+      const original = wake();
+      try {
+        await Promise.race([
+          returned.promise,
+          original.result.then(() => {
+            throw new Error("wake settled before the held original response boundary");
+          }),
+        ]);
+        expect(agentCommandMock).toHaveBeenCalledOnce();
+        expect(original.completeBatch).not.toHaveBeenCalled();
+        expect(
+          loadSubagentRegistryFromSqlite().get(child.runId)?.requesterSettleWake,
+        ).toMatchObject({
+          status: "dispatching",
+          attemptCount: 1,
+          rearmGeneration: 1,
+        });
+        await updateSessionEntry(scope, (entry) => {
+          expect(entry.sessionId).toBe(requesterSessionId);
+          const recoveryRunId = `${runId}:recovery-successor`;
+          const claimed = {
+            ...entry,
+            ...buildCurrentRunRestartRecoveryClaim({
+              entry,
+              runId: recoveryRunId,
+              sourceRunId: recovery === "unrelated source" ? `${runId}:another` : runId,
+              sourceIngress: "internal",
+            }),
+          };
+          if (recovery === "active claim") {
+            return claimed;
+          }
+          // This test controls recovery output, not recovery execution. Reuse the
+          // real source-claim/projection/cleanup producer and SQLite publication.
+          const evidence: AgentDeliveryEvidence =
+            recovery === "failed recovery"
+              ? { payloads: [{ text: "Recovery failed", isError: true }] }
+              : finalResult();
+          return {
+            ...buildRestartRecoveryClaimCleanupPatch({
+              entry: claimed,
+              recordTerminalSource: true,
+              terminalRunId: recoveryRunId,
+              terminalDeliveryEvidence: buildRestartRecoveryTerminalDeliveryEvidence(evidence),
+            }),
+            status: "done",
+            endedAt: Date.now(),
+          };
+        });
+        if (recovery === "revoked batch") {
+          child.requesterSettleWake = {
+            ...child.requesterSettleWake!,
+            rearmGeneration: 2,
+          };
+          persistChild();
+        }
+        release.resolve();
+        const delivered = recovery.startsWith("visible final");
+        expect(await original.result).toBe(delivered);
+        expect(heldDispatch).toHaveBeenCalledOnce();
+        expect(agentCommandMock).toHaveBeenCalledOnce();
+        const persisted = loadSubagentRegistryFromSqlite().get(child.runId);
+        expect(persisted?.execution).toEqual(originalExecution);
+        expect(JSON.stringify(loadTranscriptEventsSync(scope))).not.toContain(`${runId}:retry-1`);
+        if (delivered) {
+          expect(original.completeBatch).toHaveBeenCalledOnce();
+          expect(original.completeBatch.mock.calls[0]?.[2]).toMatchObject({
+            delivered: true,
+            requesterVisibleFinalDelivered: true,
+          });
+          expect(persisted?.requesterSettleWake).toBeUndefined();
+        } else {
+          expect(original.completeBatch).not.toHaveBeenCalled();
+          if (recovery === "active claim") {
+            expect(persisted?.requesterSettleWake).toMatchObject({
+              status: "dispatching",
+              attemptCount: 1,
+              rearmGeneration: 1,
+            });
+            expect(persisted?.requesterSettleWake?.lastError).toBeUndefined();
+            expect(loadSessionEntryReadOnly(scope)).toMatchObject({
+              restartRecoveryDeliverySourceRunId: runId,
+              restartRecoveryDeliveryRunId: `${runId}:recovery-successor`,
+            });
+          } else if (recovery === "revoked batch") {
+            expect(persisted?.requesterSettleWake).toMatchObject({ rearmGeneration: 2 });
+          } else {
+            expect(persisted?.requesterSettleWake).toMatchObject({
+              status: "pending",
+              attemptCount: 1,
+              lastError: "completion agent did not produce a visible reply",
+            });
+          }
+        }
+      } finally {
+        release.resolve();
+        await original.result.catch(() => undefined);
+        heldDispatch.mockRestore();
+        signal.removeEventListener("abort", releaseOnAbort);
+      }
+    },
+  );
 
   it.each([
     "same child",

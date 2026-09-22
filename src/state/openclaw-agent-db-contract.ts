@@ -55,6 +55,31 @@ export type OpenClawAgentDatabaseRegistryReadResult =
   | { status: "available"; entries: OpenClawRegisteredAgentDatabase[] }
   | { status: "unavailable" };
 
+/** Actual read-only admission facts; never writable integrity or schema authority. */
+export type OpenClawAgentDatabaseReadFacts = Readonly<{
+  agentId: string;
+  path: string;
+  physicalIdentity: string;
+  birthtime: string;
+  userVersion: number;
+  schemaVersion: number | null;
+  role: string | null;
+  schemaAgentId: string | null;
+}>;
+
+export type OpenClawAgentDatabaseSelectorRow = Readonly<{
+  agentId: string;
+  path: string;
+  schemaVersion: number;
+}>;
+
+/** Operation-bound, provisional facts prepared by the canonical registry transaction. */
+export type OpenClawAgentDatabaseRegistrationFacts = Readonly<{
+  before: OpenClawAgentDatabaseSelectorRow | null;
+  after: OpenClawAgentDatabaseSelectorRow;
+  source: OpenClawAgentDatabaseReadFacts | null;
+}>;
+
 export type OpenClawAgentDatabaseRegistrationCommit = Readonly<{
   agentId: string;
   agentPath: string;

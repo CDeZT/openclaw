@@ -33,6 +33,8 @@ type RepairCanonicalSqliteIndexesOptions = {
   /** Keep index repair atomic with the caller's whole-schema validation. */
   validateAfterRepair?: () => void;
   verifyPhysicalIntegrity?: boolean;
+  /** Owner notification before the first attempted repair DDL, including failed probes. */
+  beforeMutation?: () => void;
 };
 
 /**
@@ -154,6 +156,7 @@ export function repairCanonicalSqliteIndexes(
       // Build the canonical constraint first. If existing rows conflict, the
       // wrong same-name index remains in place and the whole repair rolls back.
       try {
+        options.beforeMutation?.();
         db.exec(createIndexSql(index, probeName, true));
       } catch (error) {
         if (options.allowMissingColumns && isMissingColumnError(error)) {

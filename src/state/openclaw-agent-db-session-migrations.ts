@@ -9,7 +9,10 @@ import { normalizeAccountId } from "../routing/account-id.js";
 import { buildConversationRef, normalizeConversationPeerId } from "../routing/conversation-ref.js";
 import { deriveSessionChatTypeFromKey } from "../sessions/session-chat-type-shared.js";
 import { migrateLegacySessionCreator } from "./creator-namespace-migration.js";
-import { ensurePendingInputConsumptionColumn } from "./openclaw-agent-pending-inputs-schema.js";
+import {
+  ensurePendingInputConsumptionColumn,
+  hasPendingInputConsumptionColumnMigration,
+} from "./openclaw-agent-pending-inputs-schema.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 
 type MigratedConversationEntry = Record<string, unknown>;
@@ -359,22 +362,35 @@ export function readSqliteTableColumns(db: DatabaseSync, tableName: string): Set
 }
 
 /** Installs same-version session projections on first updated-binary open. */
-export function ensureSessionAdditiveColumns(db: DatabaseSync): void {
+export function ensureSessionAdditiveColumns(db: DatabaseSync, beforeMutation?: () => void): void {
+  if (hasPendingInputConsumptionColumnMigration(db)) {
+    beforeMutation?.();
+  }
   ensurePendingInputConsumptionColumn(db);
   if (hasPendingSessionTranscriptContextEligibilityColumn(db)) {
     // NULL records an older writer's unclassified projection; the transcript
     // reconcile owner fills it without parsing payloads during schema open.
+    beforeMutation?.();
     db.exec("ALTER TABLE session_transcript_active_events ADD COLUMN context_eligible INTEGER;");
   }
   const columns = readSqliteTableColumns(db, "session_nodes");
   if (columns && !columns.has("project_id")) {
+    beforeMutation?.();
     db.exec("ALTER TABLE session_nodes ADD COLUMN project_id TEXT;");
   }
   const conversationColumns = readSqliteTableColumns(db, "session_conversations");
   if (conversationColumns && !conversationColumns.has("route_context_json")) {
+    beforeMutation?.();
     db.exec("ALTER TABLE session_conversations ADD COLUMN route_context_json TEXT");
   }
   if (conversationColumns) {
+    if (
+      !db
+        .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'trigger' AND name = ?")
+        .get("session_conversations_route_context_invalidate_after_update")
+    ) {
+      beforeMutation?.();
+    }
     // Same-version older writers leave the envelope byte-identical. Clear it on their update so
     // stale owner facts cannot survive a downgrade/re-upgrade cycle with an unchanged timestamp.
     db.exec(`
@@ -419,16 +435,31 @@ export function migrateConversationDeliveryTargetColumn(db: DatabaseSync): void 
 }
 
 /** Adds the validity projection and settles only rows left pending by older writers. */
-export function ensureSessionEntryValidityProjection(db: DatabaseSync): void {
+export function ensureSessionEntryValidityProjection(
+  db: DatabaseSync,
+  beforeMutation?: () => void,
+): void {
   const columns = readSqliteTableColumns(db, "session_nodes");
   if (!columns) {
     return;
   }
   const addedColumn = !columns.has("entry_valid");
   if (addedColumn) {
+    beforeMutation?.();
     db.exec(
       "ALTER TABLE session_nodes ADD COLUMN entry_valid INTEGER NOT NULL DEFAULT 0 CHECK (entry_valid IN (-1, 0, 1))",
     );
+  }
+  const validityTriggers = [
+    "session_nodes_entry_valid_after_insert",
+    "session_nodes_entry_valid_after_entry_update",
+    "session_nodes_entry_valid_after_identity_update",
+  ];
+  const existingTrigger = db.prepare(
+    "SELECT 1 FROM sqlite_schema WHERE type = 'trigger' AND name = ?",
+  );
+  if (validityTriggers.some((name) => !existingTrigger.get(name))) {
+    beforeMutation?.();
   }
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS session_nodes_entry_valid_after_insert
@@ -463,6 +494,9 @@ export function ensureSessionEntryValidityProjection(db: DatabaseSync): void {
     if (rows.length === 0) {
       break;
     }
+    // The schema can be structurally current while an older writer left rows
+    // pending. Fence and obtain mutation authority before the actual UPDATE.
+    beforeMutation?.();
     for (const row of rows) {
       update.run(parseSqliteSessionEntryRecord(row) ? 1 : -1, row.session_key);
     }

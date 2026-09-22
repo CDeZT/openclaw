@@ -33,10 +33,6 @@ import {
   createChannelTestPluginBase,
   createTestRegistry,
 } from "../../../test-utils/channel-plugins.js";
-import type {
-  EmbeddedAgentQueueMessageOptions,
-  EmbeddedAgentQueueMessageOutcome,
-} from "../../embedded-agent-runner/runs.js";
 import type { AgentInternalEvent } from "../../internal-events.js";
 import {
   INTERNAL_RUNTIME_CONTEXT_BEGIN,
@@ -52,12 +48,21 @@ import {
   taskCompletionEvents,
 } from "../../subagent-test-fixtures.test-helpers.js";
 import {
+  createQueueOutcomeMock,
+  createQueueOutcomeSequenceMock,
+  type QueueEmbeddedAgentMessageWithOutcome,
+} from "./subagent-announce-delivery-outcomes.test-support.js";
+import {
   testing,
   deliverSubagentAnnouncement,
   loadRequesterSessionEntry,
 } from "./subagent-announce-delivery.test-support.js";
 import { runDescendantWake } from "./subagent-announce-descendant-wake.js";
 import { privateCompletionCases } from "./subagent-announce-private-completion.test-fixtures.js";
+import {
+  createConfiguredSessionEntryReaderForTest,
+  createRequesterSessionReaderForTest,
+} from "./subagent-announce-retained-reader.test-support.js";
 
 const sessionDeliveryQueueMocks = vi.hoisted(() => ({
   enqueueClaimedSessionDelivery: vi.fn(
@@ -123,11 +128,6 @@ vi.mock("../../../infra/session-delivery-queue-runtime.js", async (importOrigina
   scheduleSessionDelivery: sessionDeliveryQueueMocks.scheduleSessionDelivery,
 }));
 
-type EmbeddedAgentQueueFailureReason = Extract<
-  EmbeddedAgentQueueMessageOutcome,
-  { queued: false }
->["reason"];
-
 afterEach(() => {
   vi.useRealTimers();
   setActivePluginRegistry(createTestRegistry());
@@ -187,6 +187,9 @@ describe("queued completion handoff", () => {
         );
       };
       testing.setDepsForTest({
+        withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(
+          () => undefined,
+        ),
         dispatchGatewayMethodInProcess,
         getRuntimeConfig: () => ({}),
         getRequesterSessionActivity: () => ({ sessionId: "busy-parent", isActive: true }),
@@ -334,61 +337,6 @@ function readyCronContinuationEntry(sessionId: string): SessionEntry {
   };
 }
 
-type QueueEmbeddedAgentMessageWithOutcome = (
-  sessionId: string,
-  message: string,
-  options?: EmbeddedAgentQueueMessageOptions,
-) => EmbeddedAgentQueueMessageOutcome | Promise<EmbeddedAgentQueueMessageOutcome>;
-
-function createQueueOutcomeMock(
-  queued: boolean,
-): ReturnType<typeof vi.fn<QueueEmbeddedAgentMessageWithOutcome>> {
-  return vi.fn((sessionId: string) =>
-    queued
-      ? {
-          queued: true,
-          sessionId,
-          target: "embedded_run",
-          gatewayHealth: "live",
-          enqueuedAtMs: 4_100,
-          deliveredAtMs: 4_200,
-        }
-      : {
-          queued: false,
-          sessionId,
-          reason: "not_streaming",
-          gatewayHealth: "live",
-        },
-  );
-}
-
-function createQueueOutcomeSequenceMock(
-  queuedOutcomes: (boolean | EmbeddedAgentQueueFailureReason)[],
-  onCall?: () => void,
-): ReturnType<typeof vi.fn<QueueEmbeddedAgentMessageWithOutcome>> {
-  // Sequence mocks model retry paths where the embedded run can become
-  // unavailable between announce attempts.
-  let index = 0;
-  return vi.fn((sessionId: string) => {
-    onCall?.();
-    const outcome = queuedOutcomes[Math.min(index, queuedOutcomes.length - 1)] ?? false;
-    index += 1;
-    return outcome === true
-      ? {
-          queued: true,
-          sessionId,
-          target: "embedded_run",
-          gatewayHealth: "live",
-        }
-      : {
-          queued: false,
-          sessionId,
-          reason: typeof outcome === "string" ? outcome : "not_streaming",
-          gatewayHealth: "live",
-        };
-  });
-}
-
 async function createRequesterTranscriptFixture(sessionId: string) {
   const dir = tempDirs.make("openclaw-subagent-announce-transcript-");
   const sessionKey = "agent:main:slack:channel:C123:thread:171.222";
@@ -493,6 +441,18 @@ async function deliverSlackThreadAnnouncement(params: {
     typeof requesterTranscriptFixture === "function"
       ? requesterTranscriptFixture
       : () => requesterTranscriptFixture;
+  const readRequesterEntry: Parameters<typeof createRequesterSessionReaderForTest>[0] = (
+    sessionKey,
+  ) => {
+    const fixture = resolveRequesterTranscriptFixture();
+    return {
+      cfg: {} as never,
+      entry: fixture?.entry,
+      canonicalKey: sessionKey,
+      agentId: fixture?.agentId,
+      storePath: fixture?.storePath,
+    };
+  };
   testing.setDepsForTest({
     callGateway: params.callGateway,
     getRequesterSessionActivity:
@@ -507,18 +467,14 @@ async function deliverSlackThreadAnnouncement(params: {
     sendMessage: params.sendMessage ?? runtimeSendMessage,
     ...(params.requesterTranscriptFixture
       ? {
-          loadRequesterSessionEntry: (sessionKey: string) => {
-            const fixture = resolveRequesterTranscriptFixture();
-            return {
-              cfg: {} as never,
-              entry: fixture?.entry,
-              canonicalKey: sessionKey,
-              agentId: fixture?.agentId,
-              storePath: fixture?.storePath,
-            };
-          },
+          loadRequesterSessionEntry: readRequesterEntry,
+          withRequesterSessionReader: createRequesterSessionReaderForTest(readRequesterEntry),
         }
-      : {}),
+      : {
+          withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(
+            () => undefined,
+          ),
+        }),
     ...(params.queueEmbeddedAgentMessageWithOutcome
       ? { queueEmbeddedAgentMessageWithOutcome: params.queueEmbeddedAgentMessageWithOutcome }
       : {}),
@@ -574,6 +530,7 @@ async function deliverDiscordDirectMessageCompletion(params: {
   };
   const requesterSessionKey = params.requesterSessionKey ?? "agent:main:discord:dm:U123";
   testing.setDepsForTest({
+    withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(() => undefined),
     callGateway: params.callGateway,
     getRequesterSessionActivity: () => ({
       sessionId:
@@ -644,6 +601,7 @@ async function deliverTelegramDirectMessageCompletion(params: {
   };
   const requesterSessionKey = params.requesterSessionKey ?? "agent:main:telegram:123456789";
   testing.setDepsForTest({
+    withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(() => undefined),
     callGateway: params.callGateway,
     getRequesterSessionActivity: () => ({
       sessionId:
@@ -712,6 +670,13 @@ async function deliverSlackChannelAnnouncement(params: {
     to: "channel:C123",
     accountId: "acct-1",
   } as const;
+  const readRequesterEntry: Parameters<typeof createRequesterSessionReaderForTest>[0] = (
+    sessionKey,
+  ) => ({
+    cfg: (params.runtimeConfig ?? {}) as never,
+    entry: params.requesterSessionEntry,
+    canonicalKey: sessionKey,
+  });
   testing.setDepsForTest({
     callGateway: params.callGateway,
     getRequesterSessionActivity: () => ({
@@ -721,13 +686,14 @@ async function deliverSlackChannelAnnouncement(params: {
     getRuntimeConfig: () => (params.runtimeConfig ?? {}) as never,
     ...(params.requesterSessionEntry
       ? {
-          loadRequesterSessionEntry: (sessionKey: string) => ({
-            cfg: (params.runtimeConfig ?? {}) as never,
-            entry: params.requesterSessionEntry,
-            canonicalKey: sessionKey,
-          }),
+          loadRequesterSessionEntry: readRequesterEntry,
+          withRequesterSessionReader: createRequesterSessionReaderForTest(readRequesterEntry),
         }
-      : {}),
+      : {
+          withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(
+            () => undefined,
+          ),
+        }),
     sendMessage: params.sendMessage ?? runtimeSendMessage,
     ...(params.queueEmbeddedAgentMessageWithOutcome
       ? { queueEmbeddedAgentMessageWithOutcome: params.queueEmbeddedAgentMessageWithOutcome }
@@ -795,6 +761,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
     const callGateway = createGatewayMock();
     let activityChecks = 0;
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(() => undefined),
       callGateway,
       getRequesterSessionActivity: () => ({
         sessionId: "paperclip-session",
@@ -949,6 +916,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
     const loadSessionEntry = vi.fn(() => ({ sessionId: "ops-session", updatedAt: 1 }));
     const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(loadSessionEntry),
       getRuntimeConfig: () => cfg,
       getRequesterSessionActivity,
       loadSessionEntry,
@@ -990,6 +958,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
     const loadSessionEntry = vi.fn(() => ({ sessionId: "ops-session", updatedAt: 1 }));
     const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(loadSessionEntry),
       getRuntimeConfig: () => cfg,
       getRequesterSessionActivity,
       loadSessionEntry,
@@ -1034,6 +1003,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
     }));
     const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(loadSessionEntry),
       getRuntimeConfig: () => cfg,
       getRequesterSessionActivity,
       loadSessionEntry,
@@ -1078,6 +1048,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
     const loadSessionEntry = vi.fn(() => ({ sessionId: "ops-session", updatedAt: 1 }));
     const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(loadSessionEntry),
       getRuntimeConfig: () => cfg,
       getRequesterSessionActivity,
       loadSessionEntry,
@@ -1120,6 +1091,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
     const loadSessionEntry = vi.fn(() => ({ sessionId: "ops-session", updatedAt: 1 }));
     const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(loadSessionEntry),
       getRuntimeConfig: () => cfg,
       getRequesterSessionActivity,
       loadSessionEntry,
@@ -1156,6 +1128,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
       }));
     const callGateway = createGatewayMock();
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(() => undefined),
       callGateway,
       getRequesterSessionActivity: () => ({
         sessionId: "paperclip-session",
@@ -1257,6 +1230,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
     ]);
     const callGateway = createGatewayMock();
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(() => undefined),
       callGateway,
       getRequesterSessionActivity: () => ({
         sessionId: "paperclip-session",
@@ -1369,6 +1343,9 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
         : createGatewayMock();
       let activityChecks = 0;
       testing.setDepsForTest({
+        withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(
+          () => undefined,
+        ),
         callGateway,
         getRequesterSessionActivity: () => ({
           sessionId: "paperclip-session",
@@ -2286,6 +2263,9 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         },
       });
       testing.setDepsForTest({
+        withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(
+          () => undefined,
+        ),
         callGateway,
         dispatchGatewayMethodInProcess,
         getRequesterSessionActivity: () => ({
@@ -2468,6 +2448,9 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         result: agentResult,
       });
       testing.setDepsForTest({
+        withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(
+          () => undefined,
+        ),
         dispatchGatewayMethodInProcess,
         getRequesterSessionActivity: () => ({
           sessionId: "requester-session-local",
@@ -2599,6 +2582,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       },
     });
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(() => undefined),
       dispatchGatewayMethodInProcess,
       getRequesterSessionActivity: () => ({
         sessionId: "requester-session-local",
@@ -2635,6 +2619,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       },
     });
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(() => undefined),
       dispatchGatewayMethodInProcess,
       getRequesterSessionActivity: () => ({
         sessionId: "requester-session-local",
@@ -2707,6 +2692,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       result,
     });
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(() => undefined),
       dispatchGatewayMethodInProcess,
       getRequesterSessionActivity: () => ({
         sessionId: "requester-session-local",
@@ -5007,6 +4993,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       result: { payloads: [{ text: "Generated completion" }] },
     });
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(() => undefined),
       callGateway,
       getRuntimeConfig: () => ({}) as never,
       getRequesterSessionActivity: () => ({ isActive: false }),
@@ -5540,6 +5527,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     const sendMessage = createSendMessageMock();
     const origin = route.origin;
     testing.setDepsForTest({
+      withConfiguredSessionEntryReader: createConfiguredSessionEntryReaderForTest(() => undefined),
       callGateway,
       getRequesterSessionActivity: () => ({
         sessionId: "requester-session-dm",

@@ -71,11 +71,19 @@ export type PendingAgentDatabaseOpen = {
   controller: AbortController;
   promise: Promise<OpenClawAgentDatabase>;
   assertHeld?: () => void;
+  /** The initiating admission, refreshed by its existing driver after each yield. */
+  assertWrite?: () => void;
   operations: number;
   releaseBorrow?: () => void;
   validation?: OpenClawAgentDatabaseValidation;
 };
-type RetainedAgentDatabaseClose = { agentId: string; path: string; close: () => void };
+type RetainedAgentDatabaseClose = {
+  agentId: string;
+  path: string;
+  database?: DatabaseSync;
+  close(): void;
+  settle(): void;
+};
 const cache = resolveGlobalSingleton<AgentDatabaseLifecycle>(
   Symbol.for("openclaw.agentDatabaseLifecycle"),
   () => ({
@@ -137,12 +145,20 @@ export function retainFailedAgentDatabaseClose(
   agentId: string,
   pathname: string,
   close: () => void,
+  options: { database?: DatabaseSync; onSettled?: () => void } = {},
 ): void {
   const retained: RetainedAgentDatabaseClose = {
     agentId,
     path: pathname,
+    database: options.database,
     close: () => {
+      if (!cache.retainedCloses.has(retained)) return;
       close();
+      retained.settle();
+    },
+    settle: () => {
+      if (!cache.retainedCloses.has(retained)) return;
+      options.onSettled?.();
       cache.retainedCloses.delete(retained);
     },
   };
@@ -272,6 +288,12 @@ export function closeCachedOpenClawAgentDatabase(
   releaseAgentDeletionDatabaseCleanup(database);
   clearTimeout(cache.idleTimers.get(database.db));
   cache.idleTimers.delete(database.db);
+  // A failed open may have retained a selector hard interval with this exact
+  // native disposal owner. Release it only after handle AND lease cleanup,
+  // including when the normal cached-close path wins the cleanup race.
+  for (const retained of cache.retainedCloses) {
+    if (retained.database === database.db) retained.settle();
+  }
 }
 
 /** Close one cached agent database identified by its exact resolved pathname. */
