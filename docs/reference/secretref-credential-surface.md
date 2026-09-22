@@ -129,6 +129,7 @@ Source generation fails if a present channel secret-contract artifact cannot loa
 #### `plugins`
 
 - `plugins.entries.acpx.config.mcpServers.*.env.*`
+- `plugins.entries.anysearch.config.webSearch.apiKey`
 - `plugins.entries.brave.config.webSearch.apiKey`
 - `plugins.entries.codex.config.appServer.authToken`
 - `plugins.entries.codex.config.appServer.headers.*`

@@ -304,7 +304,9 @@ describe("anysearch web search provider", () => {
     );
     const tool = requireAnysearchTool({ apiKey: "secret-sample" }, { cacheTtlMinutes: 0 });
 
-    const error: unknown = await tool.execute({ query: "redaction probe" }).catch((cause) => cause);
+    const error: unknown = await tool
+      .execute({ query: "redaction probe" })
+      .catch((cause: unknown) => cause);
 
     expect(error).toBeInstanceOf(Error);
     const message = (error as Error).message;
