@@ -1,15 +1,10 @@
 import {
-  assertAdmittedRunOperatorAuthority,
   bindOperatorModelExecution,
   type AdmittedRunOperatorAuthority,
 } from "../../agents/admitted-run-context.js";
 import type { ModelRef } from "../../agents/model-ref-shared.js";
-import { captureGatewayToolCallerAssertion } from "../../agents/tools/gateway-caller-context.js";
-import { resolveGatewayOperatorRoleActor } from "../../gateway/operator-role-policy.js";
-import { captureGatewayOperatorRunAuthority } from "../../gateway/operator-run-authority.js";
-import { captureOperatorToolGatewayAuthority } from "../../gateway/server-plugin-in-process-dispatch.js";
+import { captureAmbientGatewayOperatorAuthority } from "../../gateway/operator-invocation-authority.js";
 import { runWithAsyncWorkResources } from "../../shared/async-work-resources.js";
-import { getPluginRuntimeGatewayRequestScope } from "./gateway-request-scope.js";
 import { createLlmCompleteError } from "./runtime-llm-error.js";
 import type { LlmCompleteCaller, LlmCompleteParams, LlmCompleteResult } from "./types-core.js";
 
@@ -41,44 +36,14 @@ export function bindLlmOperatorAuthority(
           bindModelExecution: () => undefined,
         });
       }
-      const scope = getPluginRuntimeGatewayRequestScope();
-      const invocation = captureOperatorToolGatewayAuthority();
-      const inheritedOperator = invocation?.authority;
-      const context = scope?.context ?? scope?.resolveGatewayContext?.();
-      const assertInvocationCurrent =
-        inheritedOperator || !scope?.client || !context
-          ? invocation?.assertCurrent
-          : captureGatewayToolCallerAssertion();
-      if (inheritedOperator) {
-        assertAdmittedRunOperatorAuthority(inheritedOperator);
-        inheritedOperator.assertCurrent();
-      } else if (
-        scope?.client &&
-        !context &&
-        resolveGatewayOperatorRoleActor(scope.client)?.kind === "operator"
-      ) {
-        throw createLlmCompleteError(
-          "LLM_COMPLETION_NOT_AUTHORIZED",
-          "Plugin model completion requires its current Gateway binding.",
-        );
-      }
-      const capturedOperator = inheritedOperator
-        ? { authority: inheritedOperator, release: inheritedOperator.retain?.() }
-        : scope?.client && context
-          ? captureGatewayOperatorRunAuthority({
-              client: scope.client,
-              context,
-              hasCurrentClientAuthority: scope.hasCurrentClientAuthority,
-              ...(scope.signal
-                ? {
-                    sourceAuthority: {
-                      assertCurrent: () => scope.signal?.throwIfAborted(),
-                      signal: scope.signal,
-                    },
-                  }
-                : {}),
-            })
-          : undefined;
+      const capturedOperator = captureAmbientGatewayOperatorAuthority({
+        missingBindingError: () =>
+          createLlmCompleteError(
+            "LLM_COMPLETION_NOT_AUTHORIZED",
+            "Plugin model completion requires its current Gateway binding.",
+          ),
+        retainInherited: true,
+      });
       const resources = new AsyncDisposableStack();
       if (capturedOperator?.release) {
         resources.defer(capturedOperator.release);
@@ -91,7 +56,7 @@ export function bindLlmOperatorAuthority(
           : operatorAuthority.signal
         : params.signal;
       const assertCurrent = () => {
-        assertInvocationCurrent?.();
+        capturedOperator.assertInvocationCurrent?.();
         operatorAuthority?.assertCurrent();
         signal?.throwIfAborted();
       };

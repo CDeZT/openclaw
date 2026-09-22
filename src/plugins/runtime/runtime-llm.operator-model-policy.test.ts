@@ -7,6 +7,7 @@ import { prepareOperatorModelPolicy } from "../../agents/operator-model-policy.j
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { withOperatorToolGatewayAuthority } from "../../gateway/server-plugin-in-process-dispatch.js";
+import { createSyntheticPluginRuntimeClient } from "../../gateway/server-plugin-runtime-client.js";
 import { AsyncWorkScope, trackAsyncWork } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withPluginRuntimeGatewayRequestScope } from "./gateway-request-scope.js";
@@ -153,6 +154,29 @@ beforeEach(() => {
 });
 
 describe("operator model policy on plugin completions", () => {
+  it("reports a missing Gateway binding before preparing an operator completion", async () => {
+    await expect(
+      withWork(() =>
+        withPluginRuntimeGatewayRequestScope(
+          {
+            client: createSyntheticPluginRuntimeClient({
+              operatorRoleActor: { kind: "operator", profileId: "model-reader" },
+              scopes: ["operator.write"],
+            }),
+            isWebchatConnect: () => false,
+          },
+          () => completion().complete(request("direct")),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      name: "LlmCompleteError",
+      code: "LLM_COMPLETION_NOT_AUTHORIZED",
+      message: "Plugin model completion requires its current Gateway binding.",
+    });
+    expect(mocks.acquire).not.toHaveBeenCalled();
+    expect(mocks.complete).not.toHaveBeenCalled();
+  });
+
   it.each(["restricted", "unrestricted"] as const)(
     "aborts only a removed in-flight model from an initially %s source",
     async (initial) => {

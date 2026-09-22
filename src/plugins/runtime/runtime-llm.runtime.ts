@@ -639,13 +639,6 @@ export function createRuntimeLlm(
         const assertPreparedCurrent = () => {
           assertCurrent();
           modelExecution?.assertCurrent();
-          assertOperatorModelAllowed(
-            operatorAuthority,
-            preparedLogicalModel ?? {
-              provider: prepared.selection.provider,
-              model: prepared.selection.modelId,
-            },
-          );
         };
         assertPreparedCurrent();
 

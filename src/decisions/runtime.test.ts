@@ -8,6 +8,7 @@ import {
 } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withOperatorToolGatewayAuthority } from "../gateway/server-plugin-in-process-dispatch.js";
+import { createSyntheticPluginRuntimeClient } from "../gateway/server-plugin-runtime-client.js";
 import * as currentPluginMetadata from "../plugins/current-plugin-metadata-state.js";
 import { runPluginRegisterSyncInRegistry } from "../plugins/loader-module-runtime.js";
 import { createPluginRecord } from "../plugins/loader-records.js";
@@ -15,6 +16,7 @@ import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { createTestPluginRegistry } from "../plugins/registry-runtime.test-helpers.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
+import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import { evaluateDecisionInRegistry, prepareDecisionProviderReload } from "./runtime.js";
 import type {
   DecisionBatch,
@@ -94,6 +96,25 @@ afterEach(() => {
 });
 
 describe("registered decision capability", () => {
+  it("requires a current Gateway binding for scoped operator decisions", async () => {
+    const evaluate = vi.fn<DecisionProviderV1["evaluate"]>(async () => answer);
+    const host = registered(evaluate);
+    setRuntimeConfigSnapshot(config);
+    await expect(
+      withPluginRuntimeGatewayRequestScope(
+        {
+          client: createSyntheticPluginRuntimeClient({
+            operatorRoleActor: { kind: "operator", profileId: "decision-reader" },
+            scopes: ["operator.write"],
+          }),
+          isWebchatConnect: () => false,
+        },
+        () => host.api.runtime.decisions.evaluate(batch, options()),
+      ),
+    ).rejects.toThrow("Decision evaluation requires its current Gateway binding.");
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+
   it.each([
     { model: "fixture-v1", source: "agent-tool" },
     { model: "shortcut", source: "direct-tool" },
