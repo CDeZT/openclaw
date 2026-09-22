@@ -3274,7 +3274,7 @@ function splitOversizedCompactGroup(
         ),
         weightForValue,
         isCliProcess || isTooling ? batchWeight : undefined,
-      );
+      ).filter((stripe) => stripe.length > 0);
     }
     const partitioned = runtimePartition ? [runtimePartition.runtimeFiles, ...stripes] : stripes;
     // Preserve prerequisite ownership and the existing weighted stripes. The
@@ -4005,7 +4005,7 @@ function createCompactNodeTestShardBundles(
   // Keep facts within this plan's timing inputs and partitions.
   const stripeFacts = new Map<
     NodeTestShardGroup,
-    { seconds: number; family: string | undefined }
+    { seconds: number; fileSecondsFloor: number; family: string | undefined }
   >();
   const prepareStripe = (group: NodeTestShardGroup) => {
     let facts = stripeFacts.get(group);
@@ -4015,6 +4015,13 @@ function createCompactNodeTestShardBundles(
           synthesizedSplitSeconds.get(compactGroupTimingKey(group)) ?? 0,
           estimateCompactStripeSeconds(group, options.runnerBackend),
         ),
+        // Process-file costs retain cold CLI boot admission when warm samples are faster.
+        fileSecondsFloor: group.configs.includes("test/vitest/vitest.cli-process.config.ts")
+          ? (group.includePatterns ?? []).reduce(
+              (seconds, file) => seconds + stripeFileWeight(file),
+              0,
+            )
+          : 0,
         family: compactStripeFamily(group),
       };
       stripeFacts.set(group, facts);
@@ -4037,11 +4044,12 @@ function createCompactNodeTestShardBundles(
     }
     const execution = measurementCapacity(group, capacity);
     const timed = timingGroupAtCapacity(pricingGroup, execution);
+    const facts = prepareStripe(group);
     const exact = measuredCosts.exactSeconds(timed, execution);
     if (exact !== undefined) {
-      return exact;
+      return Math.max(facts.fileSecondsFloor, exact);
     }
-    const fallback = prepareStripe(group).seconds;
+    const fallback = facts.seconds;
     const projected =
       parent && pricingGroup.includePatterns
         ? measuredCosts.projectFamilyCost(
@@ -4051,7 +4059,11 @@ function createCompactNodeTestShardBundles(
             fallback,
           )
         : fallback;
-    return Math.max(projected, measuredCosts.childSeconds(timed, execution) ?? 0);
+    return Math.max(
+      facts.fileSecondsFloor,
+      projected,
+      measuredCosts.childSeconds(timed, execution) ?? 0,
+    );
   };
   const estimateBinSeconds = (
     groups: NodeTestShardGroup[],
@@ -4228,6 +4240,35 @@ function createCompactNodeTestShardBundles(
         packedBins = alternateBins;
       }
     }
+  }
+
+  if (options.runnerBackend === "hybrid") {
+    // Serial tooling tails can share the stronger host without changing either
+    // child's worker pin, file partition, or the ordinary runner anchors.
+    const toolingBins = packedBins
+      .filter((bin) => bin.every(isHostedToolingGroup))
+      .toSorted(
+        (a, b) =>
+          runnerRank(b[0]) - runnerRank(a[0]) || estimateBinSeconds(b) - estimateBinSeconds(a),
+      );
+    const retired = new Set<(typeof toolingBins)[number]>();
+    for (const recipient of toolingBins) {
+      if (retired.has(recipient)) {
+        continue;
+      }
+      for (const donor of toolingBins) {
+        if (
+          recipient !== donor &&
+          !retired.has(donor) &&
+          donor.every((group) => canShareHostedGroup(recipient, group)) &&
+          admitsCompactBin([...recipient, ...donor], COMPACT_EXCLUSIVE_JOB_SECONDS)
+        ) {
+          recipient.push(...donor);
+          retired.add(donor);
+        }
+      }
+    }
+    packedBins = packedBins.filter((bin) => !retired.has(bin));
   }
 
   const compactJobs: CompactNodeTestShard[] = [];

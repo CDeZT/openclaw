@@ -198,6 +198,10 @@ export function createCompactWorkerCostResolver(workerTimings: readonly CompactW
       childFiles: readonly string[],
       fallbackSeconds: number,
     ): number => {
+      const workloads = resolve(parent, capacity)?.familyWorkloads;
+      if (!workloads?.length) {
+        return fallbackSeconds;
+      }
       const files = new Set(childFiles);
       const totalWeight = [...files].reduce(
         (sum, file) => sum + estimateVitestTestFileSeconds(file),
@@ -210,7 +214,7 @@ export function createCompactWorkerCostResolver(workerTimings: readonly CompactW
       let measuredSeconds = 0;
       // Preserve each measured stripe's cost density; averaging the family can
       // erase a slow workload when its files move to a newly generated child.
-      for (const workload of resolve(parent, capacity)?.familyWorkloads ?? []) {
+      for (const workload of workloads) {
         let coveredWeight = 0;
         for (const file of workload.files) {
           if (files.has(file)) {
