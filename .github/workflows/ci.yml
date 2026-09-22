@@ -5466,6 +5466,7 @@ jobs:
     timeout-minutes: 150
     env:
       HISTORICAL_TARGET: ${{ needs.preflight.outputs.compatibility_target }}
+      IOS_CI_PHASE: ${{ matrix.phase }}
     steps:
       - *platform_checkout_step
 
@@ -5572,11 +5573,15 @@ jobs:
           source .ci-harness/scripts/lib/swift-toolchain.sh
           simulator_id="$(prepare_ios_test_simulator)"
           echo "IOS_SIMULATOR_ID=$simulator_id" >> "$GITHUB_ENV"
+          if [[ "$IOS_CI_PHASE" == "smoke" ]]; then
+            # Apply to the embedded Watch build and the later XCTest build too.
+            smoke_settings="$RUNNER_TEMP/openclaw-ios-smoke.xcconfig"
+            printf 'ARCHS = %s\nCOMPILER_INDEX_STORE_ENABLE = NO\n' "$(uname -m)" > "$smoke_settings"
+            echo "XCODE_XCCONFIG_FILE=$smoke_settings" >> "$GITHUB_ENV"
+          fi
 
       - name: Build iOS app
         if: matrix.phase == 'smoke' || matrix.phase == 'tests'
-        env:
-          IOS_CI_PHASE: ${{ matrix.phase }}
         run: |
           set -euo pipefail
           if [[ "$IOS_CI_PHASE" == "smoke" && "$HISTORICAL_TARGET" != "true" ]]; then
@@ -5610,6 +5615,12 @@ jobs:
           set -euo pipefail
           source .ci-harness/scripts/lib/swift-toolchain.sh
           mkdir -p apps/ios/build/LifecycleTestResults
+          diagnostic_collection=on-failure
+          if [[ "$IOS_CI_PHASE" == "smoke" ]]; then
+            # Xcode 27's verbose simulator diagnostics can stall for 600s after passing tests.
+            # Keep xcresult/log evidence here and verbose diagnostics in full manual validation.
+            diagnostic_collection=never
+          fi
           run_apple_command_logged apps/ios/build/LifecycleTestResults/OpenClawVoiceCleanupTests.log xcodebuild \
             -project apps/ios/OpenClaw.xcodeproj \
             -scheme OpenClaw \
@@ -5617,6 +5628,7 @@ jobs:
             -destination "platform=iOS Simulator,id=${IOS_SIMULATOR_ID:?}" \
             -resultBundlePath apps/ios/build/LifecycleTestResults/OpenClawVoiceCleanupTests.xcresult \
             -parallel-testing-enabled NO \
+            -collect-test-diagnostics "$diagnostic_collection" \
             -only-testing:OpenClawTests/TalkRealtimeVoiceSessionCleanupTests \
             -only-testing:OpenClawTests/TalkRealtimeConsultCancellationTests \
             -only-testing:OpenClawTests/TalkRealtimeTranscriptWriteQueueTests \

@@ -169,12 +169,14 @@ Full Release Validation's existing frozen-target lint exception remains separate
 Npm preflight uses the larger Blacksmith request by default and retains its
 explicit `use_github_hosted_runners` option.
 
-Ordinary iOS smoke CI builds for the same ARM iPhone simulator used by its
-voice-cleanup tests. Simulator preparation completes before compilation and
-XCTest launch. Full manual validation retains the generic universal simulator
-build, Release device build, and lifecycle/UI/Watch tests; frozen targets keep
-their original build destination. Test selection and diagnostic collection stay
-enabled.
+Ordinary iOS smoke CI builds the app and embedded Watch targets for the runner's
+architecture, using the same iPhone simulator for compilation and voice-cleanup
+tests. It omits compiler indexes, which CI does not consume, and finishes
+simulator preparation before XCTest launch. Smoke retains complete test results
+and logs but disables verbose system-diagnostic collection: Xcode 27 can spend
+600 seconds collecting it after passing tests. Full manual validation retains
+universal simulator compilation, verbose diagnostics, the Release device build,
+and lifecycle/UI/Watch tests. Frozen targets keep their original build settings.
 
 ### Runner backend modes
 

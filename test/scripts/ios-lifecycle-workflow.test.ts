@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
-type Command = { tool: string; args: string[]; destination?: string };
+type Command = { tool: string; args: string[]; destination?: string; settings?: string };
 
 const workflow: { jobs: Record<string, { steps: { name?: string; run?: string }[] }> } = parse(
   readFileSync(".github/workflows/ci.yml", "utf8"),
@@ -35,13 +35,18 @@ function runSimulatorStep(mode = "ready", steps = [watchStep], env: Record<strin
   writeFileSync(
     runner,
     String.raw`
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 const [tool, ...args] = process.argv.slice(2);
 const root = process.env.WATCH_FIXTURE_ROOT;
 const mode = process.env.WATCH_FIXTURE_MODE;
-appendFileSync(path.join(root, "commands.jsonl"), JSON.stringify({ tool, args, destination: process.env.IOS_DEST }) + "\n");
-if (tool === "xcrun") {
+appendFileSync(path.join(root, "commands.jsonl"), JSON.stringify({
+  tool, args, destination: process.env.IOS_DEST,
+  settings: process.env.XCODE_XCCONFIG_FILE ? readFileSync(process.env.XCODE_XCCONFIG_FILE, "utf8") : undefined,
+}) + "\n");
+if (tool === "uname") {
+  console.log("arm64");
+} else if (tool === "xcrun") {
   if (args[1] === "list") {
     console.log(JSON.stringify({ devices: { watch: [
       { name: mode.startsWith("voice") ? "iPhone fixture" : "Apple Watch fixture", isAvailable: true, udid: "watch-fixture" }
@@ -70,7 +75,7 @@ if (tool === "xcrun") {
 }
 `,
   );
-  for (const tool of ["xcrun", "xcodebuild", "pnpm"]) {
+  for (const tool of ["xcrun", "xcodebuild", "pnpm", "uname"]) {
     const executable = path.join(bin, tool);
     writeFileSync(executable, `#!/bin/sh\nexec '${process.execPath}' '${runner}' '${tool}' "$@"\n`);
     chmodSync(executable, 0o755);
@@ -98,6 +103,7 @@ if (tool === "xcrun") {
       IOS_CI_PHASE: "smoke",
       HISTORICAL_TARGET: "false",
       IOS_DEST: "",
+      XCODE_XCCONFIG_FILE: "",
       ...env,
     },
   });
@@ -187,6 +193,20 @@ describe.skipIf(process.platform === "win32")("iOS voice cleanup workflow", () =
     expect(commands).toEqual([{ tool: "pnpm", args: ["ios:build"], destination: "" }]);
   });
 
+  it("retains universal build settings and verbose diagnostics in full manual validation", () => {
+    const { result, commands } = runSimulatorStep("voice", [prepareStep, buildStep, voiceStep], {
+      IOS_CI_PHASE: "tests",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const appBuild = commands.find((command) => command.tool === "pnpm");
+    expect(appBuild?.destination).toBe("");
+    expect(commands.every((command) => command.settings === undefined)).toBe(true);
+    const testRun = commands.find((command) => command.tool === "xcodebuild");
+    expect(testRun?.args).toEqual(
+      expect.arrayContaining(["-collect-test-diagnostics", "on-failure"]),
+    );
+  });
+
   it("stops before compilation and XCTest when the selected iPhone cannot boot", () => {
     const { result, commands } = runSimulatorStep("voice-boot-failed", [
       prepareStep,
@@ -202,6 +222,9 @@ describe.skipIf(process.platform === "win32")("iOS voice cleanup workflow", () =
     expect(result.status, result.stderr).toBe(0);
     const appBuild = commands.find((command) => command.tool === "pnpm");
     expect(appBuild?.destination).toBe("platform=iOS Simulator,id=watch-fixture");
+    expect(appBuild?.settings).toBe(
+      "ARCHS = arm64\nCOMPILER_INDEX_STORE_ENABLE = NO\n",
+    );
     expect(
       commands.filter((command) => command.tool === "xcrun").map((command) => command.args),
     ).toEqual([
@@ -222,6 +245,8 @@ describe.skipIf(process.platform === "win32")("iOS voice cleanup workflow", () =
     ]);
     expect(build.args).toEqual(expect.arrayContaining(["-configuration", "Debug", "test"]));
     expect(build.args).toContain(appBuild?.destination);
+    expect(build.settings).toBe(appBuild?.settings);
+    expect(build.args).toEqual(expect.arrayContaining(["-collect-test-diagnostics", "never"]));
     expect(build.args.some((arg) => arg.startsWith("CODE_SIGN"))).toBe(false);
   });
 });
