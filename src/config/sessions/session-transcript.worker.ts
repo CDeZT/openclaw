@@ -1,14 +1,19 @@
+import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import type {
   UsageCostWorkerInput,
   UsageCostWorkerReply,
 } from "../../infra/session-cost-usage-worker.types.js";
 import { serveWorkerTasks } from "../../infra/worker-task-server.js";
+import { encodeOpenClawStateWorkerError } from "../../state/openclaw-state-worker-error.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import type { SessionIdentityEvidenceResult } from "./session-accessor.sqlite-entry-availability.js";
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
 import type { SessionHistoryWorkerResult } from "./session-history-types.js";
 import { sessionHistoryCleanupError } from "./session-history-worker-errors.js";
-import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
+import {
+  SessionTranscriptProjectionUnavailableError,
+  SessionTranscriptStorageUnavailableError,
+} from "./session-transcript-projection-error.js";
 import {
   runWithSessionTranscriptReadFence,
   SessionTranscriptReadFenceError,
@@ -78,6 +83,14 @@ serveWorkerTasks(
   > => {
     // SAFETY: The paired runtime constructs this request; the SQLite snapshot validates admission.
     const request = input as SessionTranscriptWorkerInput | UsageCostWorkerInput;
+    if (request.kind === "sqlite-target") {
+      const { resolveSqliteTargetFromSessionStorePath } =
+        await import("./session-sqlite-target.js");
+      return {
+        ok: true,
+        value: { target: resolveSqliteTargetFromSessionStorePath(request.storePath, request) },
+      };
+    }
     if (request.kind === "usage-cost") {
       const { executeUsageCostWorker, usageCostWorkerFailure } =
         await import("../../infra/session-cost-usage-worker.js");
@@ -253,6 +266,45 @@ serveWorkerTasks(
               }))),
             };
           }
+          if (request.kind === "transcript-hydration") {
+            const { readOpenClawDatabaseQuarantineFailure } =
+              await import("../../state/openclaw-quarantine-store.js");
+            const quarantine = readOpenClawDatabaseQuarantineFailure(
+              "agent",
+              request.database.path,
+              {
+                env: request.target.env,
+              },
+            );
+            if (quarantine) {
+              throw quarantine;
+            }
+            const { loadTranscriptReadSnapshotSync } =
+              await import("./session-accessor.sqlite-read.js");
+            const { readSessionTranscriptBoundedActiveContextCore } =
+              await import("./session-accessor.sqlite-active-context.js");
+            return {
+              ok: true,
+              ...(await withHistoryDatabase(request.database, () =>
+                request.limits
+                  ? {
+                      kind: "bounded" as const,
+                      snapshot: readSessionTranscriptBoundedActiveContextCore(request.target, {
+                        ...request.limits,
+                        readOnly: true,
+                        resolvedScope: request.resolvedScope,
+                      }),
+                    }
+                  : {
+                      kind: "full" as const,
+                      snapshot: loadTranscriptReadSnapshotSync(request.target, {
+                        readOnly: true,
+                        resolvedScope: request.resolvedScope,
+                      }),
+                    },
+              )),
+            };
+          }
           if (request.kind === "model-context") {
             const { readSessionTranscriptModelContext } =
               await import("./session-accessor.sqlite-model-context.js");
@@ -347,6 +399,9 @@ serveWorkerTasks(
       ) {
         return { ok: false, error: { kind: "syntax", message: error.message } };
       }
+      if (error instanceof SessionTranscriptStorageUnavailableError) {
+        return { ok: false, error: { kind: "storage", reason: error.reason } };
+      }
       if (error instanceof SessionTranscriptColdError) {
         return { ok: false, error: { kind: "cold", sessionId: error.sessionId } };
       }
@@ -355,6 +410,13 @@ serveWorkerTasks(
       }
       if (error instanceof SessionTranscriptReadFenceError) {
         return { ok: false, error: { kind: "fence", message: error.message } };
+      }
+      const payload = encodeOpenClawStateWorkerError(error, { includeOrdinary: true });
+      if (payload) {
+        return {
+          ok: false,
+          error: { kind: "read-error", message: coerceErrorMessage(error), payload },
+        };
       }
       throw error;
     }

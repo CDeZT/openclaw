@@ -1218,11 +1218,13 @@ src/state/openclaw-state-schema-publication.ts
 src/state/openclaw-state-schema.sql
 src/state/openclaw-state-schema.ts
 src/state/openclaw-state-worker-context.ts
+src/state/openclaw-state-worker-error-identity.ts
 src/state/openclaw-state-worker-error.ts
 src/state/openclaw-state-worker-operation.ts
 src/state/openclaw-state-worker-store.ts
 src/state/openclaw-state.worker.ts
 src/state/openclaw-update-schema-refusal.ts
+src/state/session-metadata-unavailable-error.ts
 src/state/session-watch-cursor-provenance.ts
 src/utils.ts
 src/utils/boolean.ts

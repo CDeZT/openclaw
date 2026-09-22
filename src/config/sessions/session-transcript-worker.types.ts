@@ -11,7 +11,10 @@ import type {
 } from "../../infra/session-cost-usage-cache-read.js";
 import type { SensitiveTextRedactionSnapshot } from "../../logging/redact.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
+import type { OpenClawRegisteredAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
+import type { OpenClawStateWorkerErrorPayload } from "../../state/openclaw-state-worker-error.js";
 import type { SessionLifecycleTimestamps } from "./lifecycle.types.js";
+import type { SessionTranscriptBoundedActiveContext } from "./session-accessor.sqlite-active-context.js";
 import type {
   SessionBranchSummaryReadRequest,
   SessionBranchSummaryReadResult,
@@ -24,6 +27,8 @@ import type {
   readSessionTranscriptModelContext,
   SessionModelContextLimits,
 } from "./session-accessor.sqlite-model-context.js";
+import type { loadTranscriptReadSnapshotSync } from "./session-accessor.sqlite-read.js";
+import type { ResolvedTranscriptReadScope } from "./session-accessor.sqlite-scope.js";
 import type {
   SessionAccessScope,
   SessionEntryListScope,
@@ -37,12 +42,14 @@ import type {
   SessionHistoryWorkerResult,
 } from "./session-history-types.js";
 import type { SessionMember } from "./session-sharing-store.kernel.js";
+import type { ResolvedSqliteStoreTarget } from "./session-sqlite-target.js";
 import type {
   SessionStoreTargetInventoryRequest,
   SessionStoreTargetInventoryResult,
   SessionStoreTargetReadRequest,
   SessionStoreTargetReadResult,
 } from "./session-store-target-inventory.js";
+import type { SessionTranscriptStorageUnavailableError } from "./session-transcript-projection-error.js";
 import type {
   SessionTranscriptSearchParams,
   SessionTranscriptSearchResult,
@@ -60,12 +67,25 @@ type SessionTranscriptSearchWorkerResult = {
   result: SessionTranscriptSearchResult;
 };
 
+export type PreparedSessionTranscriptHydration =
+  | { kind: "full"; snapshot: ReturnType<typeof loadTranscriptReadSnapshotSync> }
+  | { kind: "bounded"; snapshot: SessionTranscriptBoundedActiveContext };
+
 export type SessionModelContextWorkerInput = {
   kind: "model-context";
   target: SessionTranscriptRuntimeTarget;
   admission?: UserTurnTranscriptAdmissionReceipt;
   through?: TranscriptEntryAnchor;
   limits?: SessionModelContextLimits;
+};
+
+export type SessionSqliteTargetWorkerInput = {
+  kind: "sqlite-target";
+  storePath: string;
+  agentId?: string;
+  defaultAgentId?: string;
+  env: NodeJS.ProcessEnv;
+  registeredDatabases: readonly Pick<OpenClawRegisteredAgentDatabase, "agentId" | "path">[];
 };
 
 export type SessionEntryWorkerInput = {
@@ -119,6 +139,15 @@ type SessionTitleFieldsWorkerInput = {
 type SessionTitleFieldsWorkerResult = {
   kind: "session-title-fields";
   fields: SessionTitleFields;
+};
+
+export type SessionTranscriptHydrationWorkerInput = {
+  kind: "transcript-hydration";
+  database: { agentId: string; path: string };
+  target: SessionTranscriptRuntimeTarget & { env?: NodeJS.ProcessEnv };
+  resolvedScope: ResolvedTranscriptReadScope;
+  limits?: { maxBytes: number; maxEvents: number };
+  admission?: UserTurnTranscriptAdmissionReceipt;
 };
 
 export type SessionRowPresenceWorkerInput = {
@@ -197,6 +226,7 @@ export type SessionBranchSummaryWorkerInput = {
 };
 
 export type SessionHistoryWorkerInput =
+  | SessionTranscriptHydrationWorkerInput
   | SessionTranscriptHistoryWorkerInput
   | SessionPreviewWorkerInput
   | SessionTitleFieldsWorkerInput
@@ -211,6 +241,7 @@ export type SessionHistoryWorkerInput =
   | SessionTranscriptSearchWorkerInput;
 
 export type SessionTranscriptWorkerInput =
+  | SessionSqliteTargetWorkerInput
   | SessionHistoryWorkerInput
   | SessionModelContextWorkerInput
   | SessionEntryWorkerInput
@@ -224,6 +255,8 @@ export type SessionHistoryWorkerPreparedInput = {
 
 export type SessionTranscriptWorkerValues = {
   "transcript-search": SessionTranscriptSearchWorkerResult;
+  "transcript-hydration": PreparedSessionTranscriptHydration;
+  "sqlite-target": { target: ResolvedSqliteStoreTarget };
   "branch-summaries": SessionBranchSummaryReadResult;
   "history-page": SessionHistoryWorkerResult;
   "session-preview": SessionPreviewWorkerResult;
@@ -252,10 +285,12 @@ export type SessionTranscriptWorkerReply<Kind extends keyof SessionTranscriptWor
   | {
       ok: false;
       error:
+        | { kind: "read-error"; message: string; payload: OpenClawStateWorkerErrorPayload }
         | { kind: "cold"; sessionId: string }
         | { kind: "projection"; sessionId: string }
         | { kind: "fence"; message: string }
-        | { kind: "syntax"; message: string };
+        | { kind: "syntax"; message: string }
+        | { kind: "storage"; reason?: SessionTranscriptStorageUnavailableError["reason"] };
     };
 
 export type SessionHistoryWorkerDatabase = {
@@ -278,6 +313,10 @@ export type SessionHistoryWorkerDatabase = {
   readIdentityEvidence: (
     input: Omit<SessionIdentityEvidenceWorkerInput, "kind" | "database">,
   ) => Promise<SessionIdentityEvidenceResult[]>;
+  readTranscript: (
+    input: Omit<SessionTranscriptHydrationWorkerInput, "kind" | "database">,
+    signal?: AbortSignal,
+  ) => Promise<PreparedSessionTranscriptHydration>;
   readExactEntries: (
     input: Omit<SessionExactEntriesWorkerInput, "kind" | "database">,
   ) => Promise<SessionExactEntriesWorkerResult>;
