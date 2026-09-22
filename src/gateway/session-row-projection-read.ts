@@ -51,8 +51,8 @@ export async function withSessionRowDatabaseFacts(
       const facts = new Map<string, SessionRowDatabaseFacts>();
       // Finish each accepted read before releasing any captured database owner on failure.
       for (const [index, group] of selected.entries()) {
-        const owner = expectDefined(owners[index], "captured session row database");
-        const reply = await owner.readRowFacts({
+        const databaseOwner = expectDefined(owners[index], "captured session row database");
+        const reply = await databaseOwner.readRowFacts({
           env,
           sessionKeys: [...new Set(group.rows.map((row) => row.key))],
         });
@@ -64,8 +64,8 @@ export async function withSessionRowDatabaseFacts(
           }
         }
       }
-      for (const owner of owners) {
-        owner.assertCurrent();
+      for (const databaseOwner of owners) {
+        databaseOwner.assertCurrent();
       }
       if (
         revision !== undefined &&

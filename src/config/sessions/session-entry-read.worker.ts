@@ -16,6 +16,7 @@ import {
   MAX_SESSION_ROW_FACTS_KEYS,
   type SessionExactEntriesWorkerInput,
   type SessionExactEntriesWorkerResult,
+  type SessionRowDatabaseFacts,
   type SessionRowFactsWorkerInput,
   type SessionRowFactsWorkerResult,
 } from "./session-transcript-worker.types.js";
@@ -100,22 +101,23 @@ export function readSessionRowDatabaseFacts(
           }
           return {
             kind: "session-row-facts" as const,
-            rows: selected.value.map(({ sessionKey, entry }) => ({
-              sessionKey,
-              entry,
-              memberIdentityIds: listSessionMembersInDatabase(database, sessionKey).map(
-                (member) => member.identityId,
-              ),
-              hasBoard: readBoardSessionKeys(database, sessionKey).length > 0,
-              ...(readSessionActivitySummary(entry)
-                ? {
-                    activitySummaryWatermark: readSessionTranscriptWatermarkInDatabase(
-                      database,
-                      entry.sessionId,
-                    ),
-                  }
-                : {}),
-            })),
+            rows: selected.value.map(({ sessionKey, entry }) => {
+              const facts: SessionRowDatabaseFacts = {
+                sessionKey,
+                entry,
+                memberIdentityIds: listSessionMembersInDatabase(database, sessionKey).map(
+                  (member) => member.identityId,
+                ),
+                hasBoard: readBoardSessionKeys(database, sessionKey).length > 0,
+              };
+              if (readSessionActivitySummary(entry)) {
+                facts.activitySummaryWatermark = readSessionTranscriptWatermarkInDatabase(
+                  database,
+                  entry.sessionId,
+                );
+              }
+              return facts;
+            }),
           };
         }),
       ),
