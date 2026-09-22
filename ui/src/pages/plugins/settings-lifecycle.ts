@@ -5,12 +5,13 @@ import { t } from "../../i18n/index.ts";
 import { shouldHandleNavigationClick } from "../../lib/navigation-click.ts";
 import type { PluginCatalogItem, PluginsInspectResult } from "../../lib/plugins/index.ts";
 import { pluginRowKey } from "./plugin-row-message.ts";
+import type { PluginMutationAction } from "./plugins-page-model.ts";
 
 type PluginLifecycleProps = {
   inspection: PluginsInspectResult | null;
   mutationBlockedReason: string | null;
   canMutate: boolean;
-  busy: Readonly<Record<string, boolean>>;
+  busy: Readonly<Record<string, PluginMutationAction>>;
   onSetEnabled: (pluginId: string, enabled: boolean, rowKey: string) => void;
   onSettings: () => void;
   settingsHref: string;
@@ -22,8 +23,12 @@ export function renderPluginLifecycle(
   plugin: PluginCatalogItem,
 ): TemplateResult {
   const key = pluginRowKey(plugin.id);
-  const busy = Boolean(props.busy[key]);
+  const pending = props.busy[key];
+  const busy = Boolean(pending);
+  const enableAction =
+    pending === "enable" || pending === "disable" ? pending : plugin.enabled ? "disable" : "enable";
   const action = (
+    kind: PluginMutationAction,
     label: string,
     className: string,
     blockedReason: string | null,
@@ -38,18 +43,19 @@ export function renderPluginLifecycle(
         ?disabled=${!blockedReason && (!allowed || busy)}
         aria-disabled=${!allowed || busy ? "true" : nothing}
         aria-label=${`${label} ${plugin.name}`}
+        aria-busy=${pending === kind ? "true" : nothing}
         @click=${() => {
           if (allowed && !busy) {
             onClick();
           }
         }}
       >
-        ${label}
+        ${pending === kind ? html`<span class="btn__spinner" aria-hidden="true"></span>` : nothing}${label}
       </button>`,
     );
   return html`
-    ${action(t(plugin.enabled ? "pluginsPage.detailDisable" : "pluginsPage.detailEnable"), "oc-action-secondary", props.mutationBlockedReason ?? (plugin.state === "needs-setup" ? t("pluginsPage.setupRequiredNotice") : null), props.canMutate && plugin.state !== "needs-setup", () => props.onSetEnabled(plugin.id, !plugin.enabled, key))}
-    ${plugin.removable ? action(t("pluginsPage.uninstall"), "oc-action-secondary", props.mutationBlockedReason, props.canMutate, () => props.onUninstall(plugin.id, key)) : nothing}
+    ${action(enableAction, t(enableAction === "disable" ? "pluginsPage.detailDisable" : "pluginsPage.detailEnable"), "oc-action-secondary", props.mutationBlockedReason ?? (plugin.state === "needs-setup" ? t("pluginsPage.setupRequiredNotice") : null), props.canMutate && plugin.state !== "needs-setup", () => props.onSetEnabled(plugin.id, !plugin.enabled, key))}
+    ${plugin.removable ? action("uninstall", t("pluginsPage.uninstall"), "oc-action-secondary", props.mutationBlockedReason, props.canMutate, () => props.onUninstall(plugin.id, key)) : nothing}
     <a
       class="btn btn--icon oc-action oc-action-icon oc-action-secondary"
       href=${props.settingsHref}

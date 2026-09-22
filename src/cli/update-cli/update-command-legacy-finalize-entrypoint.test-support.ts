@@ -16,6 +16,11 @@ export const updateServiceRuntimeEntrypoints = {
 
 // Fence tests use the same prepared, hookable candidate graph as legacy finalization.
 export const migratedFenceEntrypoints = {
+  service: {
+    currentModuleUrl: import.meta.url,
+    sourceWorkerName: "../../daemon/service",
+    distWorkerPath: "legacy-finalizer/src/daemon/service.js",
+  },
   worker: {
     currentModuleUrl: import.meta.url,
     sourceWorkerName: "../../infra/update-migrated-finalize.worker",

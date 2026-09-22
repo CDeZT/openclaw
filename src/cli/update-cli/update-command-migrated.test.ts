@@ -2,8 +2,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { pathToFileURL } from "node:url";
-import { afterEach, expect, it, vi } from "vitest";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
+import { createFixtureLifetime } from "../../../test/helpers/fixture-lifetime.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createConfigIO } from "../../config/io.js";
 import { asResolvedSourceConfig, asRuntimeConfig } from "../../config/materialize.js";
@@ -37,6 +38,7 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { createUpdateProgress } from "./progress.js";
+import { prepareCandidateAuthorityRuntime } from "./update-command-candidate-authority.test-support.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import { migratedFenceEntrypoints } from "./update-command-legacy-finalize-entrypoint.test-support.js";
 import type { MigratedUpdateFinalizationInput } from "./update-command-migrated-types.js";
@@ -53,6 +55,16 @@ vi.mock("../../state/openclaw-state-db-contract.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../state/openclaw-state-db-contract.js")>();
   return { ...actual, OPENCLAW_STATE_SCHEMA_VERSION: actual.OPENCLAW_STATE_SCHEMA_VERSION - 1 };
 });
+
+const runtimeFixture = createFixtureLifetime();
+let candidateRoot: string;
+beforeAll(async () => {
+  const runtime = await runtimeFixture.run(() =>
+    prepareCandidateAuthorityRuntime(runtimeFixture.createTempDir("migrated-candidate-runtime-")),
+  );
+  candidateRoot = fileURLToPath(new URL("../../", runtime.worker));
+});
+afterAll(() => runtimeFixture.cleanup());
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 let presentation: ReturnType<typeof createUpdateProgress> | undefined;
@@ -128,22 +140,24 @@ it.each([
     const result = {
       status: "ok" as const,
       mode: "npm" as const,
-      root: process.cwd(),
+      root: candidateRoot,
       steps: [],
       durationMs: 0,
     };
     await expect(
-      inspectActivatedUpdateState({
-        result,
-        root: process.cwd(),
-        schemaVersions,
-        candidateSchemaVersions: {
-          state: OPENCLAW_STATE_SCHEMA_VERSION + Number(changed === "shared"),
-          agent: OPENCLAW_AGENT_SCHEMA_VERSION,
-        },
-        config: {},
-        env,
-      }),
+      runtimeFixture.track(
+        inspectActivatedUpdateState({
+          result,
+          root: candidateRoot,
+          schemaVersions,
+          candidateSchemaVersions: {
+            state: OPENCLAW_STATE_SCHEMA_VERSION + Number(changed === "shared"),
+            agent: OPENCLAW_AGENT_SCHEMA_VERSION,
+          },
+          config: {},
+          env,
+        }),
+      ),
     ).resolves.toBe(blocked);
   },
 );
@@ -280,13 +294,15 @@ it.each([
 it("refuses state inspection when activation leaves no known runtime root", async () => {
   const result = { status: "error" as const, mode: "npm" as const, steps: [], durationMs: 0 };
   await expect(
-    inspectActivatedUpdateState({
-      result,
-      root: process.cwd(),
-      schemaVersions: [],
-      config: {},
-      env: { OPENCLAW_STATE_DIR: dirs.make("unknown-update-runtime-") },
-    }),
+    runtimeFixture.track(
+      inspectActivatedUpdateState({
+        result,
+        root: candidateRoot,
+        schemaVersions: [],
+        config: {},
+        env: { OPENCLAW_STATE_DIR: dirs.make("unknown-update-runtime-") },
+      }),
+    ),
   ).resolves.toBe("rollback-state-unverified");
   expect(result).toMatchObject({
     reason: "rollback-state-unverified",
@@ -322,19 +338,21 @@ it.each([
     const result = {
       status: "ok" as const,
       mode: "npm" as const,
-      root: process.cwd(),
+      root: candidateRoot,
       steps: [],
       durationMs: 0,
     };
     await expect(
-      inspectActivatedUpdateState({
-        result,
-        root: process.cwd(),
-        schemaVersions,
-        candidateSchemaVersions: { state: contentVersion, agent: OPENCLAW_AGENT_SCHEMA_VERSION },
-        config: {},
-        env,
-      }),
+      runtimeFixture.track(
+        inspectActivatedUpdateState({
+          result,
+          root: candidateRoot,
+          schemaVersions,
+          candidateSchemaVersions: { state: contentVersion, agent: OPENCLAW_AGENT_SCHEMA_VERSION },
+          config: {},
+          env,
+        }),
+      ),
     ).resolves.toBe(blocked);
     expect(result).toMatchObject({ status: "ok", steps: [] });
     expect(shared.db.prepare("PRAGMA user_version").get()?.user_version).toBe(
@@ -374,6 +392,7 @@ it.each([
     };
     const root = path.join(stateDir, legacy ? "legacy-runtime" : "candidate-runtime");
     const recoveryObservation = path.join(stateDir, "recovery-observation.json");
+    const serviceObservation = path.join(stateDir, "service-observation.json");
     const legacyEffect = path.join(stateDir, "legacy-worker-effect");
     if (legacy) {
       const worker = path.join(root, "dist", "infra", "update-migrated-finalize.worker.js");
@@ -399,11 +418,13 @@ it.each([
     if (!legacy) {
       const worker = resolveRuntimeWorkerUrl(migratedFenceEntrypoints.worker);
       const verification = resolveRuntimeWorkerUrl(migratedFenceEntrypoints.verification);
+      const service = resolveRuntimeWorkerUrl(migratedFenceEntrypoints.service);
       const entry = path.join(root, "dist", "infra", "update-migrated-finalize.worker.js");
       await fs.mkdir(path.dirname(entry), { recursive: true });
       await fs.copyFile(path.join(process.cwd(), "package.json"), path.join(root, "package.json"));
       // The fence fixture has no serving Gateway. Supply only its external health
-      // observation; the real failure-health owner must record it before finalization.
+      // observation and absent service; never inspect the host service from this fixture.
+      // The real failure-health owner must record the observation before finalization.
       // Keep the candidate worker, delegation, ledger and package owner unmocked.
       await fs.writeFile(
         entry,
@@ -411,6 +432,22 @@ it.each([
         import {registerHooks} from "node:module";
         ${worker.pathname.endsWith(".ts") ? `process.env.TSX_TSCONFIG_PATH=${JSON.stringify(path.resolve("tsconfig.json"))}; await import(${JSON.stringify(pathToFileURL(path.resolve("scripts/tsx.mjs")).href)});` : ""}
         registerHooks({load(url, context, nextLoad) {
+          if(url===${JSON.stringify(service.href)}) return {format:"module", shortCircuit:true, source:
+            'export * from '+JSON.stringify(url+'?fixture-original')+';'+
+            ${JSON.stringify(`
+              export async function readGatewayServiceState(_service, {env}) {
+                if(env.OPENCLAW_STATE_DIR!==${JSON.stringify(stateDir)}) {
+                  throw new Error("Expected the isolated absent-service observation");
+                }
+                const fs = await import("node:fs/promises");
+                await fs.writeFile(${JSON.stringify(serviceObservation)}, JSON.stringify({
+                  pid:process.pid, installed:false
+                }));
+                return {installed:false, loadState:{status:"not-loaded"}, running:false,
+                  env, command:null, runtime:{status:"stopped"}};
+              }
+            `)}
+          };
           if(url!==${JSON.stringify(verification.href)}) return nextLoad(url, context);
           return {format:"module", shortCircuit:true, source:
             'export * from '+JSON.stringify(url+'?fixture-original')+';'+
@@ -643,6 +680,7 @@ it.each([
         progress.pendingSteps,
       );
     });
+    void runtimeFixture.track(work);
     if (checkWorkMs !== undefined && stepBudgetMs !== undefined && stepBudgetMs < checkWorkMs) {
       await expect(work).rejects.toThrow(/delegation capability could not be inspected/);
       expect(terminalAtCleanup).toBeUndefined();
@@ -692,6 +730,10 @@ it.each([
         }),
       );
       expect(result.result.recovery?.serviceRestartSafe).toBe(false);
+      expect(JSON.parse(await fs.readFile(serviceObservation, "utf8"))).toMatchObject({
+        pid: expect.any(Number),
+        installed: false,
+      });
       expect(JSON.parse(await fs.readFile(recoveryObservation, "utf8"))).toMatchObject({
         pid: expect.any(Number),
         purpose: "recovery",
@@ -699,6 +741,7 @@ it.each([
       });
     } else {
       await expect(fs.access(recoveryObservation)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.access(serviceObservation)).rejects.toMatchObject({ code: "ENOENT" });
     }
     expect(rollback).not.toHaveBeenCalled();
     expect(terminalAtCleanup).toEqual({ status: "failed", reason: "state-migrated-no-rollback" });
