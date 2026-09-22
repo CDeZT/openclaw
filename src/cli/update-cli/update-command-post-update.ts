@@ -503,7 +503,6 @@ export async function finishUpdate(
           serviceEnv: restartContext.gatewayServiceEnv,
           serviceInstallEnv: restartContext.gatewayServiceInstallEnv,
           gatewayPort: restartContext.gatewayPort,
-          restartScriptPath: restartContext.restartScriptPath,
           invocationCwd: params.invocationCwd,
           nodeRunner: params.packageUpdateNodeRunner,
           skipLegacyServiceRestart: restartContext.skipLegacyServiceRestart,
@@ -610,7 +609,6 @@ export async function finishUpdate(
           postUpdateConfigSnapshot ?? restartConfigSnapshot,
         );
         pendingRestartAtMs ??= Date.now();
-        restartContext.restartScriptPath = null;
         if (!params.serviceRuntimeRefreshRequired && !requiresInstallRootRefresh) {
           restartContext.refreshGatewayServiceEnv = false;
         }
