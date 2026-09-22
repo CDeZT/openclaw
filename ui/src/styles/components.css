@@ -1294,6 +1294,59 @@ openclaw-session-owner-chip .viewer-avatar__initials {
   line-height: 1;
 }
 
+/* Shared clipboard controls own their icon and async-result states here so the
+ * same component works on chat and non-chat routes. */
+.chat-copy-btn {
+  color: var(--muted);
+}
+
+.chat-copy-btn__icon {
+  display: inline-flex;
+  position: relative;
+  width: 14px;
+  height: 14px;
+}
+
+.chat-copy-btn__icon-copy,
+.chat-copy-btn__icon-check {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  transition: opacity 150ms ease;
+}
+
+.chat-copy-btn__icon-check,
+.chat-copy-btn[data-copy-state="copied"] .chat-copy-btn__icon-copy {
+  opacity: 0;
+}
+
+.chat-copy-btn[data-copy-state="copied"] .chat-copy-btn__icon-check {
+  opacity: 1;
+}
+
+.chat-copy-btn[data-copy-state="copying"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.chat-copy-btn[data-copy-state="error"] {
+  border-color: var(--danger-subtle);
+  background: var(--danger-subtle);
+  color: var(--danger);
+}
+
+.chat-copy-btn[data-copy-state="copied"] {
+  border-color: var(--ok-subtle);
+  background: var(--ok-subtle);
+  color: var(--ok);
+}
+
+.chat-copy-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* Passive notifications stay in the trailing top corner, away from the chat
  * composer and other bottom-docked controls. The host shows one toast at a time
  * (`show()` replaces the active one), so there is no stack to offset against. */
