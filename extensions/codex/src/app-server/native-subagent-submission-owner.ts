@@ -1,11 +1,7 @@
 import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { readStringField as readString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { readNativeTurnEnd } from "./native-subagent-history-recovery.js";
-import type {
-  ParentOwner,
-  ParentState,
-  NativeSubagentSubmissionDependencies,
-} from "./native-subagent-monitor-types.js";
+import type { ParentOwner, ParentState } from "./native-subagent-monitor-types.js";
 import {
   DEFAULT_RECOVERY_POLL_DELAYS_MS,
   logRecoveryFailure,
@@ -18,6 +14,7 @@ import {
   readNativeSubagentSubmissionTurn,
   readNativeSubagentSubmissionTaskState,
   type NativeSubagentHookAcknowledgement,
+  type NativeSubagentSubmissionDependencies,
   hasSubmissionCallCustody,
   observeSubmissionPredecessor,
   type NativeSubagentSubmissionCall as SubmissionCall,

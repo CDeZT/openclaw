@@ -141,6 +141,12 @@ import {
   createLeasedCodexLifecycleHarness,
 } from "./thread-lifecycle.test-fixtures.js";
 
+const NATIVE_CODEX_PREFLIGHT_REQUESTS = [
+  "configRequirements/read",
+  "config/read",
+  "configRequirements/read",
+] as const;
+
 const agentHarnessRuntimeMocks = vi.hoisted(() => ({
   forceModelToolsUnsupported: false,
   skipRequesterScopedMcpMaterialization: false,
@@ -4989,8 +4995,7 @@ describe("runCodexAppServerAttempt", () => {
       "invalid image_url base64 payload",
     );
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/start",
       "turn/start",
       "thread/unsubscribe",
@@ -5012,8 +5017,7 @@ describe("runCodexAppServerAttempt", () => {
       "unsupported image input",
     );
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/read",
       "thread/resume",
       "thread/inject_items",
@@ -5072,8 +5076,7 @@ describe("runCodexAppServerAttempt", () => {
     await harness.completeTurn({ threadId: "thread-existing", turnId: "turn-1" });
     await run;
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/read",
       "thread/resume",
       "thread/inject_items",
@@ -5138,8 +5141,7 @@ describe("runCodexAppServerAttempt", () => {
     await harness.completeTurn({ threadId: "thread-existing", turnId: "turn-1" });
     await run;
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/read",
       "thread/resume",
       "thread/inject_items",
@@ -5172,8 +5174,7 @@ describe("runCodexAppServerAttempt", () => {
       "cannot steer a review turn",
     );
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/read",
       "thread/resume",
       "thread/inject_items",
@@ -6519,14 +6520,12 @@ describe("runCodexAppServerAttempt", () => {
     expect(readAttemptTerminal(result).aborted).toBe(false);
     expect(requests).toEqual([
       ...Array.from({ length: closeCount }, () => [
-        "config/read",
-        "configRequirements/read",
+        ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
         "thread/read",
         "thread/resume",
       ]),
       [
-        "config/read",
-        "configRequirements/read",
+        ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
         "thread/read",
         "thread/resume",
         "thread/inject_items",
@@ -6541,8 +6540,8 @@ describe("runCodexAppServerAttempt", () => {
       runSharedClientRestartTest(1, { denyReplacementShell: true, requests }),
     ).rejects.toThrow("Codex native code mode requires shell_tool");
     expect(requests).toEqual([
-      ["config/read", "configRequirements/read", "thread/read", "thread/resume"],
-      ["config/read", "configRequirements/read"],
+      [...NATIVE_CODEX_PREFLIGHT_REQUESTS, "thread/read", "thread/resume"],
+      [...NATIVE_CODEX_PREFLIGHT_REQUESTS],
     ]);
   });
   it("does not retire the shared Codex client when a spawned helper run fails with a logical thread/start error", async () => {

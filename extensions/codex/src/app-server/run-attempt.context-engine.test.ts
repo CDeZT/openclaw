@@ -41,6 +41,11 @@ import {
 } from "./session-binding.test-helpers.js";
 
 const CODEX_TURN_START_TEXT_INPUT_MAX_CHARS = 1 << 20;
+const NATIVE_CODEX_PREFLIGHT_REQUESTS = [
+  "configRequirements/read",
+  "config/read",
+  "configRequirements/read",
+] as const;
 
 function createParams(sessionFile: string, workspaceDir: string): EmbeddedRunAttemptParams {
   const params = createSharedParams(sessionFile, workspaceDir);
@@ -805,12 +810,10 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     });
 
     expect(firstHarness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/start",
       "turn/start",
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "turn/start",
     ]);
     const secondInputText = getRequestInputTextAt(firstHarness, 1);
@@ -922,8 +925,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     await harness.waitForMethod("turn/start");
 
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/read",
       "thread/resume",
       "thread/inject_items",
@@ -1002,8 +1004,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     await harness.waitForMethod("turn/start");
 
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/start",
       "turn/start",
     ]);
@@ -1087,8 +1088,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     await harness.waitForMethod("turn/start");
 
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/start",
       "turn/start",
     ]);
@@ -1137,8 +1137,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     await harness.waitForMethod("turn/start");
 
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/start",
       "turn/start",
     ]);
@@ -1188,8 +1187,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     await harness.waitForMethod("turn/start");
 
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/start",
       "turn/start",
     ]);
@@ -1272,8 +1270,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     await harness.waitForMethod("turn/start");
 
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/start",
       "turn/start",
     ]);
@@ -1434,8 +1431,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     await harness.waitForMethod("turn/start");
 
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/start",
       "turn/start",
     ]);
@@ -1573,14 +1569,12 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
           }),
         ]);
         expect(harness.requests.map((request) => request.method)).toEqual([
-          "config/read",
-          "configRequirements/read",
+          ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
           "thread/read",
           "thread/resume",
           "thread/inject_items",
           "turn/start",
-          "config/read",
-          "configRequirements/read",
+          ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
           "thread/start",
           "turn/start",
         ]);
@@ -1681,14 +1675,12 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
       replaySafe: true,
     });
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/read",
       "thread/resume",
       "thread/inject_items",
       "turn/start",
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/start",
       "thread/unsubscribe",
     ]);
@@ -1759,8 +1751,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
 
     expect(compact).not.toHaveBeenCalled();
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/read",
       "thread/resume",
       "thread/inject_items",
@@ -1804,8 +1795,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     expect(compact).not.toHaveBeenCalled();
     expect(assemble).toHaveBeenCalledTimes(1);
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/start",
       "turn/start",
     ]);
@@ -1848,8 +1838,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     expect(compact).not.toHaveBeenCalled();
     expect(assemble).toHaveBeenCalledTimes(1);
     expect(harness.requests.map((request) => request.method)).toEqual([
-      "config/read",
-      "configRequirements/read",
+      ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
       "thread/start",
       "turn/start",
       "thread/unsubscribe",
@@ -1911,14 +1900,12 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     await vi.waitFor(
       () =>
         expect(harness.requests.map((request) => request.method)).toEqual([
-          "config/read",
-          "configRequirements/read",
+          ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
           "thread/read",
           "thread/resume",
           "thread/inject_items",
           "turn/start",
-          "config/read",
-          "configRequirements/read",
+          ...NATIVE_CODEX_PREFLIGHT_REQUESTS,
           "thread/start",
           "turn/start",
         ]),

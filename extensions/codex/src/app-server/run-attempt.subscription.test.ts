@@ -274,6 +274,7 @@ describe("Codex attempt subscription recovery", () => {
       );
       expect(compact).not.toHaveBeenCalled();
       expect(harness.requests.map((request) => request.method)).toEqual([
+        "configRequirements/read",
         "config/read",
         "configRequirements/read",
         "thread/read",

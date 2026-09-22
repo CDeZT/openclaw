@@ -5,15 +5,54 @@ import { readNativeTurnEnd, readThreadParentThreadId } from "./native-subagent-h
 import type {
   ChildState,
   KnownChild,
+  NativeSubagentMonitorClient,
   ParentOwner,
   ParentState,
 } from "./native-subagent-monitor-types.js";
+import type { CodexNativeSubagentRecoveryCoordinator } from "./native-subagent-recovery-coordinator.js";
 import type {
   CodexNativeSubagentSubmission,
   CodexNativeSubagentSubmissionAcknowledgement,
 } from "./native-subagent-submission.js";
-import { readNativeTaskAssignment } from "./native-subagent-task-ids.js";
-import { isJsonObject, type JsonObject } from "./protocol.js";
+import {
+  readNativeTaskAssignment,
+  type NativeSubagentAssignment,
+} from "./native-subagent-task-ids.js";
+import { isJsonObject, type CodexServerNotification, type JsonObject } from "./protocol.js";
+
+export type NativeSubagentSubmissionDependencies = {
+  isCurrent: (state: ParentState) => boolean;
+  assertPersistenceCurrent: (state: ParentState) => void;
+  parentOwner: (state: ParentState, turnId: string) => ParentOwner | undefined;
+  client: NativeSubagentMonitorClient;
+  recovery: CodexNativeSubagentRecoveryCoordinator;
+  knownChildren: ReadonlyMap<string, KnownChild>;
+  currentChild: (threadId: string) => ChildState | undefined;
+  prepareReceiver: (state: ParentState, threadId: string) => boolean;
+  restoreKnownChild: (
+    state: ParentState,
+    assignment: NativeSubagentAssignment,
+    records: readonly AgentHarnessTaskRecord[],
+  ) => void;
+  registerChild: (
+    state: ParentState,
+    assignment: NativeSubagentAssignment,
+    options: { admitAssignment: true },
+  ) => ChildState | undefined;
+  admitFollowup: (known: KnownChild, threadId: string) => ChildState | undefined;
+  resumeChild: (child: ChildState) => void;
+  completeChild: (notification: CodexServerNotification, child: ChildState) => Promise<void>;
+  retain: (state: ParentState, childThreadId: string) => () => void;
+  hasObservationBacking?: (parentThreadId: string, childThreadId: string) => boolean;
+  acceptContinuation: (
+    state: ParentState,
+    owner: ParentOwner,
+    childThreadId: string,
+    call: NativeSubagentSubmissionCall,
+  ) => void;
+  onSettled: (state: ParentState) => void;
+  recoveryPollDelaysMs?: readonly number[];
+};
 
 export function readNativeSubagentSubmissionTaskState(
   task: AgentHarnessTaskRecord | undefined,

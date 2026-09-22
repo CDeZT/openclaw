@@ -9,6 +9,7 @@ import {
   withSessionTranscriptWriteLock,
 } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAttemptClientHarness } from "./attempt-startup.test-support.js";
 import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
 import {
   TURN_FINALIZE_DRAIN_ABORT_GRACE_MS,
@@ -30,7 +31,7 @@ import {
 } from "./run-attempt-test-harness.js";
 import { resetSharedCodexAppServerClientForTests } from "./shared-client.js";
 import { attachSqliteSessionTarget } from "./sqlite-session.test-helpers.js";
-import { createInferenceReadyClientHarness, waitForHarnessRequest } from "./test-support.js";
+import { waitForHarnessRequest } from "./test-support.js";
 import { codexTranscriptMirrorRuntime } from "./transcript-mirror.js";
 import { CODEX_APP_SERVER_VERSION } from "./version.js";
 
@@ -233,7 +234,7 @@ describe("Codex app-server terminal settlement", () => {
   );
 
   it("preserves a completed reply through degraded settlement without stopping a shared sibling", async () => {
-    const physical = createInferenceReadyClientHarness();
+    const physical = createAttemptClientHarness();
     const startClient = vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(physical.client);
     const projection = createDeferred<void>();
     const onReasoningStream = vi.fn(() => projection.promise);
@@ -275,8 +276,6 @@ describe("Codex app-server terminal settlement", () => {
         id: initialize.id,
         result: { userAgent: `openclaw/${CODEX_APP_SERVER_VERSION} (macOS; test)` },
       });
-      const firstRequirements = await waitForHarnessRequest(physical, "configRequirements/read");
-      physical.send({ id: firstRequirements.id, result: { requirements: null } });
       const firstThread = await waitForHarnessRequest(physical, "thread/start");
       physical.send({ id: firstThread.id, result: threadStartResult("thread-settlement") });
       const firstTurn = await waitForHarnessRequest(physical, "turn/start");
@@ -284,12 +283,6 @@ describe("Codex app-server terminal settlement", () => {
 
       const siblingStart = physical.writes.length;
       siblingRun = runCodexAppServerAttempt(siblingParams);
-      const siblingRequirements = await waitForHarnessRequest(
-        physical,
-        "configRequirements/read",
-        siblingStart,
-      );
-      physical.send({ id: siblingRequirements.id, result: { requirements: null } });
       const siblingThread = await waitForHarnessRequest(physical, "thread/start", siblingStart);
       physical.send({ id: siblingThread.id, result: threadStartResult("thread-sibling") });
       const siblingTurn = await waitForHarnessRequest(physical, "turn/start", siblingStart);

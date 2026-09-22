@@ -10,6 +10,7 @@ import {
   onInternalDiagnosticEvent,
   type DiagnosticEventPayload,
 } from "openclaw/plugin-sdk/diagnostic-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import {
   createMockPluginRegistry,
@@ -25,6 +26,7 @@ import {
   createParams,
   createResumeHarness,
   createStartedThreadHarness,
+  createTestParams,
   extractGenerationFromThreadRequest,
   extractRelayIdFromThreadRequest,
   runCodexAppServerAttempt,
@@ -62,40 +64,49 @@ function writeCodexAppServerBinding(...args: Parameters<typeof writeRawCodexAppS
 }
 
 describe("runCodexAppServerAttempt native hook relay", () => {
-  it("refuses to run when managed-only hooks would silently discard its enforcing relay", async () => {
-    const sessionFile = path.join(tempDir, "managed-hooks-only.jsonl");
-    const workspaceDir = path.join(tempDir, "managed-hooks-only-workspace");
-    const harness = createStartedThreadHarness(async (method) =>
-      method === "configRequirements/read"
-        ? { requirements: { allowManagedHooksOnly: true } }
-        : undefined,
-    );
+  const managedOnlyHooks = { requirements: { allowManagedHooksOnly: true } };
+  it.each(["pre_tool_use", "post_tool_use"] as const)(
+    "refuses managed-only hooks when the %s relay is required",
+    async (event) => {
+      const sessionFile = path.join(tempDir, "managed-hooks-only.jsonl");
+      const workspaceDir = path.join(tempDir, "managed-hooks-only-workspace");
+      const harness = createStartedThreadHarness(async (method) =>
+        method === "configRequirements/read" ? managedOnlyHooks : undefined,
+      );
 
-    await expect(
-      runCodexAppServerAttempt(createLoopRelayParams(sessionFile, workspaceDir), {
-        nativeHookRelay: { enabled: true, events: ["pre_tool_use"] },
-      }),
-    ).rejects.toThrow(/managed-only hooks.*OpenClaw native hook relay/i);
-    expect(harness.requests.some((request) => request.method === "thread/start")).toBe(false);
-  });
+      await expect(
+        runCodexAppServerAttempt(createLoopRelayParams(sessionFile, workspaceDir), {
+          nativeHookRelay: { enabled: true, events: [event] },
+        }),
+      ).rejects.toThrow(/managed-only hooks.*OpenClaw native hook relay/i);
+      expect(harness.requests.some((request) => request.method === "thread/start")).toBe(false);
+    },
+  );
 
   it("allows observational hooks under managed-only hook policy", async () => {
-    const sessionFile = path.join(tempDir, "observational-hooks-only.jsonl");
-    const workspaceDir = path.join(tempDir, "observational-hooks-only-workspace");
-    const harness = createStartedThreadHarness(async (method) =>
-      method === "configRequirements/read"
-        ? { requirements: { allowManagedHooksOnly: true } }
-        : undefined,
+    const params = createTestParams();
+    params.disableTools = true;
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "after_tool_call", handler: vi.fn() }]),
     );
+    const turnStarted = createDeferred<void>();
+    const harness = createStartedThreadHarness(async (method) => {
+      if (method === "turn/start") {
+        turnStarted.resolve();
+      }
+      return method === "configRequirements/read" ? managedOnlyHooks : undefined;
+    });
 
-    const run = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir), {
+    const run = runCodexAppServerAttempt(params, {
       nativeHookRelay: { enabled: true, events: ["post_tool_use"] },
     });
-    await harness.waitForMethod("turn/start");
+    await Promise.race([turnStarted.promise, run]);
+    expect(harness.requests.some((request) => request.method === "turn/start")).toBe(true);
     await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
     await run;
 
     const startRequest = harness.requests.find((request) => request.method === "thread/start");
+    expect(startRequest?.params).toMatchObject({ config: { "hooks.PostToolUse": [{}] } });
     expect(startRequest?.params).not.toHaveProperty(["config", "hooks.PreToolUse"]);
   });
 
@@ -135,10 +146,8 @@ describe("runCodexAppServerAttempt native hook relay", () => {
     });
     setActivePluginRegistry(registry);
     initializeGlobalHookRunner(registry);
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    const workspaceDir = path.join(tempDir, "workspace");
     const harness = createStartedThreadHarness();
-    const params = createParams(sessionFile, workspaceDir);
+    const params = createTestParams();
     params.sandboxSessionKey = "agent:main:policy";
     const run = runCodexAppServerAttempt(params, {
       nativeHookRelay: {
@@ -600,7 +609,9 @@ describe("runCodexAppServerAttempt native hook relay", () => {
       ?.config;
     expect(startConfig?.["features.hooks"]).toBe(true);
     expect(Array.isArray(startConfig?.["hooks.PreToolUse"])).toBe(true);
-    expect(startConfig?.["hooks.PostToolUse"]).toEqual([]);
+    expect(startConfig?.["hooks.PostToolUse"]).toMatchObject([
+      { matcher: "(?i)^(?:multi_agent_v1send_input)$" },
+    ]);
     expect(startConfig?.["hooks.Stop"]).toEqual([]);
     expect(startConfig).not.toHaveProperty("hooks.PermissionRequest");
     const relayId = extractRelayIdFromThreadRequest(startRequest?.params);
@@ -615,11 +626,9 @@ describe("runCodexAppServerAttempt native hook relay", () => {
   });
 
   it("preserves explicit native permission request relay events in app-server approval modes", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    const workspaceDir = path.join(tempDir, "workspace");
     const harness = createStartedThreadHarness();
 
-    const run = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir), {
+    const run = runCodexAppServerAttempt(createTestParams(), {
       pluginConfig: {
         appServer: {
           mode: "guardian",
@@ -970,11 +979,9 @@ describe("runCodexAppServerAttempt native hook relay", () => {
   });
 
   it("sends clearing Codex native hook config when the relay is disabled", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    const workspaceDir = path.join(tempDir, "workspace");
     const harness = createStartedThreadHarness();
 
-    const run = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir), {
+    const run = runCodexAppServerAttempt(createTestParams(), {
       nativeHookRelay: { enabled: false },
     });
     await harness.waitForMethod("turn/start");
@@ -992,8 +999,6 @@ describe("runCodexAppServerAttempt native hook relay", () => {
   });
 
   it("cleans up native hook relay state when turn/start fails", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    const workspaceDir = path.join(tempDir, "workspace");
     const diagnosticEvents: DiagnosticEventPayload[] = [];
     const unsubscribeDiagnostics = onInternalDiagnosticEvent((event) =>
       diagnosticEvents.push(event),
@@ -1011,7 +1016,7 @@ describe("runCodexAppServerAttempt native hook relay", () => {
       }
       return undefined;
     });
-    const params = createParams(sessionFile, workspaceDir);
+    const params = createTestParams();
     params.sandboxSessionKey = "agent:main:policy";
 
     try {
@@ -1048,11 +1053,9 @@ describe("runCodexAppServerAttempt native hook relay", () => {
   });
 
   it("cleans up native hook relay state when the Codex turn aborts", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    const workspaceDir = path.join(tempDir, "workspace");
     const harness = createStartedThreadHarness();
 
-    const run = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir), {
+    const run = runCodexAppServerAttempt(createTestParams(), {
       nativeHookRelay: { enabled: true },
     });
     await harness.waitForMethod("turn/start");
