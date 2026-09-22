@@ -14,6 +14,11 @@ import {
   readSandboxRegistryInDatabase,
   readSandboxRuntimeIdsInDatabase,
 } from "../agents/sandbox/registry.kernel.js";
+import {
+  loadSubagentRunsByRunIdsFromSqlite,
+  loadSubagentRunsForSessionFromSqlite,
+  loadSubagentSessionListRunsFromSqlite,
+} from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/workspace-state-store.kernel.js";
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
@@ -124,6 +129,14 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
         typeof input.command.input.publicKey === "string" &&
         typeof input.command.input.nowMs === "number") ||
       input.command.type === "admit" ||
+      input.command.type === "subagents.sessionList" ||
+      (input.command.type === "subagents.runs" &&
+        isRecord(input.command.scope) &&
+        ((input.command.scope.kind === "session" &&
+          typeof input.command.scope.sessionKey === "string") ||
+          (input.command.scope.kind === "ids" &&
+            Array.isArray(input.command.scope.runIds) &&
+            input.command.scope.runIds.every((runId: unknown) => typeof runId === "string")))) ||
       input.command.type === "exec-approvals.read" ||
       ((input.command.type === "skills.library.descriptions" ||
         input.command.type === "skills.library.manifests") &&
@@ -241,9 +254,51 @@ serveOwnedWorkerTasks(
                     : { status: "unavailable" },
               };
             }
+            if (command.type === "subagents.sessionList") {
+              const result = readOpenClawStateReadOnlyLocation(
+                ({ db }) => {
+                  sourceAdmitted = true;
+                  return loadSubagentSessionListRunsFromSqlite(undefined, { db });
+                },
+                input.databasePath,
+                input.location,
+                undefined,
+                input.expectedIdentity,
+                input.snapshotRoot,
+                true,
+              );
+              if (result.status === "unavailable" && sourceAdmitted !== true) {
+                throw result.error;
+              }
+              return result.status === "available"
+                ? { ok: true, type: command.type, sourceAdmitted: true, runs: result.value }
+                : {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted: true,
+                    unavailable: {
+                      message: String(result.error),
+                      error: encodeOpenClawStateWorkerError(result.error, {
+                        includeOrdinary: true,
+                      }),
+                    },
+                  };
+            }
             return withOpenClawStateReadOnlyLocation(
               ({ db }) => {
                 sourceAdmitted = true;
+                if (command.type === "subagents.runs") {
+                  const rows =
+                    command.scope.kind === "session"
+                      ? loadSubagentRunsForSessionFromSqlite(command.scope.sessionKey, { db })
+                      : loadSubagentRunsByRunIdsFromSqlite(command.scope.runIds, { db });
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    runs: new Map(rows.map((entry) => [entry.runId, entry])),
+                  };
+                }
                 if (command.type === "mcpOAuth.statuses") {
                   return {
                     ok: true,
