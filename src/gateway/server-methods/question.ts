@@ -5,6 +5,7 @@ import {
   type Question,
   type QuestionRequestParams,
   type QuestionRecord,
+  type QuestionResolvedEvent,
   validateQuestionGetParams,
   validateQuestionListParams,
   validateQuestionRequestParams,
@@ -273,7 +274,8 @@ export function createQuestionHandlers(
           };
           // Preparation yielded; every caller must still own this initial mutation.
           authority.assertCurrent();
-          const record = manager.request({
+          // The manager awaits returned promises while its public callback type stays void.
+          const managerRequest = {
             ...(request.id ? { id: request.id } : {}),
             questions: normalizeQuestions(request),
             ...(requestedSession?.ok
@@ -288,10 +290,10 @@ export function createQuestionHandlers(
             sessionAccess,
             registerHumanInputWait:
               requester && isRequesterActive
-                ? (isPending) =>
+                ? (isPending: () => boolean) =>
                     registerActiveEmbeddedRunHumanInputWait(requester.delegatedAuthority, isPending)
                 : undefined,
-            onResolved: async (event, observation) => {
+            onResolved: async (event: QuestionResolvedEvent, observation: QuestionObservation) => {
               handleQuestionChannelResolved(event);
               let consumed = false;
               try {
@@ -327,7 +329,8 @@ export function createQuestionHandlers(
                 broadcastQuestion("question.resolved", event, observation, undefined);
               }
             },
-          });
+          };
+          const record = manager.request(managerRequest);
           accepted = true;
           handleQuestionChannelRequested(record);
           broadcastQuestion(

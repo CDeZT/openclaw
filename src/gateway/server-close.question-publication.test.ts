@@ -29,7 +29,7 @@ it.each(["fulfilled", "rejected"] as const)(
           throw new Error("Question publication fixture failure");
         }
       });
-      const record = manager.request({
+      const request = {
         questions: [
           {
             questionId: "choice",
@@ -41,7 +41,8 @@ it.each(["fulfilled", "rejected"] as const)(
         ],
         timeoutMs: 60_000,
         onResolved,
-      });
+      };
+      const record = manager.request(request);
       const observation = expectDefined(manager.observe(record.id), "question observation");
       const answers = { answers: { choice: ["Committed"] } };
       expect(manager.resolve(record.id, answers)).toEqual({ status: "answered", answers });
