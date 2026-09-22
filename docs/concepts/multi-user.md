@@ -202,9 +202,9 @@ The Inbox works without browser notification permission. For optional alerts whi
 
 ## Agent-spawned sessions
 
-Sessions an agent creates with `sessions_spawn` (`visible: true`) are attributed to the requesting agent. The creator and initial owner is the agent itself. The sidebar shows the agent's configured identity name and avatar, rather than an internal session key.
+Sessions an agent creates with `sessions_spawn` (`visible: true`) retain the requesting agent as their immutable creator. If the requesting session has a verified human owner, a new visible child assigns that person as its initial owner. Otherwise, the requesting agent is also the initial owner. The sidebar shows the current owner's profile or configured agent identity rather than an internal session key. This assignment changes responsibility and display only; sharing and visibility authority remains anchored on the creator.
 
-The accepted spawn result doubles as a receipt. It includes the child session key, the run id, a direct Control UI `sessionUrl`, and an `owner` record naming the requesting agent. The `sessionUrl` is omitted when the Control UI is disabled. When an agent acknowledges the spawn in a chat channel, it puts the session URL on the first line and `Owner: <label>` on the second. You can then open the session and see who is responsible at a glance. Reassign the session to yourself with **Assign to me** if you take the work over. See [Sub-agents](/tools/subagents) for the spawn lifecycle.
+The accepted spawn result doubles as a receipt. It includes the child session key, the run id, a direct Control UI `sessionUrl`, and an `owner` record naming the stored owner. The `sessionUrl` is omitted when the Control UI is disabled. When an agent acknowledges the spawn in a chat channel, it puts the session URL on the first line and `Owner: <label>` on the second. You can then open the session and see who is responsible at a glance. Use **Assign to me** or the `sessions` tool only when responsibility should move again. See [Sub-agents](/tools/subagents) for the spawn lifecycle.
 
 ## Identity-scoped convenience state
 
