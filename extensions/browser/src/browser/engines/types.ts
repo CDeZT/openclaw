@@ -69,6 +69,7 @@ export type BrowserEngineAdapter = {
   supportsRequest: (request: {
     path: string;
     actionKind?: string;
+    actionSelector?: string;
     snapshot?: { labels: boolean; format: string; refs: string; selector: string; frame: string };
   }) => boolean;
   createCdpNormalizer?: () => BrowserEngineCdpNormalizer;

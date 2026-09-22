@@ -44,12 +44,12 @@ export const lightpandaEngine: BrowserEngineAdapter = {
   maxPagesPerConnection: 1,
   defaultSnapshotRefs: "aria",
   createCdpNormalizer: createLightpandaCdpNormalizer,
-  supportsRequest({ path, actionKind, snapshot }) {
+  supportsRequest({ path, actionKind, actionSelector, snapshot }) {
     if (!SEMANTIC_ROUTES.has(path)) {
       return false;
     }
     if (path === "/act") {
-      return actionKind === undefined || SEMANTIC_ACT_KINDS.has(actionKind);
+      return !actionSelector && (actionKind === undefined || SEMANTIC_ACT_KINDS.has(actionKind));
     }
     return (
       !snapshot ||

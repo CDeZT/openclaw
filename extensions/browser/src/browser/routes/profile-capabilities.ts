@@ -35,6 +35,7 @@ export function withBrowserProfileCapabilities(
           !engine.supportsRequest({
             path,
             actionKind: typeof body.kind === "string" ? body.kind : undefined,
+            actionSelector: toStringOrEmpty(body.selector),
             ...(path === "/snapshot"
               ? {
                   snapshot: {
