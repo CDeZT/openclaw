@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 // Synthetic loopback Gateway for the native iOS approval-navigation UI tests.
 // This fixture never executes commands or resolves approvals.
 // First terminal, from the repository root: node scripts/test-ios-shell-gateway.mjs
@@ -12,7 +11,9 @@ import { readFileSync } from "node:fs";
 //   -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testLiveGatewayApprovalNotificationsFromOverview \
 //   -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testLiveGatewayApprovalNotificationsFromSettings
 // TEST_RUNNER_ forwards these opt-in settings to XCTest; no real Gateway credentials are used.
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { WebSocketServer, WebSocket } from "ws";
 const attachmentMode = process.argv.includes("--attachments");
 const attachmentMessage = attachmentMode
   ? JSON.parse(
@@ -26,7 +27,6 @@ const documentBytes = Buffer.from("name,value\nproof,1\n");
 const document = attachmentMessage?.content.at(-1).attachment;
 let documentDenied = false;
 let documentDownloads = 0;
-import { WebSocketServer, WebSocket } from "ws";
 const requests = [];
 let partial = false;
 const created = Date.now();
