@@ -376,9 +376,6 @@ importers:
       qrcode:
         specifier: 1.5.4
         version: 1.5.4
-      quickjs-wasi:
-        specifier: 3.6.0
-        version: 3.6.0
       rastermill:
         specifier: 0.3.3
         version: 0.3.3
@@ -886,6 +883,16 @@ importers:
         version: link:../..
 
   extensions/cloudflare-ai-gateway:
+    devDependencies:
+      '@openclaw/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
+
+  extensions/code-mode-quickjs:
+    dependencies:
+      quickjs-wasi:
+        specifier: 3.6.0
+        version: 3.6.0
     devDependencies:
       '@openclaw/plugin-sdk':
         specifier: workspace:*

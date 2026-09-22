@@ -447,6 +447,10 @@
       "types": "./dist/plugin-sdk/core.d.ts",
       "default": "./dist/plugin-sdk/core.js"
     },
+    "./plugin-sdk/code-mode-executor-runtime": {
+      "types": "./dist/plugin-sdk/code-mode-executor-runtime.d.ts",
+      "default": "./dist/plugin-sdk/code-mode-executor-runtime.js"
+    },
     "./plugin-sdk/control-ui-link-reader": {
       "types": "./dist/plugin-sdk/control-ui-link-reader.d.ts",
       "default": "./dist/plugin-sdk/control-ui-link-reader.js"
@@ -2282,7 +2286,6 @@
     "playwright-core": "1.63.0",
     "pretty-ms": "9.3.1",
     "qrcode": "1.5.4",
-    "quickjs-wasi": "3.6.0",
     "rastermill": "0.3.3",
     "semver": "7.8.5",
     "tar": "7.5.22",
