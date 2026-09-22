@@ -123,33 +123,41 @@ describe("compact worker timing refit", () => {
     ]);
   });
 
-  it("merges pretty-printed job env and group env while preserving their lowest worker pin", () => {
-    const jobEnv = { FEATURE: "job-value", JOB_ONLY: "kept", OPENCLAW_VITEST_MAX_WORKERS: "1" };
-    const runs = [false, true].map((pretty, index) => {
-      const encodedEnv = JSON.stringify(jobEnv, null, pretty ? 2 : undefined)
-        .split("\n")
-        .map(
-          (line, row) =>
-            `2026-08-27T23:00:00Z ${row === 0 ? "OPENCLAW_NODE_TEST_ENV_JSON: " : ""}${line}`,
-        )
-        .join("\n");
-      return timingRun(index + 1, [
-        {
-          kind: pretty ? "tooling" : "compact",
-          labels: [runner],
-          text: `${encodedEnv}\n${workerLog(80, {}, { ...workerGroup, env: { ...workerGroup.env, OPENCLAW_VITEST_MAX_WORKERS: "6" } })}`,
-        },
+  it.each(["timestamped", "untimestamped"])(
+    "merges %s job env continuations while preserving the lowest worker pin",
+    (continuation) => {
+      const jobEnv = { FEATURE: "job-value", JOB_ONLY: "kept", OPENCLAW_VITEST_MAX_WORKERS: "1" };
+      const runs = [false, true].map((pretty, index) => {
+        const encodedEnv = JSON.stringify(jobEnv, null, pretty ? 2 : undefined)
+          .split("\n")
+          .map((line, row) =>
+            pretty && row > 0 && continuation === "untimestamped"
+              ? line
+              : `2026-08-27T23:00:00Z ${row === 0 ? "OPENCLAW_NODE_TEST_ENV_JSON: " : ""}${line}`,
+          )
+          .join("\n");
+        return timingRun(index + 1, [
+          {
+            kind: pretty ? "tooling" : "compact",
+            labels: [runner],
+            text: `${encodedEnv}\n${workerLog(80, {}, { ...workerGroup, env: { ...workerGroup.env, OPENCLAW_VITEST_MAX_WORKERS: "6" } })}`,
+          },
+        ]);
+      });
+      const result = refitTestTimings(runs);
+      expect(result.timings.compactWorkerTimings).toEqual([
+        expect.objectContaining({
+          workers: 1,
+          env: { FEATURE: "1", JOB_ONLY: "kept" },
+          seconds: 80,
+        }),
       ]);
-    });
-    const result = refitTestTimings(runs);
-    expect(result.timings.compactWorkerTimings).toEqual([
-      expect.objectContaining({ workers: 1, env: { FEATURE: "1", JOB_ONLY: "kept" }, seconds: 80 }),
-    ]);
-    expect(result.timings.source).toContain("main CI runs: 1;");
-    expect(result.timings.source).toContain(
-      "pull_request CI merge-ref runs (tooling files and exact compact worker observations): 2",
-    );
-  });
+      expect(result.timings.source).toContain("main CI runs: 1;");
+      expect(result.timings.source).toContain(
+        "pull_request CI merge-ref runs (tooling files and exact compact worker observations): 2",
+      );
+    },
+  );
 
   it("requires two independent completed exact workloads and retains absent classes across PR subsets", () => {
     const log = { kind: "tooling" as const, labels: [runner], text: workerLog(480) };

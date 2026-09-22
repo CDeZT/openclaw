@@ -120,22 +120,23 @@ function readCompactWorkerLog(
   if (!runner || !workersText || !resources) {
     return;
   }
-  const envLines = text
-    .split("\n")
-    .map((line) => /^\d{4}-\d\d-\d\dT[\d:.]+Z\s+(.*)$/u.exec(line)?.[1] ?? "");
+  const envLines = text.split("\n");
+  const timestampedValue = (line: string) => /^\d{4}-\d\d-\d\dT[\d:.]+Z\s+(.*)$/u.exec(line)?.[1];
   const readEnv = (name: string) => {
     const values = new Set<string>();
     for (let index = 0; index < envLines.length; index += 1) {
-      const match = new RegExp(`^${name}: (.*)$`, "u").exec(envLines[index]!);
+      const match = new RegExp(`^${name}: (.*)$`, "u").exec(
+        timestampedValue(envLines[index]!) ?? "",
+      );
       if (!match) {
         continue;
       }
       let value = match[1]!.trim();
-      // Actions pretty-prints toJson(matrix.env), timestamping every line.
+      // Actions may timestamp only the first line of toJson(matrix.env).
       // Env values are strings, so an object cannot contain a nested closing row.
       if (value === "{") {
         while (++index < envLines.length) {
-          const line = envLines[index]!;
+          const line = timestampedValue(envLines[index]!) ?? envLines[index]!;
           value += `\n${line}`;
           if (line.trim() === "}") {
             break;

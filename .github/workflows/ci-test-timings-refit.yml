@@ -77,6 +77,8 @@ jobs:
             scripts/ci-run-timings.mjs
             scripts/lib/ci-test-timings-refit.mts
             scripts/lib/ci-node-test-groups-codec.mts
+            scripts/lib/ci-node-test-workers.mts
+            scripts/lib/local-check-runtime.mts
             scripts/lib/ci-test-timings-schema.mts
             scripts/lib/vitest-shard-metadata.mts
             scripts/lib/direct-run.mjs
@@ -96,7 +98,7 @@ jobs:
 
             ## Why This Change Was Made
 
-            The daily refit uses medians, rejects outliers and single samples, and keeps existing weights when the new median is within 15% of them. Pull-request samples measure their merge-ref and update only PR-only tooling files. Main compact keys absent from every contributing run are removed only when their profile has observations from at least three sampled runs; partial PR inventories never prune tooling files. The table below lists each removal explicitly.
+            The daily refit uses medians, rejects outliers and single samples, and keeps existing weights when the new median is within 15% of them. Pull-request samples measure their merge-ref and update PR-only tooling files and exact compact worker-capacity observations without replacing main parent weights. Main compact keys absent from every contributing run are removed only when their profile has observations from at least three sampled runs; partial PR inventories never prune tooling files. The table below lists each removal explicitly.
 
             ## User Impact
 

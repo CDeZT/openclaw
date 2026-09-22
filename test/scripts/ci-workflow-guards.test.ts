@@ -1966,29 +1966,32 @@ NODE
     },
   );
 
-  it.skipIf(process.platform === "win32")(
-    "defers timing refits when only the runtime group codec changes on main",
-    () => {
-      const workflow = readWorkflow(".github/workflows/ci-test-timings-refit.yml");
-      const publisher = expectDefined(
-        workflow.jobs.refit.steps.find(
-          (step: WorkflowStep) => step.uses === "./.github/actions/publish-generated-pr",
-        ),
-        "timing refit publisher",
-      );
-      const result = runGeneratedPublisherScenario(null, {
-        invalidationPaths: publisher.with["invalidation-paths"],
-        updateSource: "scripts/lib/ci-node-test-groups-codec.mts",
-      });
+  it
+    .skipIf(process.platform === "win32")
+    .for([
+      "scripts/lib/ci-node-test-groups-codec.mts",
+      "scripts/lib/ci-node-test-workers.mts",
+      "scripts/lib/local-check-runtime.mts",
+    ])("defers timing refits when %s changes on main", (updateSource) => {
+    const workflow = readWorkflow(".github/workflows/ci-test-timings-refit.yml");
+    const publisher = expectDefined(
+      workflow.jobs.refit.steps.find(
+        (step: WorkflowStep) => step.uses === "./.github/actions/publish-generated-pr",
+      ),
+      "timing refit publisher",
+    );
+    const result = runGeneratedPublisherScenario(null, {
+      invalidationPaths: publisher.with["invalidation-paths"],
+      updateSource,
+    });
 
-      expect(result.branchExists).toBe(false);
-      expect(result.mainGeneratedA).toBe("old-a");
-      expect(result.mergeCalls).toBe("");
-      expect(result.summary).toContain(
-        "Deferred stale generated output because generator inputs changed on main.",
-      );
-    },
-  );
+    expect(result.branchExists).toBe(false);
+    expect(result.mainGeneratedA).toBe("old-a");
+    expect(result.mergeCalls).toBe("");
+    expect(result.summary).toContain(
+      "Deferred stale generated output because generator inputs changed on main.",
+    );
+  });
 
   it.skipIf(process.platform === "win32")(
     "publishes after unrelated source changes when input invalidation is disabled",

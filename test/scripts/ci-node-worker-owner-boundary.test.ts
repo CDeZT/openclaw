@@ -11,6 +11,7 @@ const root = process.cwd();
 const sparseFiles = [
   "scripts/ci-run-node-test-shard.mts",
   "scripts/lib/ci-node-test-groups-codec.mts",
+  "scripts/lib/ci-node-test-workers.mts",
   "scripts/lib/direct-run.mjs",
   "scripts/lib/local-check-runtime.mts",
   "scripts/lib/numeric-options.mjs",
