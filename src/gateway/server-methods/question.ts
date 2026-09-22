@@ -25,7 +25,6 @@ import { authorizeGatewaySessionCreation, hasOperatorBoundary } from "../operato
 import {
   QuestionManager,
   QuestionManagerError,
-  QuestionManagerErrorCodes,
   type QuestionObservation,
 } from "../question-manager.js";
 import {
@@ -43,7 +42,7 @@ import { isGatewayAdmin } from "../session-sharing.js";
 import { resolveStoredSessionKeyForAgentStore } from "../session-store-key.js";
 import type { SecretStoreWriteService } from "./secrets.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
-import type { GatewayRequestHandlerOptions, GatewayRequestHandlers, RespondFn } from "./types.js";
+import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 const DEFAULT_QUESTION_TIMEOUT_MS = 15 * 60 * 1_000;

@@ -32,13 +32,9 @@ import {
 import { readGatewayRequestMutationAuthority } from "./server-methods/session-mutation-guards.js";
 import type { GatewayClient, GatewayRequestHandlerOptions } from "./server-methods/types.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
-import { sharingIdentity } from "./session-sharing-policy.js";
+import { sharingIdentity, type SessionSharingTarget } from "./session-sharing-policy.js";
 import { canReceiveSessionEvent } from "./session-sharing-read.js";
-import {
-  isGatewayAdmin,
-  prepareSessionSharing,
-  type SessionSharingTarget,
-} from "./session-sharing.js";
+import { isGatewayAdmin, prepareSessionSharing } from "./session-sharing.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 
 type QuestionTarget = {
