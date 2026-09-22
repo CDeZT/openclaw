@@ -1047,28 +1047,26 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
             rawCommand: formatExecCommand(command),
             runCommand: realRunCommand,
           });
-        for (const command of [
-          ["/usr/bin/grep", needle, config],
-          ["/bin/sh", "-c", payload],
-          [writer, needle, config],
-          [alias, needle, config],
-          [shell, "-c", "/usr/bin/grep " + needle + " " + config],
-          login,
-        ]) {
-          const invoke = await invokeCommand(command, "on-miss");
-          expect(fs.readFileSync(config, "utf8")).toBe(needle);
-          if (command[0] === "/usr/bin/grep" || (command[0] === "/bin/sh" && command[1] === "-c")) {
-            expectInvokeOk(invoke.sendInvokeResult, needle);
-          } else {
+        for (const [command, effect] of [
+          [["/usr/bin/grep", needle, config], "read"],
+          [["/bin/sh", "-c", payload], "read"],
+          [[writer, needle, config], "deny"],
+          [[alias, needle, config], "deny"],
+          [[shell, "-c", "/usr/bin/grep " + needle + " " + config], "deny"],
+          [login, "deny"],
+          [[writer, needle, config], "write"],
+          // Source the fixture explicitly: a machine login profile can replace HOME.
+          [["/bin/sh", "-c", `. ./.profile; ${payload}`], "write"],
+        ] as const) {
+          fs.writeFileSync(config, needle);
+          const invoke = await invokeCommand([...command], effect === "write" ? "off" : "on-miss");
+          expect(fs.readFileSync(config, "utf8")).toBe(effect === "write" ? "mutated" : needle);
+          if (effect === "deny") {
             expect(invoke.runCommand).not.toHaveBeenCalled();
             expectApprovalRequiredDenied(invoke.sendNodeEvent, invoke.sendInvokeResult);
+          } else {
+            expectInvokeOk(invoke.sendInvokeResult, effect === "read" ? needle : undefined);
           }
-        }
-        // Positive controls: both the workspace executable and login profile really write.
-        for (const command of [[writer, needle, config], login]) {
-          fs.writeFileSync(config, needle);
-          await invokeCommand(command, "off");
-          expect(fs.readFileSync(config, "utf8")).toBe("mutated");
         }
       });
     },
