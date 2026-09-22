@@ -392,13 +392,11 @@ async function runCatalogRequest(
         providerStaticModels: undefined,
       });
     }
-    const configuredProviderModelIds = new Map<string, readonly string[]>();
     const { value: source, providerExpiries } = await captureProviderCatalogExpiries(() =>
       prepareAgentCatalogSource(exactAgentFacts, catalogGeneration, "live", false, {
         authStore,
         providerDiscoveryProviderIds: request.providerIds,
         providerDiscoveryTimeoutMs: PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS,
-        providerCatalogInventory: { agentId: value.input.agentId, configuredProviderModelIds },
       }),
     );
     const facts = await prepareFullCatalogFacts(
@@ -449,7 +447,6 @@ async function runCatalogRequest(
       snapshot: facts.modelCatalog,
       runtimeModels,
       providerExpiries,
-      configuredProviderModelIds,
       configuredRuntimeModels: facts.configuredRuntimeModels,
       credentials: catalogCredentials,
       providerAuthLabels: withPluginRuntimeGenerationScope(pluginGenerationScope, () =>
