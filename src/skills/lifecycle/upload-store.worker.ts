@@ -30,7 +30,7 @@ export type SkillUploadWorkerOperations = {
     output: boolean;
   };
   "skillUploads.consume": {
-    input: { uploadId: string; owner: string; nowMs: number };
+    input: { uploadId: string; owner: string };
     output: ReturnType<typeof deleteOwnedSkillUpload>;
   };
   "skillUploads.release": Operation<typeof releaseSkillUploadInDatabase>;
@@ -73,12 +73,7 @@ export function executeSkillUploadCommand(
     case "skillUploads.renew":
       return renewSkillUploadInstallLease({ ...command.input, options });
     case "skillUploads.consume":
-      return deleteOwnedSkillUpload(
-        command.input.uploadId,
-        command.input.owner,
-        command.input.nowMs,
-        options,
-      );
+      return deleteOwnedSkillUpload(command.input.uploadId, command.input.owner, options);
     case "skillUploads.release":
       return releaseSkillUploadInDatabase(command.input, options);
   }

@@ -2,7 +2,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolveExpiresAtMsFromDurationMs } from "@openclaw/normalization-core/number-coercion";
 import { DEFAULT_MAX_ARCHIVE_BYTES_ZIP } from "../../infra/archive.js";
 import { sha256Hex } from "../../infra/crypto-digest.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -195,14 +194,13 @@ async function cleanupExpiredUploads(
   lockRoot: string,
   excludeUploadId?: string,
 ): Promise<void> {
-  const nowMs = Date.now();
-  const expired = await scope.execute({ type: "skillUploads.expired", input: nowMs });
+  const expired = await scope.execute({ type: "skillUploads.expired", input: undefined });
   for (const uploadId of expired) {
     if (uploadId === excludeUploadId) {
       continue;
     }
     await withLock(`${lockRoot}:upload:${uploadId}`, async () => {
-      await scope.execute({ type: "skillUploads.deleteExpired", input: { uploadId, nowMs } });
+      await scope.execute({ type: "skillUploads.deleteExpired", input: { uploadId } });
     });
   }
 }
@@ -242,6 +240,7 @@ function createSkillUploadStore(options?: SkillUploadStoreOptions) {
 
   return {
     async begin(params: BeginParams) {
+      const request = { ...params };
       const context = captureOpenClawStateWorkerContext(stateOptions);
       const root = context.admission.databasePath;
       return await withLock(`${root}:begin`, async () => {
@@ -249,32 +248,25 @@ function createSkillUploadStore(options?: SkillUploadStoreOptions) {
           await import("../../state/openclaw-state-worker-store.js");
         return runOpenClawStateWorkerOperation(context, async (scope) => {
           await cleanupExpiredUploads(scope, root);
-          if (params.kind !== "skill-archive") {
+          if (request.kind !== "skill-archive") {
             throw new SkillUploadRequestError("unsupported upload kind");
           }
-          const slug = validateUploadSlug(params.slug);
-          const sizeBytes = validateSizeBytes(params.sizeBytes);
-          const sha256 = normalizeSkillUploadSha256(params.sha256);
-          const force = params.force === true;
-          const idempotencyKey = validateIdempotencyKey(params.idempotencyKey);
+          const slug = validateUploadSlug(request.slug);
+          const sizeBytes = validateSizeBytes(request.sizeBytes);
+          const sha256 = normalizeSkillUploadSha256(request.sha256);
+          const force = request.force === true;
+          const idempotencyKey = validateIdempotencyKey(request.idempotencyKey);
           const keyHash = idempotencyKey ? sha256Hex(idempotencyKey) : undefined;
-          // Expiry begins after cleanup waits, including any in-flight installation.
-          const createdAt = Date.now();
-          const expiresAt = resolveExpiresAtMsFromDurationMs(ttlMs, { nowMs: createdAt });
-          if (expiresAt === undefined) {
-            throw new SkillUploadRequestError("invalid upload expiry");
-          }
           return scope.execute({
             type: "skillUploads.begin",
             input: {
-              kind: params.kind,
+              kind: request.kind,
               slug,
               sizeBytes,
               sha256,
               force,
               keyHash,
-              createdAt,
-              expiresAt,
+              ttlMs,
             },
           });
         });
@@ -294,7 +286,7 @@ function createSkillUploadStore(options?: SkillUploadStoreOptions) {
         return withLock(`${root}:upload:${uploadId}`, () =>
           scope.execute({
             type: "skillUploads.chunk",
-            input: { uploadId, offset, decoded, currentTime: Date.now() },
+            input: { uploadId, offset, decoded },
           }),
         );
       });
@@ -334,7 +326,6 @@ function createSkillUploadStore(options?: SkillUploadStoreOptions) {
                 uploadId,
                 leaseOwner: owner,
                 installLeaseMs,
-                currentTime: Date.now(),
               },
             });
             context.admission.assertCurrent();
@@ -345,15 +336,13 @@ function createSkillUploadStore(options?: SkillUploadStoreOptions) {
               if (!installing || renewalPaused || renewal) {
                 return;
               }
-              const heartbeatAt = Date.now();
               renewal = scope
                 .execute({
                   type: "skillUploads.renew",
                   input: {
                     uploadId,
                     owner,
-                    heartbeatAt,
-                    expiresAt: heartbeatAt + installLeaseMs,
+                    installLeaseMs,
                   },
                 })
                 .then(
@@ -385,7 +374,6 @@ function createSkillUploadStore(options?: SkillUploadStoreOptions) {
                           input: {
                             uploadId,
                             owner,
-                            nowMs: Date.now(),
                           },
                         });
                         if (result === "not-owner") {

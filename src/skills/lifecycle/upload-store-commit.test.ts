@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
@@ -11,6 +12,8 @@ import {
   beginSkillUploadInDatabase,
   appendSkillUploadChunkInDatabase,
   claimSkillUploadInDatabase,
+  deleteExpiredSkillUploadInDatabase,
+  listExpiredSkillUploadsInDatabase,
 } from "./upload-store.kernel.js";
 
 type RequireUploadMetadata = typeof import("./upload-store.sqlite.js").requireUploadMetadata;
@@ -66,7 +69,6 @@ function stageUpload(databasePath: string, slug: string, archive: Buffer, expect
     database: openOpenClawStateDatabase({ path: databasePath }),
     path: databasePath,
   };
-  const createdAt = Date.now();
   const begun = beginSkillUploadInDatabase(
     {
       kind: "skill-archive",
@@ -74,13 +76,12 @@ function stageUpload(databasePath: string, slug: string, archive: Buffer, expect
       sizeBytes: archive.length,
       sha256: expectedSha,
       force: false,
-      createdAt,
-      expiresAt: createdAt + 60_000,
+      ttlMs: 60_000,
     },
     options,
   );
   appendSkillUploadChunkInDatabase(
-    { uploadId: begun.uploadId, offset: 0, decoded: archive, currentTime: createdAt },
+    { uploadId: begun.uploadId, offset: 0, decoded: archive },
     options,
   );
   return begun;
@@ -123,7 +124,174 @@ function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function advanceClockAtAdmission(
+  database: ReturnType<typeof openOpenClawStateDatabase>,
+  before: number,
+  after: number,
+) {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(before);
+  const admitted = vi.fn();
+  const execute = database.db.exec.bind(database.db);
+  vi.spyOn(database.db, "exec").mockImplementation((sql) => {
+    const result = execute(sql);
+    if (sql === "BEGIN IMMEDIATE") {
+      expect(database.db.isTransaction).toBe(true);
+      admitted();
+      clock.mockReturnValue(after);
+    }
+    return result;
+  });
+  return admitted;
+}
+
 describe("skill upload transaction kernels", () => {
+  it.each([Number.NaN, MAX_DATE_TIMESTAMP_MS])(
+    "rejects a begin when the admitted clock %s cannot produce a valid expiry",
+    async (now) => {
+      const { databasePath } = await makeStore();
+      const database = openOpenClawStateDatabase({ path: databasePath });
+      const admitted = advanceClockAtAdmission(database, Date.now(), now);
+      expect(() =>
+        beginSkillUploadInDatabase(
+          {
+            kind: "skill-archive",
+            slug: "invalid-clock",
+            sizeBytes: 1,
+            force: false,
+            ttlMs: 60_000,
+          },
+          { database, path: databasePath },
+        ),
+      ).toThrow("invalid upload expiry");
+      expect(admitted).toHaveBeenCalledOnce();
+      expect(database.db.prepare("SELECT count(*) AS count FROM skill_uploads").get()).toEqual({
+        count: 0,
+      });
+    },
+  );
+
+  it.each(["idempotency", "capacity"] as const)(
+    "starts the full TTL and evaluates %s after admission",
+    async (boundary) => {
+      const { databasePath } = await makeStore();
+      const database = openOpenClawStateDatabase({ path: databasePath });
+      const options = { database, path: databasePath };
+      const before = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(before);
+      const request = {
+        kind: "skill-archive" as const,
+        slug: "admitted-begin",
+        sizeBytes: 1,
+        force: false,
+        ttlMs: 60_000,
+      };
+      const first = beginSkillUploadInDatabase({ ...request, keyHash: "same-key" }, options);
+      if (boundary === "capacity") {
+        for (let index = 1; index < 32; index += 1) {
+          beginSkillUploadInDatabase(request, options);
+        }
+      }
+      const admitted = advanceClockAtAdmission(database, before, first.expiresAt);
+      const next = beginSkillUploadInDatabase(
+        { ...request, ...(boundary === "idempotency" ? { keyHash: "same-key" } : {}) },
+        options,
+      );
+      expect(admitted).toHaveBeenCalledOnce();
+      expect(next.uploadId).not.toBe(first.uploadId);
+      expect(next.expiresAt).toBe(first.expiresAt + request.ttlMs);
+      expect(
+        database.db
+          .prepare("SELECT created_at, expires_at FROM skill_uploads WHERE upload_id = ?")
+          .get(next.uploadId),
+      ).toEqual({ created_at: first.expiresAt, expires_at: next.expiresAt });
+      if (boundary === "idempotency") {
+        expect(uploadExists(databasePath, first.uploadId)).toBe(false);
+      }
+    },
+  );
+
+  it.each(["chunk", "claim"] as const)(
+    "rejects %s when upload expiry is crossed during native admission",
+    async (operation) => {
+      const { databasePath } = await makeStore();
+      const database = openOpenClawStateDatabase({ path: databasePath });
+      const options = { database, path: databasePath };
+      const archive = Buffer.from("a");
+      const begun = beginSkillUploadInDatabase(
+        {
+          kind: "skill-archive",
+          slug: "admitted-expiry",
+          sizeBytes: operation === "chunk" ? 2 : 1,
+          force: false,
+          ttlMs: 60_000,
+        },
+        options,
+      );
+      appendSkillUploadChunkInDatabase(
+        { uploadId: begun.uploadId, offset: 0, decoded: archive },
+        options,
+      );
+      if (operation === "claim") {
+        commitSkillUploadInDatabase({ uploadId: begun.uploadId }, options);
+      }
+      const admitted = advanceClockAtAdmission(database, begun.expiresAt - 1, begun.expiresAt);
+      expect(() =>
+        operation === "chunk"
+          ? appendSkillUploadChunkInDatabase(
+              { uploadId: begun.uploadId, offset: 1, decoded: archive },
+              options,
+            )
+          : claimSkillUploadInDatabase(
+              { uploadId: begun.uploadId, leaseOwner: "admission-proof", installLeaseMs: 60_000 },
+              options,
+            ),
+      ).toThrow("upload has expired");
+      expect(admitted).toHaveBeenCalledOnce();
+      expect(chunkCount(databasePath, begun.uploadId)).toBe(operation === "chunk" ? 1 : 0);
+      expect(installLeaseCount(databasePath, begun.uploadId)).toBe(0);
+    },
+  );
+
+  it.each([false, true])(
+    "resamples sweep deletion at admission with a lease expiring during admission=%s",
+    async (leased) => {
+      const { databasePath } = await makeStore();
+      const database = openOpenClawStateDatabase({ path: databasePath });
+      const options = { database, path: databasePath };
+      const begun = stageUpload(databasePath, "sweep-admission", Buffer.from("a"));
+      const before = begun.expiresAt - 1;
+      const after = begun.expiresAt + 1;
+      if (leased) {
+        database.db
+          .prepare("UPDATE skill_uploads SET expires_at = ? WHERE upload_id = ?")
+          .run(before - 1, begun.uploadId);
+        database.db
+          .prepare(
+            "INSERT INTO state_leases (scope, lease_key, owner, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+          )
+          .run(
+            "skill-upload-install",
+            begun.uploadId,
+            "sweep-proof",
+            begun.expiresAt,
+            before,
+            before,
+          );
+      }
+      const admitted = advanceClockAtAdmission(database, before, after);
+      expect(listExpiredSkillUploadsInDatabase(undefined, options)).toEqual(
+        leased ? [begun.uploadId] : [],
+      );
+      expect(deleteExpiredSkillUploadInDatabase({ uploadId: begun.uploadId }, options)).toBe(
+        "deleted",
+      );
+      expect(admitted).toHaveBeenCalledOnce();
+      expect(uploadExists(databasePath, begun.uploadId)).toBe(false);
+      expect(chunkCount(databasePath, begun.uploadId)).toBe(0);
+      expect(installLeaseCount(databasePath, begun.uploadId)).toBe(0);
+    },
+  );
+
   it("keeps archive bytes out of metadata reads until the install claim", async () => {
     const { databasePath } = await makeStore();
     const options = {
@@ -176,7 +344,6 @@ describe("skill upload transaction kernels", () => {
       const firstChunk = Buffer.alloc(4 * 1024 * 1024, 0x61);
       const secondChunk = Buffer.alloc(4 * 1024 * 1024, 0x62);
       const archive = Buffer.concat([firstChunk, secondChunk]);
-      const createdAt = Date.now();
       const begin = beginSkillUploadInDatabase(
         {
           kind: "skill-archive",
@@ -184,8 +351,7 @@ describe("skill upload transaction kernels", () => {
           sizeBytes: archive.length,
           keyHash: "large-upload",
           force: false,
-          createdAt,
-          expiresAt: createdAt + 60_000,
+          ttlMs: 60_000,
         },
         options,
       );
@@ -194,7 +360,6 @@ describe("skill upload transaction kernels", () => {
           uploadId: begin.uploadId,
           offset: 0,
           decoded: firstChunk,
-          currentTime: Date.now(),
         },
         options,
       );
@@ -203,7 +368,6 @@ describe("skill upload transaction kernels", () => {
           uploadId: begin.uploadId,
           offset: firstChunk.length,
           decoded: secondChunk,
-          currentTime: Date.now(),
         },
         options,
       );
@@ -230,8 +394,7 @@ describe("skill upload transaction kernels", () => {
             sizeBytes: archive.length,
             keyHash: "large-upload",
             force: false,
-            createdAt,
-            expiresAt: createdAt + 60_000,
+            ttlMs: 60_000,
           },
           options,
         ),
@@ -245,7 +408,6 @@ describe("skill upload transaction kernels", () => {
             uploadId: begin.uploadId,
             offset: archive.length,
             decoded: Buffer.from("a"),
-            currentTime: Date.now(),
           },
           options,
         ),
@@ -256,7 +418,6 @@ describe("skill upload transaction kernels", () => {
           uploadId: begin.uploadId,
           leaseOwner: "metadata-proof",
           installLeaseMs: 60_000,
-          currentTime: Date.now(),
         },
         options,
       );
@@ -377,22 +538,11 @@ describe("skill upload transaction kernels", () => {
             begin.expiresAt - 1,
           );
       }
-      let now = begin.expiresAt - 1;
-      vi.spyOn(Date, "now").mockImplementation(() => now);
-      let admitted = false;
-      const execute = database.db.exec.bind(database.db);
-      vi.spyOn(database.db, "exec").mockImplementation((sql) => {
-        const result = execute(sql);
-        if (sql === "BEGIN IMMEDIATE") {
-          admitted = database.db.isTransaction;
-          now = begin.expiresAt;
-        }
-        return result;
-      });
+      const admitted = advanceClockAtAdmission(database, begin.expiresAt - 1, begin.expiresAt);
       expect(() =>
         commitSkillUploadInDatabase({ uploadId: begin.uploadId }, { database, path: databasePath }),
       ).toThrow("upload has expired");
-      expect(admitted).toBe(true);
+      expect(admitted).toHaveBeenCalledOnce();
       expect(uploadExists(databasePath, begin.uploadId)).toBe(leased);
       expect(chunkCount(databasePath, begin.uploadId)).toBe(leased ? 1 : 0);
       if (leased) {

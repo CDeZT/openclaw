@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   asDateTimestampMs,
   isFutureDateTimestampMs,
+  resolveExpiresAtMsFromDurationMs,
 } from "@openclaw/normalization-core/number-coercion";
 import {
   executeSqliteQuerySync,
@@ -57,13 +58,17 @@ export function beginSkillUploadInDatabase(
     sizeBytes: number;
     sha256?: string;
     keyHash?: string;
-    createdAt: number;
-    expiresAt: number;
+    ttlMs: number;
   },
   options: Options,
 ) {
-  const { slug, force, sizeBytes, sha256, keyHash, createdAt, expiresAt } = params;
+  const { slug, force, sizeBytes, sha256, keyHash, ttlMs } = params;
   return runOpenClawStateWriteTransaction(({ db }) => {
+    const createdAt = Date.now();
+    const expiresAt = resolveExpiresAtMsFromDurationMs(ttlMs, { nowMs: createdAt });
+    if (expiresAt === undefined) {
+      throw new SkillUploadRequestError("invalid upload expiry");
+    }
     const kysely = getNodeSqliteKysely<SkillUploadDatabase>(db);
     if (keyHash) {
       const existing = executeSqliteQueryTakeFirstSync(
@@ -130,12 +135,11 @@ export function appendSkillUploadChunkInDatabase(
     uploadId: string;
     offset: number;
     decoded: Uint8Array;
-    currentTime: number;
   },
   options: Options,
 ) {
-  const { uploadId, offset, decoded, currentTime } = params;
-  assertNotExpired(requireUploadMetadata(uploadId, options), currentTime, options);
+  const { uploadId, offset, decoded } = params;
+  assertNotExpired(requireUploadMetadata(uploadId, options), Date.now(), options);
   return runOpenClawStateWriteTransaction(({ db }) => {
     const kysely = getNodeSqliteKysely<SkillUploadDatabase>(db);
     const row = executeSqliteQueryTakeFirstSync(
@@ -145,7 +149,7 @@ export function appendSkillUploadChunkInDatabase(
     if (!row) {
       throw new SkillUploadRequestError(`upload not found: ${uploadId}`);
     }
-    const validNow = asDateTimestampMs(currentTime);
+    const validNow = asDateTimestampMs(Date.now());
     if (validNow === undefined || !isFutureDateTimestampMs(row.expires_at, { nowMs: validNow })) {
       throw new SkillUploadRequestError("upload has expired");
     }
@@ -186,12 +190,11 @@ export function claimSkillUploadInDatabase(
     uploadId: string;
     leaseOwner: string;
     installLeaseMs: number;
-    currentTime: number;
   },
   options: Options,
 ) {
-  const { uploadId, leaseOwner, installLeaseMs, currentTime } = params;
-  assertNotExpired(requireUploadMetadata(uploadId, options), currentTime, options);
+  const { uploadId, leaseOwner, installLeaseMs } = params;
+  assertNotExpired(requireUploadMetadata(uploadId, options), Date.now(), options);
   return runOpenClawStateWriteTransaction(({ db }) => {
     const kysely = getNodeSqliteKysely<SkillUploadDatabase>(db);
     const current = executeSqliteQueryTakeFirstSync(
@@ -201,6 +204,7 @@ export function claimSkillUploadInDatabase(
     if (!current) {
       throw new SkillUploadRequestError(`upload not found: ${uploadId}`);
     }
+    const currentTime = Date.now();
     const validNow = asDateTimestampMs(currentTime);
     if (
       validNow === undefined ||
@@ -248,8 +252,8 @@ export function claimSkillUploadInDatabase(
   }, options);
 }
 
-export function listExpiredSkillUploadsInDatabase(nowMs: number, options: Options): string[] {
-  const now = asDateTimestampMs(nowMs);
+export function listExpiredSkillUploadsInDatabase(_input: undefined, options: Options): string[] {
+  const now = asDateTimestampMs(Date.now());
   if (now === undefined) {
     return [];
   }
@@ -263,12 +267,13 @@ export function listExpiredSkillUploadsInDatabase(nowMs: number, options: Option
   ).rows.map((row) => row.upload_id);
 }
 
-export function deleteExpiredSkillUploadInDatabase(
-  params: { uploadId: string; nowMs: number },
-  options: Options,
-) {
+export function deleteExpiredSkillUploadInDatabase(params: { uploadId: string }, options: Options) {
   return runOpenClawStateWriteTransaction(
-    ({ db }) => deleteExpiredSkillUploadUnlessLeasedInDatabase(db, params),
+    ({ db }) =>
+      deleteExpiredSkillUploadUnlessLeasedInDatabase(db, {
+        uploadId: params.uploadId,
+        nowMs: Date.now(),
+      }),
     options,
   );
 }

@@ -4,7 +4,6 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { toErrorObject as toLintErrorObject } from "@openclaw/normalization-core/error-coercion";
-import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
@@ -13,6 +12,7 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
+import * as stateWorker from "../../state/openclaw-state-worker-store.js";
 import { commitSkillUploadInDatabase } from "./upload-store-commit.js";
 import { SkillUploadRequestError } from "./upload-store-error.js";
 import { beginSkillUploadInDatabase } from "./upload-store.kernel.js";
@@ -62,6 +62,40 @@ function uploadExists(databasePath: string, uploadId: string): boolean {
       .prepare("SELECT 1 AS found FROM skill_uploads WHERE upload_id = ?")
       .get(uploadId),
   );
+}
+
+function expireUpload(databasePath: string, uploadId: string) {
+  stateDatabase(databasePath)
+    .prepare("UPDATE skill_uploads SET expires_at = 1 WHERE upload_id = ?")
+    .run(uploadId);
+}
+
+function observeExpiredUploadInventory(): Promise<void> {
+  const observed = deferred();
+  const runOperation = stateWorker.runOpenClawStateWorkerOperation;
+  vi.spyOn(stateWorker, "runOpenClawStateWorkerOperation").mockImplementation(
+    new Proxy(runOperation, {
+      apply(target, receiver, [context, operation, options]: Parameters<typeof runOperation>) {
+        return Reflect.apply(target, receiver, [
+          context,
+          (scope: Parameters<typeof operation>[0]) =>
+            operation({
+              execute: new Proxy(scope.execute, {
+                async apply(execute, executeReceiver, args: Parameters<typeof scope.execute>) {
+                  const result = await Reflect.apply(execute, executeReceiver, args);
+                  if (args[0].type === "skillUploads.expired") {
+                    observed.resolve();
+                  }
+                  return result;
+                },
+              }),
+            }),
+          options,
+        ]);
+      },
+    }),
+  );
+  return observed.promise;
 }
 
 function chunkCount(databasePath: string, uploadId?: string): number {
@@ -146,15 +180,13 @@ describe("skill upload store", () => {
         await store.begin({ kind: "skill-archive", slug: `active-${i}`, sizeBytes: 1 });
       }
       try {
-        const createdAt = Date.now();
         beginSkillUploadInDatabase(
           {
             kind: "skill-archive",
             slug: "too-many",
             sizeBytes: 1,
             force: false,
-            createdAt,
-            expiresAt: createdAt + 60_000,
+            ttlMs: 60_000,
           },
           {
             database: openOpenClawStateDatabase({
@@ -468,34 +500,15 @@ describe("skill upload store", () => {
     expect(capacityReads.rowCounts.capacity).toBeLessThanOrEqual(1);
   });
 
-  it.each([Number.NaN, MAX_DATE_TIMESTAMP_MS])(
-    "rejects new uploads when clock %s cannot produce a valid expiry",
-    async (now) => {
-      const { databasePath, store } = await makeStore();
-      stateDatabase(databasePath);
-      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
-      try {
-        await expectUploadError(
-          store.begin({ kind: "skill-archive", slug: "invalid-clock", sizeBytes: 1 }),
-          "invalid upload expiry",
-        );
-      } finally {
-        clock.mockRestore();
-      }
-    },
-  );
-
   it("expires unfinished and committed uploads", async () => {
-    let now = 1000;
-    vi.spyOn(Date, "now").mockImplementation(() => now);
-    const { databasePath, store } = await makeStore({ ttlMs: 10 });
+    const { databasePath, store } = await makeStore();
     const archive = Buffer.from("abc");
     const begin = await store.begin({
       kind: "skill-archive",
       slug: "demo-skill",
       sizeBytes: archive.length,
     });
-    now = 1011;
+    expireUpload(databasePath, begin.uploadId);
     await expectUploadError(
       store.chunk({
         uploadId: begin.uploadId,
@@ -506,7 +519,6 @@ describe("skill upload store", () => {
     );
     expect(uploadCount(databasePath)).toBe(0);
 
-    now = 2000;
     const committed = await store.begin({
       kind: "skill-archive",
       slug: "committed-skill",
@@ -518,7 +530,7 @@ describe("skill upload store", () => {
       dataBase64: archive.toString("base64"),
     });
     commitStagedFixture(databasePath, committed.uploadId);
-    now = 2011;
+    expireUpload(databasePath, committed.uploadId);
     await expectUploadError(
       store.withCommittedUpload(committed.uploadId, async (record) => record),
       "upload has expired",
@@ -527,9 +539,7 @@ describe("skill upload store", () => {
   });
 
   it("does not sweep an upload while an install holds its lease", async () => {
-    let now = 1000;
-    vi.spyOn(Date, "now").mockImplementation(() => now);
-    const { databasePath, store } = await makeStore({ ttlMs: 10 });
+    const { databasePath, store } = await makeStore();
     const archive = Buffer.from("abc");
     const committed = await store.begin({
       kind: "skill-archive",
@@ -551,24 +561,25 @@ describe("skill upload store", () => {
       return true;
     });
     await entered.promise;
-    now = 1011;
+    expireUpload(databasePath, committed.uploadId);
+    const inventoryRead = observeExpiredUploadInventory();
     const sweep = store.begin({ kind: "skill-archive", slug: "sweep-trigger", sizeBytes: 1 });
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
-    expect(uploadCount(databasePath)).toBe(1);
-
-    now = 5000;
-    release.resolve();
+    try {
+      await inventoryRead;
+      expect(uploadCount(databasePath)).toBe(1);
+      expect(installLeaseCount(databasePath, committed.uploadId)).toBe(1);
+    } finally {
+      release.resolve();
+    }
     await expect(pinned).resolves.toBe(true);
-    await expect(sweep).resolves.toMatchObject({ expiresAt: 5010 });
+    const swept = await sweep;
+    expect(uploadExists(databasePath, committed.uploadId)).toBe(false);
+    expect(uploadExists(databasePath, swept.uploadId)).toBe(true);
     expect(uploadCount(databasePath)).toBe(1);
   });
 
   it("rechecks chunk expiry after cleanup waits on another install", async () => {
-    let now = 1000;
-    vi.spyOn(Date, "now").mockImplementation(() => now);
-    const { databasePath, store } = await makeStore({ ttlMs: 10 });
+    const { databasePath, store } = await makeStore();
     const archive = Buffer.from("abc");
     const pinnedUpload = await store.begin({
       kind: "skill-archive",
@@ -581,7 +592,6 @@ describe("skill upload store", () => {
       dataBase64: archive.toString("base64"),
     });
     commitStagedFixture(databasePath, pinnedUpload.uploadId);
-    now = 1005;
     const pending = await store.begin({
       kind: "skill-archive",
       slug: "waiting-skill",
@@ -595,28 +605,30 @@ describe("skill upload store", () => {
       await release.promise;
     });
     await entered.promise;
-    now = 1011;
+    expireUpload(databasePath, pinnedUpload.uploadId);
+    const inventoryRead = observeExpiredUploadInventory();
     const chunk = store.chunk({
       uploadId: pending.uploadId,
       offset: 0,
       dataBase64: archive.toString("base64"),
     });
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
-    now = 1020;
-    release.resolve();
+    try {
+      await inventoryRead;
+      expect(uploadExists(databasePath, pending.uploadId)).toBe(true);
+      expect(chunkCount(databasePath, pending.uploadId)).toBe(0);
+      expireUpload(databasePath, pending.uploadId);
+    } finally {
+      release.resolve();
+    }
     await pinned;
     await expectUploadError(chunk, "upload has expired");
     expect(uploadExists(databasePath, pending.uploadId)).toBe(false);
   });
 
   it("renews the install lease and preserves an expired leased upload", async () => {
-    let now = 1000;
-    vi.spyOn(Date, "now").mockImplementation(() => now);
     const { databasePath, store } = await makeStore({
       installLeaseHeartbeatMs: 10,
-      installLeaseMs: 100,
+      installLeaseMs: 60_000,
     });
     const archive = Buffer.from("abc");
     const committed = await store.begin({
@@ -643,39 +655,30 @@ describe("skill upload store", () => {
     try {
       await entered.promise;
       const db = stateDatabase(databasePath);
-      const initialHeartbeat = (
-        db
-          .prepare(
-            "SELECT heartbeat_at FROM state_leases WHERE scope = 'skill-upload-install' AND lease_key = ?",
-          )
-          .get(committed.uploadId) as { heartbeat_at: number }
-      ).heartbeat_at;
-      now += 10;
+      db.prepare(
+        "UPDATE state_leases SET heartbeat_at = 1 WHERE scope = 'skill-upload-install' AND lease_key = ?",
+      ).run(committed.uploadId);
       const heartbeat = intervals.mock.calls.find(([, delay]) => delay === 10)?.[0];
       if (!heartbeat) {
         throw new Error("Install heartbeat was not scheduled");
       }
       heartbeat();
       await renewalSettled;
-      const renewedHeartbeat = (
-        db
-          .prepare(
-            "SELECT heartbeat_at FROM state_leases WHERE scope = 'skill-upload-install' AND lease_key = ?",
-          )
-          .get(committed.uploadId) as { heartbeat_at: number }
-      ).heartbeat_at;
-      expect(renewedHeartbeat).toBeGreaterThan(initialHeartbeat);
+      const renewed = db
+        .prepare(
+          "SELECT heartbeat_at, expires_at FROM state_leases WHERE scope = 'skill-upload-install' AND lease_key = ?",
+        )
+        .get(committed.uploadId) as { heartbeat_at: number; expires_at: number };
+      expect(renewed.heartbeat_at).toBeGreaterThan(1);
+      expect(renewed.expires_at - renewed.heartbeat_at).toBe(60_000);
 
-      db.prepare("UPDATE skill_uploads SET expires_at = ? WHERE upload_id = ?").run(
-        now - 1,
-        committed.uploadId,
-      );
+      expireUpload(databasePath, committed.uploadId);
       expect(
         runOpenClawStateWriteTransaction(
           ({ db: transactionDb }) =>
             deleteExpiredSkillUploadUnlessLeasedInDatabase(transactionDb, {
               uploadId: committed.uploadId,
-              nowMs: now,
+              nowMs: renewed.heartbeat_at,
             }),
           { path: databasePath },
         ),
@@ -694,12 +697,9 @@ describe("skill upload store", () => {
   });
 
   it("starts install lease expiry from the claim time", async () => {
-    let now = 1000;
-    vi.spyOn(Date, "now").mockImplementation(() => now);
     const { databasePath, store } = await makeStore({
-      installLeaseHeartbeatMs: 1000,
-      installLeaseMs: 100,
-      ttlMs: 10_000,
+      installLeaseHeartbeatMs: 60_000,
+      installLeaseMs: 60_000,
     });
     const archive = Buffer.from("abc");
     const committed = await store.begin({
@@ -721,16 +721,21 @@ describe("skill upload store", () => {
       await release.promise;
     });
     await entered.promise;
-    expect(
-      stateDatabase(databasePath)
+    try {
+      const lease = stateDatabase(databasePath)
         .prepare(
-          "SELECT expires_at FROM state_leases WHERE scope = 'skill-upload-install' AND lease_key = ?",
+          "SELECT created_at, heartbeat_at, expires_at FROM state_leases WHERE scope = 'skill-upload-install' AND lease_key = ?",
         )
-        .get(committed.uploadId),
-    ).toMatchObject({ expires_at: 1100 });
-
-    now = 1001;
-    release.resolve();
+        .get(committed.uploadId) as {
+        created_at: number;
+        heartbeat_at: number;
+        expires_at: number;
+      };
+      expect(lease.heartbeat_at).toBe(lease.created_at);
+      expect(lease.expires_at - lease.created_at).toBe(60_000);
+    } finally {
+      release.resolve();
+    }
     await pinned;
   });
 
@@ -764,8 +769,7 @@ describe("skill upload store", () => {
         renewSkillUploadInstallLease({
           uploadId: committed.uploadId,
           owner: lease.owner,
-          heartbeatAt,
-          expiresAt: heartbeatAt + 60_000,
+          installLeaseMs: 60_000,
           options: { path: databasePath },
         }),
       ).toBe(false);
