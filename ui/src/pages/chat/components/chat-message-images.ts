@@ -2,6 +2,7 @@ import { html, noChange, nothing, type TemplateResult } from "lit";
 import { AsyncDirective, directive } from "lit/async-directive.js";
 import { Directive } from "lit/directive.js";
 import { keyed } from "lit/directives/keyed.js";
+import { ref } from "lit/directives/ref.js";
 import { repeat } from "lit/directives/repeat.js";
 import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
 import { t } from "../../../i18n/index.ts";
@@ -10,6 +11,7 @@ import {
   resolveSafeExternalUrl,
 } from "../../../lib/open-external-url.ts";
 import { showToast } from "../../../lib/toast.ts";
+import { observeChatAttachmentViewport } from "./chat-attachment-viewport.ts";
 import { renderChatImageActions } from "./chat-image-actions.ts";
 import {
   isManagedOutgoingMediaSource,
@@ -55,6 +57,23 @@ class MessageImageResourceDirective extends AsyncDirective {
   private pendingPreview: Promise<string | null> | undefined;
   private presentationKey = Symbol("image-presentation");
   private retained: RetainedInlineImage | { status: "unavailable" } | undefined;
+  private admitted = false;
+  private stopObserving: (() => void) | undefined;
+  private readonly observeFrame = (element: Element | undefined) => {
+    this.stopObserving?.();
+    this.stopObserving = undefined;
+    if (!element || !this.isConnected || this.admitted || isInlineImageSource(this.image?.url)) {
+      return;
+    }
+    const presentationKey = this.presentationKey;
+    this.stopObserving = observeChatAttachmentViewport(element, () => {
+      if (!this.isConnected || presentationKey !== this.presentationKey || this.admitted) {
+        return;
+      }
+      this.admitted = true;
+      this.refreshImage();
+    });
+  };
   // Resource updates stay in this part; row ResizeObserver owns layout changes.
   private readonly refreshImage = () => {
     if (this.isConnected && this.image) {
@@ -112,6 +131,7 @@ class MessageImageResourceDirective extends AsyncDirective {
         isInlineImageSource(image.url);
       if (!this.retained && !inlineReplacement) {
         this.element = undefined;
+        this.admitted = false;
         this.presentationKey = Symbol("image-presentation");
       }
       releaseChatMediaResourceSubscriber(this.refreshImage);
@@ -123,6 +143,17 @@ class MessageImageResourceDirective extends AsyncDirective {
       releaseChatMediaResourceSubscriber(this.refreshImage);
       return noChange;
     }
+    // Admit network work before resolving metadata, artifact tickets, or blobs.
+    // Local bytes and a mounted decoded handoff never wait for the observer.
+    if (
+      !this.admitted &&
+      !isInlineImageSource(image.url) &&
+      !this.retained &&
+      typeof IntersectionObserver === "function"
+    ) {
+      return this.present(this.renderImagePlaceholder(image));
+    }
+    this.admitted = true;
     const onRequestUpdate = options?.onRequestUpdate;
 
     // Lit owns each image part. Reparent its stable subscription when the pane
@@ -310,6 +341,7 @@ class MessageImageResourceDirective extends AsyncDirective {
     // unavailable images use cards; loading stays plain until the read settles.
     // Unknown decoded images still use their intrinsic size, not the loading ratio.
     return html`<span
+      ${ref(this.observeFrame)}
       class="chat-image-frame ${sized || pending || compact ? "chat-image-frame--image" : ""} ${this.managed && !compact ? "chat-image-frame--managed" : ""} ${compact ? "chat-image-frame--compact" : ""}"
       style=${`--chat-image-width: ${width}px; --chat-image-min-width: ${MIN_CHAT_IMAGE_PREVIEW_WIDTH}px; --chat-image-ratio: ${compact ? "auto" : `${width} / ${height}`}`}
       aria-busy=${pending ? "true" : "false"}
@@ -371,6 +403,9 @@ class MessageImageResourceDirective extends AsyncDirective {
   }
 
   protected override disconnected() {
+    this.stopObserving?.();
+    this.stopObserving = undefined;
+    this.admitted = false;
     this.releaseRetainedImage();
     this.element = undefined;
     this.pendingPreview = undefined;

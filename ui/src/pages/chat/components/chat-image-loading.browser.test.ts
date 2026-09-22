@@ -35,6 +35,23 @@ function frame(container: HTMLElement) {
   return element!;
 }
 
+async function admittedImage(container: HTMLElement): Promise<HTMLImageElement> {
+  const image = container.querySelector("img");
+  if (image) {
+    return image;
+  }
+  return new Promise((resolve) => {
+    const observer = new MutationObserver(() => {
+      const admitted = container.querySelector("img");
+      if (admitted) {
+        observer.disconnect();
+        resolve(admitted);
+      }
+    });
+    observer.observe(container, { childList: true, subtree: true });
+  });
+}
+
 function geometry(container: HTMLElement) {
   const imageRect = frame(container).getBoundingClientRect();
   const nextRect = container.querySelector("[data-next-message]")!.getBoundingClientRect();
@@ -172,7 +189,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       expect(geometry(container)).toEqual(before);
       render(nothing, container);
       draw();
-      const remounted = container.querySelector("img")!;
+      const remounted = await admittedImage(container);
       expect(remounted.getAttribute("src")).toBe(image.getAttribute("src"));
       await remounted.decode();
       expect(geometry(container)).toEqual(before);
@@ -269,7 +286,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       expect(container.querySelector("img")!.getAttribute("width")).toBe("1200");
       render(nothing, container);
       draw();
-      expect(container.querySelector("img")?.getAttribute("src")).toBe(sourceUrl);
+      expect((await admittedImage(container)).getAttribute("src")).toBe(sourceUrl);
       expect(geometry(container)).toEqual(loadable);
       expect(fetch).toHaveBeenCalledOnce();
     },
