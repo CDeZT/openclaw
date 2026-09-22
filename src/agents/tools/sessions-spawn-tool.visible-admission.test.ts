@@ -84,6 +84,41 @@ it("reports the human owner returned by visible session creation", async () => {
   });
 });
 
+it("preserves the configured agent label for an ID-only stored owner", async () => {
+  hoisted.prepareModelChoiceMock.mockResolvedValue({
+    kind: "automatic",
+    ref: { provider: "mock-provider", model: "primary" },
+  });
+  const callGateway = vi.fn(async () => ({
+    key: "agent:main:dashboard:agent-owned-child",
+    runStarted: true,
+    runId: "run-visible-agent-owner",
+    entry: { owner: { actor: { type: "agent", id: "main" } } },
+  }));
+  const tool = createSessionsSpawnTool({
+    agentSessionKey: "agent:main:main",
+    config: {
+      agents: {
+        defaults: { model: "mock-provider/primary" },
+        entries: { main: { identity: { name: "Roboclaw" } } },
+      },
+    },
+    callGateway: callGateway as never,
+    registerRun: vi.fn(),
+    countActiveRuns: () => 0,
+  });
+
+  const result = await tool.execute("agent-owned-visible", {
+    task: "inspect the repository",
+    visible: true,
+  });
+
+  expect(result.details).toMatchObject({
+    status: "accepted",
+    owner: { type: "agent", id: "main", label: "Roboclaw" },
+  });
+});
+
 it("reports every unsupported visible parameter in one error", async () => {
   const tool = createSessionsSpawnTool({ agentSessionKey: "agent:main:main" });
 
