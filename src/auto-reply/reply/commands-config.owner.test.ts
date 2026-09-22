@@ -7,10 +7,9 @@ import {
 import {
   readMcpOAuthPendingAuthorization,
   readMcpOAuthStore,
-  updateMcpOAuthStore,
-  writeMcpOAuthPendingAuthorization,
 } from "../../agents/mcp-oauth-store.js";
 import * as mcpOAuth from "../../agents/mcp-oauth.js";
+import { seedMcpOAuthStoreForTest } from "../../agents/mcp-oauth.test-support.js";
 import { withAdminIngress } from "../../channels/message-access/operator-authority.test-support.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import { setRuntimeConfigSnapshotRefreshHandler } from "../../config/runtime-snapshot.js";
@@ -217,10 +216,11 @@ it("finishes accepted MCP removal and OAuth cleanup after the original admin is 
       }),
     ];
     for (const identity of identities) {
-      updateMcpOAuthStore(identity.storeKey, () => ({
-        tokens: { access_token: identity.principal, token_type: "Bearer" },
-      }));
-      writeMcpOAuthPendingAuthorization(identity.storeKey, `${identity.principal}-callback`);
+      seedMcpOAuthStoreForTest(
+        identity.storeKey,
+        { tokens: { access_token: identity.principal, token_type: "Bearer" } },
+        `${identity.principal}-callback`,
+      );
     }
     const params = buildCommandTestParams(
       "/mcp unset fixture",

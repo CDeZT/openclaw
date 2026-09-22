@@ -1,6 +1,6 @@
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../../../test/helpers/temp-dir.js";
 import * as credentialLease from "../shared/credential-lease.runtime.js";
 import { createDiscordQaTransportAdapter } from "./adapter.runtime.js";
 import * as channelE2e from "./channel-e2e.js";
@@ -22,6 +22,7 @@ function mockAdapterIo() {
       sutApplicationId: "323456789012345678",
     },
     heartbeat: vi.fn(async () => {}),
+    assertHealthy: vi.fn(),
     heartbeatIntervalMs: 30_000,
     leaseTtlMs: 120_000,
     release,
