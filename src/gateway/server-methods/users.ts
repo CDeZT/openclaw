@@ -30,6 +30,7 @@ import {
 } from "../../state/user-profiles.js";
 import { invalidateOperatorRolePolicy } from "../operator-role-policy.js";
 import { broadcastChatMetadataChanged } from "../server-chat-metadata-lifecycle.js";
+import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import {
   authenticatedProfileUnavailableError,
   isGatewayClientProfilePending,
@@ -114,7 +115,7 @@ export const usersHandlers: GatewayRequestHandlers = {
       respond(false, undefined, profileError(error));
     }
   },
-  "users.prefs.get": async ({ client, params, respond }) => {
+  "users.prefs.get": async ({ client, params, respond, sessionMutationAuthorization }) => {
     if (!assertValidParams(params, validateUsersPrefsGetParams, "users.prefs.get", respond)) {
       return;
     }
@@ -129,12 +130,16 @@ export const usersHandlers: GatewayRequestHandlers = {
     }
     try {
       const preferences = await getCanonicalUserPreferences(profileId, params.keys);
+      sessionMutationAuthorization?.assertCurrent();
       if (!preferences) {
         respond(false, undefined, authenticatedProfileUnavailableError());
         return;
       }
       respond(true, { status: "ok", entries: preferences.entries }, undefined);
     } catch (error) {
+      if (error instanceof SessionMutationAuthorizationChangedError) {
+        throw error;
+      }
       respond(false, undefined, profileError(error));
     }
   },

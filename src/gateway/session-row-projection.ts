@@ -52,6 +52,7 @@ import type { WorkerSessionPlacementStore } from "./worker-environments/placemen
 export async function createSessionRowProjection(params: {
   cfg: OpenClawConfig;
   getConfig?: () => OpenClawConfig;
+  getPolicyConfig?: () => OpenClawConfig;
   modelCatalog?: records.Inputs["modelCatalog"];
   getModelCatalog?: () => Promise<records.Inputs["modelCatalog"]>;
   context?: Parameters<typeof readSessionRowFacts>[0]["context"];
@@ -60,6 +61,7 @@ export async function createSessionRowProjection(params: {
   // Publications may borrow startup admission; projection work retains its own authority.
   const inOwnerContext = AsyncLocalStorage.snapshot();
   let cfg = params.cfg;
+  const getPolicyConfig = (): OpenClawConfig => params.getPolicyConfig?.() ?? cfg;
   const rows = new Map<string, records.Row>();
   const placementFacts = createSessionRowPlacementProjection(params.placementFactsReader);
   const creators = createSessionRowCreatorIndex();
@@ -676,6 +678,7 @@ export async function createSessionRowProjection(params: {
     get needsMaterialization() {
       return needsMaterialization();
     },
+    getPolicyConfig,
     get state() {
       if (!disposed) {
         prepareRead();
@@ -684,6 +687,7 @@ export async function createSessionRowProjection(params: {
         // Include replacements and lifecycle-only removals as well as publications/materialization.
         revision: (revisionToken ??= {}),
         cfg,
+        policyConfig: getPolicyConfig(),
         modelCatalog: catalog.current,
         rowContext: metadata.current,
         scope: scope.select,

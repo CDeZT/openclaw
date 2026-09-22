@@ -47,6 +47,7 @@ export function createGatewayConnectionState(params: {
     sessionMessageSubscribers,
     canReceiveSessionEvent: (client, sessionKeys, agentId, event, payload) => {
       try {
+        const cfg = loadRuntimeConfig();
         const projection =
           event === "sessions.changed" || event === "session.message"
             ? sessionRowProjection
@@ -55,7 +56,8 @@ export function createGatewayConnectionState(params: {
           ? prepareProjectedSessionPresentation(projection, client)
           : undefined;
         return canReceiveSessionEvent({
-          cfg: loadRuntimeConfig(),
+          cfg,
+          policyConfig: sessionRowProjection?.getPolicyConfig() ?? cfg,
           client,
           sessionKeys,
           agentId,
@@ -66,7 +68,7 @@ export function createGatewayConnectionState(params: {
                 prepared: {
                   sharing: prepared.sharing,
                   target: (key: string, owner?: string) => {
-                    const scope = resolveSessionEventAgentScope(loadRuntimeConfig(), key, owner);
+                    const scope = resolveSessionEventAgentScope(cfg, key, owner);
                     return scope?.[1] ? prepared.target({ key, agentId: scope[1] }) : null;
                   },
                 },

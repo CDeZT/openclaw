@@ -121,6 +121,7 @@ function createReportHarness(params: { getGeneration: () => string }) {
   const harness = createDispatchTestHarness({
     extraHandlers: { "update.report": handler },
     buildRequestContext: () => ({
+      getRuntimeConfig: () => ({}),
       validateAgentRuntimeApprovalAuthority: createAgentRuntimeApprovalAuthorityValidator(),
     }),
     getRequiredSharedGatewaySessionGeneration: params.getGeneration,

@@ -57,6 +57,7 @@ import {
 import { formatSessionArchiveReason } from "../../lib/sessions/session-archive-reason.ts";
 import { parseAgentSessionKey, parseSessionKeyParts } from "../../lib/sessions/session-key.ts";
 import { SESSIONS_PAGE_DEFAULT_LIMIT } from "../../lib/sessions/session-requests.ts";
+import { renderCategoryCell } from "./category-cell.ts";
 import { renderTranscriptSearch, type TranscriptSearchProps } from "./transcript-search-view.ts";
 
 export type SessionsProps = TranscriptSearchProps & {
@@ -85,7 +86,7 @@ export type SessionsProps = TranscriptSearchProps & {
   selectedKeys: Set<string>;
   sessionMenu: { key: string } | null;
   expandedSessionKey: string | null;
-  patchWriteDisabledReason?: string;
+  labelDisabledReason?: (row: GatewaySessionRow) => string | undefined;
   patchAdminDisabledReason?: string;
   groupWriteDisabledReason?: string;
   deleteArchivedDisabledReason?: string;
@@ -123,6 +124,7 @@ export type SessionsProps = TranscriptSearchProps & {
       verboseLevel?: string | null;
       reasoningLevel?: string | null;
     },
+    options?: { sessionScope?: boolean },
   ) => void;
   onToggleSelect: (key: string) => void;
   onSelectPage: (keys: string[]) => void;
@@ -462,8 +464,6 @@ function sessionDetailItems(params: {
   return details;
 }
 
-const NEW_GROUP_OPTION = "__new-group__";
-
 function sessionsTableColumnCount(props: SessionsProps): number {
   return props.groupBy === "category" ? 8 : 7;
 }
@@ -576,43 +576,6 @@ function renderGroupHeaderRow(group: SessionRowGroup, props: SessionsProps) {
         </div>
       </td>
     </tr>
-  `;
-}
-
-function renderCategoryCell(row: GatewaySessionRow, props: SessionsProps) {
-  const current = normalizeOptionalString(row.category) ?? "";
-  const options = [...props.knownCategories];
-  if (current && !options.includes(current)) {
-    options.push(current);
-  }
-  return html`
-    <td>
-      <select
-        ?disabled=${props.loading || Boolean(props.groupWriteDisabledReason)}
-        title=${props.groupWriteDisabledReason ?? nothing}
-        aria-label=${t("sessionsView.moveToGroup")}
-        class="session-group-select"
-        @change=${(e: Event) => {
-          if (props.groupWriteDisabledReason) {
-            return;
-          }
-          const select = e.target as HTMLSelectElement;
-          if (select.value === NEW_GROUP_OPTION) {
-            // The page prompts for a name and patches; restore until the refresh lands.
-            select.value = current;
-            props.onRequestNewCategory(row.key);
-            return;
-          }
-          props.onAssignCategory(row.key, select.value || null);
-        }}
-      >
-        <option value="" ?selected=${!current}>${t("sessionsView.ungrouped")}</option>
-        ${options.map(
-          (name) => html`<option value=${name} ?selected=${current === name}>${name}</option>`,
-        )}
-        <option value=${NEW_GROUP_OPTION}>${t("sessionsView.newGroup")}</option>
-      </select>
-    </td>
   `;
 }
 
@@ -1401,6 +1364,7 @@ function renderSessionDetailsRow(params: {
     kindClass,
     updated,
   } = params;
+  const labelDisabledReason = props.labelDisabledReason?.(row);
   const rawThinking = row.thinkingLevel ?? "";
   const thinking = rawThinking ? normalizeThinkingOptionValue(rawThinking) : "";
   const thinkLevels = withCurrentLabeledOption(
@@ -1461,13 +1425,13 @@ function renderSessionDetailsRow(params: {
               <input
                 class="settings-input"
                 .value=${row.label ?? ""}
-                ?disabled=${props.loading || Boolean(props.patchWriteDisabledReason)}
-                title=${props.patchWriteDisabledReason ?? nothing}
+                ?disabled=${props.loading || Boolean(labelDisabledReason)}
+                title=${labelDisabledReason ?? nothing}
                 placeholder=${t("sessionsView.optionalPlaceholder")}
                 @change=${(e: Event) => {
                   const value =
                     normalizeOptionalString((e.target as HTMLInputElement).value) ?? null;
-                  props.onPatch(row.key, { label: value });
+                  props.onPatch(row.key, { label: value }, { sessionScope: true });
                 }}
               />
             </label>

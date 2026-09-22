@@ -14,7 +14,13 @@ import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
-  "sessions.describe": async ({ params, respond, context, client }) => {
+  "sessions.describe": async ({
+    params,
+    respond,
+    context,
+    client,
+    sessionMutationAuthorization,
+  }) => {
     if (!assertValidParams(params, validateSessionsDescribeParams, "sessions.describe", respond)) {
       return;
     }
@@ -38,6 +44,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
           return agent.ok && !denied ? [{ key, agentId: agent.agentId }] : [];
         },
         (read) => {
+          sessionMutationAuthorization?.assertCurrent();
           const requestedAgent = resolveRequestedSessionAgentId(
             read.state.cfg,
             key,
@@ -57,7 +64,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
           const record = read.describe(query);
           if (
             !record ||
-            (presentation.sharing.sessionCap !== undefined &&
+            (hasOperatorBoundary(client, read.state.policyConfig) &&
               presentation.sharing.entryFilter?.(record.key, record.entry) === false)
           ) {
             respond(true, { session: null });
@@ -74,7 +81,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
       await certifySessionCanonicalValidationPending(prepared.database);
     }
   },
-  "sessions.get": async ({ params, respond, context, client }) => {
+  "sessions.get": async ({ params, respond, context, client, sessionMutationAuthorization }) => {
     // SAFETY: Gateway dispatch supplies object params; each optional field is narrowed before use.
     const p = params as {
       key?: unknown;
@@ -106,8 +113,10 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
       cfg,
       agentId: requestedAgent.agentId,
     });
-    const boundaryFilter = hasOperatorBoundary(client, cfg)
-      ? createSessionListEntryFilter({ client, cfg })
+    sessionMutationAuthorization?.assertCurrent();
+    const policyConfig = context.getCommittedRuntimeConfig?.() ?? cfg;
+    const boundaryFilter = hasOperatorBoundary(client, policyConfig)
+      ? createSessionListEntryFilter({ client, cfg: policyConfig })
       : undefined;
     if (!entry?.sessionId || boundaryFilter?.(target.canonicalKey, entry) === false) {
       respond(true, { messages: [] }, undefined);
@@ -128,6 +137,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
         allowResetArchiveFallback: true,
       },
     );
+    sessionMutationAuthorization?.assertCurrent();
     const currentCfg = context.getRuntimeConfig();
     const currentRequestedAgent = resolveRequestedSessionAgentId(
       currentCfg,
@@ -141,8 +151,9 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
           agentId: currentRequestedAgent.agentId,
         })
       : null;
-    const currentBoundaryFilter = hasOperatorBoundary(client, currentCfg)
-      ? createSessionListEntryFilter({ client, cfg: currentCfg })
+    const currentPolicy = context.getCommittedRuntimeConfig?.() ?? currentCfg;
+    const currentBoundaryFilter = hasOperatorBoundary(client, currentPolicy)
+      ? createSessionListEntryFilter({ client, cfg: currentPolicy })
       : undefined;
     if (
       !current ||

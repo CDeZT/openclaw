@@ -90,6 +90,7 @@ export async function handleChatHistoryRequest({
   context,
   method,
   signal,
+  sessionMutationAuthorization,
   retainedSessionId,
 }: GatewayRequestHandlerOptions & {
   method: ChatHistoryMethod;
@@ -175,7 +176,9 @@ export async function handleChatHistoryRequest({
     return;
   }
   const authorizeSharing = (current: typeof selectedSession) => {
-    const sharing = prepareSessionSharing({ client, cfg: current.cfg });
+    sessionMutationAuthorization?.assertCurrent();
+    const policyConfig = (context.getCommittedRuntimeConfig ?? context.getRuntimeConfig)();
+    const sharing = prepareSessionSharing({ client, cfg: policyConfig });
     if (
       current.entry
         ? sharing.entryFilter?.(current.legacyKey ?? current.canonicalKey, current.entry) === false
