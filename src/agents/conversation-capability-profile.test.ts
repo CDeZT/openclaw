@@ -12,6 +12,8 @@ import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import { resolveConversationCapabilityProfile } from "./conversation-capability-profile.js";
 import { projectConversationToolNames } from "./conversation-tool-policy-pipeline.js";
+import { resolvePluginHarnessPolicyToolsAllow } from "./harness/execution-environment.js";
+import { resolveWebSearchToolPolicy } from "./web-search-tool-policy.js";
 
 describe("resolveConversationCapabilityProfile", () => {
   it("intersects base and provider profile contributions from plugin manifests", () => {
@@ -495,4 +497,61 @@ describe("resolveConversationCapabilityProfile scheduled account authority", () 
   it("rejects a scheduled run after its owner account is removed", () => {
     expect(() => scheduledProfile({})).toThrow('Scheduled account "work" is unavailable');
   });
+
+  it.each([
+    { name: "configured creator", knownOrigin: true, configured: true, delivery: "telegram" },
+    { name: "unknown creator origin", knownOrigin: false, configured: true, delivery: "whatsapp" },
+    { name: "removed creator account", knownOrigin: true, configured: false, delivery: "telegram" },
+  ])(
+    "preserves scheduled DM authority for $name across tool consumers",
+    ({ knownOrigin, configured, delivery }) => {
+      const params = {
+        config: {
+          channels: { whatsapp: { accounts: configured ? { work: {} } : {} } },
+        },
+        sessionKey: "agent:main:cron:job:run:turn",
+        agentId: "main",
+        agentAccountId: "default",
+        messageProvider: delivery,
+        scheduledToolPolicy: {
+          version: 1 as const,
+          mode: "account" as const,
+          ownerSessionKey: "agent:main:whatsapp:direct:sender",
+          ownerAccountId: "work",
+          ownerOrigin: knownOrigin
+            ? { kind: "external" as const, channel: "whatsapp" }
+            : { kind: "unknown" as const },
+        },
+      };
+      const conversationTools = () =>
+        projectConversationToolNames({
+          capabilityProfile: resolveConversationCapabilityProfile({
+            ...params,
+            config: { ...params.config, tools: { allow: ["read"] } },
+          }),
+          toolNames: ["read", "write"],
+          warn: () => undefined,
+        });
+      const webSearch = () =>
+        resolveWebSearchToolPolicy({ ...params, runtimeToolAllowlist: ["web_search"] });
+      const harnessTools = () =>
+        resolvePluginHarnessPolicyToolsAllow({
+          ...params,
+          provider: "fixture",
+          modelId: "fixture-model",
+          senderId: "sender",
+          conversationToolPolicy: { deny: ["*"] },
+        });
+
+      if (!knownOrigin || !configured) {
+        for (const resolve of [conversationTools, webSearch, harnessTools]) {
+          expect(resolve).toThrow('Scheduled account "work" is unavailable');
+        }
+        return;
+      }
+      expect(conversationTools()).toEqual(["read"]);
+      expect(webSearch()).toEqual({ allowed: true, persistentAllowed: true });
+      expect(harnessTools()).toEqual([]);
+    },
+  );
 });

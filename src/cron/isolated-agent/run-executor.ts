@@ -1,6 +1,6 @@
 /** Executes isolated cron prompts with model fallbacks and interim-ack retries. */
 import { createHash } from "node:crypto";
-import { resolveGroupToolPolicyOutcome } from "../../agents/agent-tools.policy.js";
+import { resolveGroupToolPolicy } from "../../agents/agent-tools.policy.js";
 import { resolveCliBackendConfig } from "../../agents/cli-backends.js";
 import {
   cliBackendAcceptsAuthProfileForwarding,
@@ -165,14 +165,13 @@ function createCronPromptExecutor(
     isCommandStyleCronMessage(params.agentPayload?.message ?? ""))
       ? "lightweight"
       : undefined;
-  const validatedScheduledToolPolicy = resolveCronScheduledToolPolicy({
-    toolsAllow: params.agentPayload?.toolsAllow,
-    scheduledToolPolicy: params.job.scheduledToolPolicy,
-    owner: params.job.owner,
-  });
   const scheduledToolPolicy = resolveScheduledToolPolicyContext({
     toolsAllow: params.agentPayload?.toolsAllow,
-    scheduledToolPolicy: validatedScheduledToolPolicy,
+    scheduledToolPolicy: resolveCronScheduledToolPolicy({
+      toolsAllow: params.agentPayload?.toolsAllow,
+      scheduledToolPolicy: params.job.scheduledToolPolicy,
+      owner: params.job.owner,
+    }),
     callerOrigin: params.job.toolsAllowProvenance?.callerOrigin,
     execTarget: params.job.toolsAllowExecTarget,
   });
@@ -181,7 +180,7 @@ function createCronPromptExecutor(
   const messageChannel = sourceDelivery.target.channel ?? params.resolvedDelivery.channel;
   if (scheduledToolPolicy?.mode === "account") {
     const callerContext = resolveScheduledToolCallerContext({ scheduledToolPolicy });
-    const policyOutcome = resolveGroupToolPolicyOutcome({
+    resolveGroupToolPolicy({
       config: params.cfgWithAgentDefaults,
       sessionKey: scheduledToolPolicy.ownerSessionKey,
       messageProvider: callerContext.channel ?? undefined,
@@ -189,9 +188,6 @@ function createCronPromptExecutor(
       requireConfiguredAccount: true,
       senderPolicyMode: "never",
     });
-    if (policyOutcome.kind === "account-unavailable") {
-      throw new Error(policyOutcome.message);
-    }
   }
   const finalizePromptForResolvedTools = ({
     prompt,
