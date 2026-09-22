@@ -41,7 +41,7 @@ Build, QA and test orchestration restore the same [protected Node compile cache]
 
 In-process Gateway test configs use [exclusive plan admission within existing packed jobs](/ci/capacity#measured-shard-weights).
 
-Changed-extension PR jobs use [measured fallback rates and a 240-second packing budget](/ci/capacity#runner-registration-budget) within the 90-row compact and 70-row push caps. PRs admit 131 Node rows on hybrid and 130 on other profiles.
+Changed-extension PR jobs use [measured fallback rates and a 240-second packing budget](/ci/capacity#runner-registration-budget) within the landed 90-row compact, 130-row PR and 70-row push caps.
 
 Compact planning reserves the actual appended plugin rows before applying those
 Node matrix caps, allowing existing hosted tooling compaction to use the
@@ -51,7 +51,7 @@ Roomy serial Blacksmith Node jobs use [measured Vitest worker sizing](/ci/capaci
 
 Compact packing prices measured children by their actual runner and worker class,
 including two-worker fallback jobs. Exact child walls raise stale parent
-projections while preserving worker limits. The hybrid-only one-row PR cap exception accounts for the measured inventory.
+projections without changing worker limits or row caps.
 
 Source-only Linux Node shards can reuse content-validated compiled workers from the protected warmer; [fixed preparation costs](/ci/capacity#fixed-job-preparation) remain separate from test execution and runner capacity.
 

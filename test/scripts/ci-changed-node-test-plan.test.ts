@@ -1544,21 +1544,20 @@ describe("CI changed Node test plan", () => {
         compactNodeJobCap: 130 - shards.filter((job) => !job.requiresDist).length,
         changedPaths: ["scripts/lib/ci-changed-node-test-plan.mts"],
       };
-      const compact = createNodeTestShardBundles(options);
+      // Inspect the inactive profile before asserting its capped refusal below.
+      const compact = createNodeTestShardBundles({
+        ...options,
+        compactNodeJobCap: runnerBackend === "blacksmith" ? undefined : options.compactNodeJobCap,
+      });
       expect(compact.length).toBeLessThanOrEqual(90);
       const nodeRows = compact.filter((job) => !job.requiresDist).length + shards.length;
       if (runnerBackend === "blacksmith" && nodeRows > 130) {
         // The inactive profile's capacity remains a maintainer decision. Preflight must refuse it.
-        expect(() =>
-          createNodeTestShardBundles({
-            ...options,
-            compactNodeJobCap: 130 - shards.filter((job) => !job.requiresDist).length,
-          }),
-        ).toThrow(/^compact blacksmith node test plan exceeds /u);
-      } else {
-        expect(nodeRows, `${runnerBackend} final PR matrix`).toBeLessThanOrEqual(
-          runnerBackend === "hybrid" ? 131 : 130,
+        expect(() => createNodeTestShardBundles(options)).toThrow(
+          /^compact blacksmith node test plan exceeds /u,
         );
+      } else {
+        expect(nodeRows, `${runnerBackend} final PR matrix`).toBeLessThanOrEqual(130);
       }
     }
     expect(shards.every((shard) => !shard.targets)).toBe(true);

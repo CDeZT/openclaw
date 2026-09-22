@@ -62,7 +62,7 @@ The three Mac Node parts add two hosted jobs per run on `github` and `hybrid`, w
 
 `Release npm Cache Warm` (`release-npm-cache-warm.yml`) runs a hosted Linux job on scheduled and manual triggers to prepare an npm download seed from the latest published OpenClaw package with lifecycle scripts disabled. Its concurrency group is separate from push-triggered Vitest warming, so newer pushes cannot cancel a pending seed. Scheduled runs publish from `main`, so new release branches can restore that seed through GitHub's default-branch cache scope. Each seed starts empty and contains only the current baseline dependency graph. Cross-OS release checks first restore their candidate-specific cache, then a matching runtime/suite cache, then this shared seed. Only npm's content-addressed `_cacache` directory is archived; install prefixes, OpenClaw state, npm logs, and executable `npx` caches remain fresh. The producer and consumers use the same relative archive path and enable cross-OS archives. npm retains normal freshness and integrity checks and downloads missing platform-specific packages. This adds one hosted Linux job per scheduled or manual warmer run, no jobs on pushes, and no Blacksmith registrations.
 
-Small precise PR changes use a focused Node plan. Broad, deleted or unknown changes retain compact core plus the affected plugin fallback; canonical pushes use the integration compact. Every compact planner profile is capped at 90 rows, and plugin fallback packing is capped at 50. The final canonical Node matrix also enforces 70 push rows and 130 PR rows, with a 131-row PR limit for hybrid, including precise plans. Missing changed paths, missing current planner capabilities and planner errors fail preflight instead of emitting an incomplete successful matrix. Approved historical dispatches retain their full named plans. Count every emitted matrix row and nonmatrix job, including all six Android rows despite its two-job concurrency cap.
+Small precise PR changes use a focused Node plan. Broad, deleted or unknown changes retain compact core plus the affected plugin fallback; canonical pushes use the integration compact. Every compact planner profile is capped at 90 rows, and plugin fallback packing is capped at 50. The final canonical Node matrix also enforces 70 push rows or 130 PR rows, including precise plans. Missing changed paths, missing current planner capabilities and planner errors fail preflight instead of emitting an incomplete successful matrix. Approved historical dispatches retain their full named plans. Count every emitted matrix row and nonmatrix job, including all six Android rows despite its two-job concurrency cap.
 
 Preflight reserves the actual appended plugin Node rows before packing compact
 core work. Hosted tooling tail compaction therefore starts when the remaining
@@ -81,8 +81,6 @@ because an empty include list would execute a whole config without a priced
 workload.
 
 The approved row-cap increase raises compact plans from 80 to 90 rows and final Node matrices from 64/120 to 70/130 push/PR rows. It reserves room for the measured isolated Gateway-server family and measured plugin-envelope packing. At the limits, each run can admit six more Node registrations on push or ten more on PR; compact rows are already included in that total. Across the retained four-main/21-PR arrival envelope, the increase is `4 × 6 + 21 × 10 = 234`, taking the conservative ceiling from 4,776 to 5,010. Runner classes, workers, matrix concurrency and timeouts retain their existing policies. The cap increase alone does not establish a runtime improvement.
-
-Measured two-worker compact pricing requires one additional hybrid PR row after compatible serial tooling tails are combined. Under the maintainer’s sub-1% baseline-overage rule, hybrid alone admits 131 PR rows (1/130 = 0.77%); Blacksmith and GitHub retain 130, pushes retain 70, and compact plans retain 90. This adds at most 21 registrations to the retained arrival envelope: 5,031 with the historical non-Node inventory or 5,106 with the expanded Windows inventory, below the 6,000 reference target. Blacksmith’s measured broad fallback still exceeds its cap and fails preflight pending a separate maintainer decision.
 
 The shared plugin catch-all, QA and provider suites use native Vitest sharding, sized from the existing 90-file envelope budget. Their complete configs still own discovery and exclusions; the counting inventory never narrows execution to the directly changed plugin. At `2f7fb353`, the catch-all has 486 counting entries and 474 effective files across six jobs, QA has 238/232 across three, and providers have 275/256 across four. Counting entries include files excluded by Vitest, so the budget is conservative. Each job retains its existing worker limits, isolation policy and per-file module cleanup.
 
@@ -121,7 +119,7 @@ The Codex rates were refreshed after the app-server fixture began reusing databa
 
 This calibration preserves execution policy: ordinary Codex files remain serial and non-isolated, database-worker-routed Codex files retain isolated forks, and both keep their 12-file process bound. The 300-second no-output watchdog and test deadlines remain unchanged. Weight changes affect packing and predictions, not per-file scheduling.
 
-At that measurement, the landed caps were 90 compact rows, 130 final PR Node rows and 70 final push Node rows; changed-extension fallback retains its 50-row cap. These caps admit the 240-second budget without another policy increase. Replaying PR #153435's 38 changed paths and a broad SDK fallback on the `9034c0aa` counting inventory with the refreshed Codex rates emits 124 envelopes in 48 extension rows, down from 50 rows with the same envelope inventory and process bounds, for both changed sets:
+The landed caps are 90 compact rows, 130 final PR Node rows and 70 final push Node rows; changed-extension fallback retains its 50-row cap. These caps admit the 240-second budget without another policy increase. Replaying PR #153435's 38 changed paths and a broad SDK fallback on the `9034c0aa` counting inventory with the refreshed Codex rates emits 124 envelopes in 48 extension rows, down from 50 rows with the same envelope inventory and process bounds, for both changed sets:
 
 | Profile    | Compact PR rows | Final PR Node rows before → after | Final push Node rows |
 | ---------- | --------------: | --------------------------------: | -------------------: |
@@ -394,10 +392,10 @@ scenario claims the ten-minute goal is already achieved.
 
 Full-tier Windows expansion adds at most three non-Node registrations. Without
 spending any PR proof savings, use 83 potentially eligible non-Node rows and the
-then-current 70/130 Node caps: `4 × 153 + 21 × 213 = 5,085`, leaving 915 below the
+unchanged 70/130 Node caps: `4 × 153 + 21 × 213 = 5,085`, leaving 915 below the
 6,000 reference envelope. Historical calculations elsewhere on this page use
-the earlier two-row Windows inventory. Tiering left compact90, push70, PR130, and the
-96-concurrent-Node limit unchanged; the later hybrid-only PR exception above adds 21 registrations. The daily timing refit still observes
+the earlier two-row Windows inventory. Compact90, push70, PR130, and the
+96-concurrent-Node limit remain unchanged. The daily timing refit still observes
 main and release proofs; no committed weight baseline was changed for tiering.
 
 | Lane                            | PR coverage                                                                                             | Main/manual and full release coverage                                           |
