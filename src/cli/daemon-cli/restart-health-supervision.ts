@@ -1,5 +1,6 @@
 import type { GatewayService } from "../../daemon/service.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
+import { withCommandProcessScope } from "../../process/exec-spawn.js";
 
 export async function resolveGatewayRestartSupervision(params: {
   service?: Partial<Pick<GatewayService, "isLoaded">>;
@@ -22,15 +23,18 @@ export async function resolveGatewayRestartSupervision(params: {
   if (timeoutMs <= 0) {
     return undefined;
   }
-  const loaded = await params.service
-    .isLoaded({ env: params.env, timeoutMs })
-    .catch((error: unknown) => {
-      params.signal?.throwIfAborted();
-      if (hasCommandProcessCleanupError(error)) {
-        throw error;
-      }
-      return false;
-    });
+  const isLoaded = params.service.isLoaded.bind(params.service);
+  // The native probe inherits cancellation and joins cleanup before health or rollback.
+  const loaded = await withCommandProcessScope(
+    () => isLoaded({ env: params.env, timeoutMs }),
+    params.signal,
+  ).catch((error: unknown) => {
+    if (hasCommandProcessCleanupError(error)) {
+      throw error;
+    }
+    params.signal?.throwIfAborted();
+    return false;
+  });
   params.signal?.throwIfAborted();
   return loaded;
 }

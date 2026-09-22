@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { gatewayHealthResponse } from "../../gateway/health-response.test-support.js";
 import { CommandProcessCleanupError } from "../../process/exec-result.js";
+import {
+  resolveCommandProcessSignal,
+  retainCommandProcessCleanup,
+} from "../../process/exec-spawn.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
 import {
   callGateway,
@@ -259,6 +264,72 @@ describe("restart health supervision", () => {
     },
   );
 
+  it.each(["cooperative", "uncertain"] as const)(
+    "joins signal-only supervision cancellation with %s command cleanup",
+    async (cleanupResult) => {
+      const service = makeGatewayService({ status: "stopped" });
+      const caller = new AbortController();
+      const reason = new Error("operator canceled supervision");
+      const entered = createDeferred();
+      const canceled = createDeferred();
+      const cleanup = createDeferred<"cooperative" | "uncertain">();
+      let nativeSignal: AbortSignal | undefined;
+      let releaseProbe: (() => void) | undefined;
+      let observationSettled = false;
+      vi.mocked(service.isLoaded).mockImplementation(async () => {
+        nativeSignal = resolveCommandProcessSignal();
+        retainCommandProcessCleanup(cleanup.promise);
+        const pending = new Promise<void>((resolve) => {
+          releaseProbe = resolve;
+          nativeSignal?.addEventListener(
+            "abort",
+            () => {
+              canceled.resolve();
+              resolve();
+            },
+            { once: true },
+          );
+        });
+        entered.resolve();
+        await pending;
+        return false;
+      });
+      const observed = waitForGatewayHealthyRestart({
+        service,
+        port: 18789,
+        signal: caller.signal,
+      })
+        .catch((error: unknown) => error)
+        .finally(() => {
+          observationSettled = true;
+        });
+      try {
+        await entered.promise;
+        expect(nativeSignal).toBeDefined();
+        expect(nativeSignal?.aborted).toBe(false);
+        caller.abort(reason);
+        await canceled.promise;
+        expect(nativeSignal?.aborted).toBe(true);
+        expect(observationSettled).toBe(false);
+        cleanup.resolve(cleanupResult);
+        if (cleanupResult === "uncertain") {
+          expect(await observed).toBeInstanceOf(CommandProcessCleanupError);
+        } else {
+          expect(await observed).toBe(reason);
+        }
+        expect(service.readRuntime).not.toHaveBeenCalled();
+        expect(inspectPortUsage).not.toHaveBeenCalled();
+        expect(callGateway).not.toHaveBeenCalled();
+        expect(sleep).not.toHaveBeenCalled();
+      } finally {
+        caller.abort(reason);
+        releaseProbe?.();
+        cleanup.resolve(cleanupResult);
+        await observed;
+      }
+    },
+  );
+
   it.each([
     { wrapped: false, aborted: false },
     { wrapped: true, aborted: false },
@@ -282,7 +353,7 @@ describe("restart health supervision", () => {
       });
       await expect(
         waitForGatewayHealthyRestart({ service, port: 18789, signal: controller.signal }),
-      ).rejects.toBe(aborted ? abortReason : failure);
+      ).rejects.toBe(failure);
       expect(service.isLoaded).toHaveBeenCalledOnce();
       expect(service.readRuntime).not.toHaveBeenCalled();
       expect(inspectPortUsage).not.toHaveBeenCalled();
