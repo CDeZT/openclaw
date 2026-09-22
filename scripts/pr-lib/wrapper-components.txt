@@ -1155,6 +1155,7 @@ src/state/openclaw-agent-db-contract.ts
 src/state/openclaw-agent-db-metadata.ts
 src/state/openclaw-agent-db-migration-required.ts
 src/state/openclaw-agent-db.paths.ts
+src/state/openclaw-quarantine-error.ts
 src/state/openclaw-quarantine-store.ts
 src/state/openclaw-state-db-additive-columns.ts
 src/state/openclaw-state-db-async-lifecycle.ts
@@ -1217,6 +1218,7 @@ src/state/openclaw-state-schema-publication.ts
 src/state/openclaw-state-schema.sql
 src/state/openclaw-state-schema.ts
 src/state/openclaw-state-worker-context.ts
+src/state/openclaw-state-worker-error-identity.ts
 src/state/openclaw-state-worker-error.ts
 src/state/openclaw-state-worker-operation.ts
 src/state/openclaw-state-worker-store.ts
