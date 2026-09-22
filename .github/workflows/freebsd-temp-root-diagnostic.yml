@@ -1,5 +1,5 @@
-# Disposable FreeBSD x64 diagnostic consumer. Never merge this workflow or its source.
-name: Temporary FreeBSD temp-root diagnostic consumer
+# Disposable source-owner proof. Never merge this workflow or the X instrumentation.
+name: Temporary FreeBSD signed identity owner proof
 on:
   pull_request:
     types: [synchronize]
@@ -7,41 +7,25 @@ on:
     paths: [.github/workflows/freebsd-temp-root-diagnostic.yml]
 permissions:
   contents: read
-  actions: read
 concurrency:
   group: freebsd-temp-root-diagnostic-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 env:
-  SOURCE_SHA: 1388021b60cd6b87ec5bb840fdcfbd06e39f3530
-  SOURCE_TREE: 282fcc4a3ee7d7af39c51fb39b97ca3545dff873
-  PRODUCT_SHA: 10725d8613c64f5efdc8ea58eae70a3b8f4276ac
-  PRODUCT_TREE: 74bddc0882c455c519931e40040c260df9951ee8
-  HARNESS_SHA: d1bf78d0108c6db492689d929411e9f299ede05a
-  PRODUCER_TREE: 1f60554548bef379a40f10e274aedda39da1ebf0
   CONSUMER_SHA: ${{ github.event.pull_request.head.sha }}
   WORKFLOW_SHA: ${{ github.workflow_sha }}
-  CONSUMER_RUN_ID: ${{ github.run_id }}
-  CONSUMER_RUN_ATTEMPT: ${{ github.run_attempt }}
-  PROOF_REPOSITORY: openclaw/openclaw
-  PROOF_RUN_ID: "35673571733"
-  PROOF_RUN_ATTEMPT: "1"
-  PROOF_JOB_ID: "106575212070"
-  # Authenticated successful producer run 35673571733, attempt 1.
-  PAYLOAD_ARTIFACT_ID: "10671799140"
-  PAYLOAD_ARTIFACT_DIGEST: "sha256:732e2c45254e4c8e23eabe47845c68f17eb40e93564bf6051a7a695c4dae8655"
-  PAYLOAD_ARTIFACT_SIZE: "245524296"
-  MANIFEST_SHA: "21902bc002cceafc66ce6f3a6da5e95a0872267aa56b8876dca4221bc2fc6cb0"
-  ARCHIVE_SHA: "3580f587a467a1a9aa6c5b552e1ec67b9398f94d9b16ee5c24467144655bfc1f"
-  PACKAGE_VERSION: "2026.9.5"
-  EXPECTED_NODE_ARCH: x64
-  SOURCE_PINS: '{".npmrc":"f1d021e2abdf8817d83e35feb1f5d604e8c985aa0553bec3d417cf6f93e9c09c","package.json":"f5c0f02e39c7d57eac8d62ca0ee32a0fe6d785ddfd311a41cb5f63a0b5101d59","pnpm-lock.yaml":"799277c5164659f2698c8ee815cdc2083e290e5682b8a1877cb57efcda919180","pnpm-workspace.yaml":"d6e830d59ad6802154c01aae2525444f257915b68cc3956fbc574efc2160ba6b","packages/ai/package.json":"61eefcb38095a41de445f781c738cb1f89c960ddf6c56f39c6d61970d8db277b","packages/markdown-core/package.json":"eb934f4829a87292edff90480e2c060e636afdd75d35a3ffc02a55581e37a548","packages/model-catalog-core/package.json":"0cef9224746d0eed66278f729b6edf4d6e7cdf31fd35b16af62bae0aa4635331","packages/normalization-core/package.json":"2bfc2ae79211db8023b168e8dd6c5f378dd64e0890b32ae9a043d38c867683a5","packages/session-url-contract/package.json":"ce05f27abdafc0ff033aadf0d0944f8c48681d5eebcd5dec7485e64215abe827","scripts/install-smoke-candidate-payload.mts":"5f4de9d36236a4f23d769e0972a0f0904864711ff664ba3fad362137dc3902ac","scripts/run-vitest.mjs":"c3590ff935f53512a6faf3455da5e02f914fc9cbf94c5fdc962d40fbe7f5a459","scripts/tsx.mjs":"e726c78d5a5a274215d9fe292ac91e4acf601c4554d68fbd57ff3b932573f9e6","scripts/lib/vitest-report-capture.mts":"efed891ab104940d6342fa902306809dc714083be53b73a1970d22a12a10a2a2","scripts/lib/vitest-worker-compiler.mts":"eeab9138dbfa6dc9336b70ac17aaf63646925e246a3da8d9e7c8e289014142af","scripts/lib/vitest-worker-artifacts.mts":"b8f30e2869db28ef1ba76139434e674fdd6381caafefb7396384ad5e82a5cefc","scripts/lib/vitest-worker-run.mts":"0144339d75a27d6b8a9643fa22a46dcc346f4ee387c96b4039b2ee22bd0a1433","scripts/lib/vitest-build-prerequisites.mts":"20ee2cb09d66dd98f38292eb90fafea0b897493182857b604d61ff472e030ed7","scripts/freebsd-service-inspect.mjs":"6585523afc1b700b82b53e4b9881944a0f3d58f2dd47c5675252ec658a3a8f4d","scripts/lib/freebsd-service-discovery.mjs":"a18f1ba7022576545571ef033a0060c83343d8a047e380aec15e3dc0543e0d19","scripts/lib/freebsd-service-discovery.d.mts":"efb110b8164077569df27bb8a4ba931180d9438a6ae045cdd03752c26f75ba1f","test/vitest/vitest.cli.config.ts":"98aa889f4ccbd33ba9ae21234b7a44396a5941cce9b55d2eadf14aa8c1cf6d45","src/cli/update-cli/update-command-freebsd-worker.test.ts":"6bb355fb9fd03e9d53ab3397fe660df7b1e06597aea2dbfcd8beeba6cce9dc80","src/cli/update-cli/update-command-fresh-doctor.ts":"660dd73781439fe122443f7abae0cd74d6f4da9207e7d78ca13c2b98e3cc0a88","src/cli/update-cli/update-command-migrated.ts":"1805a49cdda357b6c514fbb0924d3d1efa5210635374afb0405cf982081bb3e0","src/config/io.snapshot.ts":"9750cf343863f350abcf259436d9cd2fd04e2aecb81cf6c5c673413d86ce006c","src/infra/update-freebsd-root-ownership.ts":"e92588e29e933d504ba2ed53ef9c2b2d3004a311d28799e728ad752846459e93","src/infra/update-freebsd-root-ownership.test-support.ts":"0307ead5caf5f7f166ece67d27326010c0acf4bc1d880795f854b8ad5c1b2707","src/infra/update-migrated-finalize.worker.ts":"407ba37d71ef743074e48aa55ff0ba5b073849b83d3dbad84fe0dbd380281b46"}'
+  PREDECESSOR_SHA: 956eba7050d9f038fad3c8ea971372a3097e8d1d
+  SOURCE_X_SHA: 1388021b60cd6b87ec5bb840fdcfbd06e39f3530
+  OLD_OWNER_SHA: 3ba5c9504ae5bf89837f491f0f227c68de14778a
+  OLD_OWNER_DIGEST: 7271fed7aed56d0d796c6a2da2bb9ad3cd3f1131099a495c8d7ee55a1bb81072
+  NEW_OWNER_SHA: 33436f37f3b4060784250eabdbea24ef05dee30f
+  NEW_OWNER_DIGEST: f9f315ce5d5f71e88ddd8743b23a37cc7e71e71bc0e00c25beda2996bf6817ee
 jobs:
-  native-x64:
+  native-owner:
     if: >-
       github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
       github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
       github.event.pull_request.number == 155285 &&
-      github.event.before == 'd1bf78d0108c6db492689d929411e9f299ede05a' &&
+      github.event.before == '956eba7050d9f038fad3c8ea971372a3097e8d1d' &&
       github.event.pull_request.state == 'open' && github.event.pull_request.draft &&
       github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
@@ -49,693 +33,143 @@ jobs:
       github.event.pull_request.head.ref == 'test/freebsd-temp-root-diagnostic' &&
       github.event.pull_request.user.login == 'vincentkoc'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.CONSUMER_SHA }}
-          fetch-depth: 7
+          fetch-depth: 8
           persist-credentials: false
           sparse-checkout-cone-mode: false
-          sparse-checkout: |
-            /scripts/install-smoke-candidate-payload.mts
-            /.github/workflows/freebsd-temp-root-diagnostic.yml
-      - name: Bind the sole consumer successor and successful sealed producer
+          sparse-checkout: /.github/workflows/freebsd-temp-root-diagnostic.yml
+      - name: Authenticate the successor and exact source owner modules
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CONSUMER_SHA"
-          test "$(git show -s --format=%P HEAD)" = "$HARNESS_SHA"
-          test "$(git rev-parse "$HARNESS_SHA^{tree}")" = "$PRODUCER_TREE"
-          test "$(git show -s --format=%P "$HARNESS_SHA")" = c5cfc1d5d7fe4bf58364bd02ea8e3918ee176a14
-          test "$(git show -s --format=%P c5cfc1d5d7fe4bf58364bd02ea8e3918ee176a14)" = 7effec872cc03fa8af9d96dc71d63123a33ab0dc
-          test "$(git show -s --format=%P 7effec872cc03fa8af9d96dc71d63123a33ab0dc)" = "$SOURCE_SHA"
-          test "$(git show -s --format=%P "$SOURCE_SHA")" = "$PRODUCT_SHA"
-          test "$(git rev-parse "$SOURCE_SHA^{tree}")" = "$SOURCE_TREE"
-          test "$(git rev-parse "$PRODUCT_SHA^{tree}")" = "$PRODUCT_TREE"
-          test "$(git diff --name-only "$SOURCE_SHA" HEAD)" = .github/workflows/freebsd-temp-root-diagnostic.yml
+          test "$(git show -s --format=%P HEAD)" = "$PREDECESSOR_SHA"
+          test "$(git rev-parse "$PREDECESSOR_SHA^{tree}")" = 25d63b462b138c7de95c4599f637638a7e229a1e
+          test "$(git diff --name-only "$SOURCE_X_SHA" HEAD)" = .github/workflows/freebsd-temp-root-diagnostic.yml
           test -z "$(git status --porcelain)"
           git -c gc.auto=0 -c maintenance.auto=false fetch --no-tags --depth=1 --no-write-fetch-head origin "$WORKFLOW_SHA"
           test "$(git rev-parse "$CONSUMER_SHA:.github/workflows/freebsd-temp-root-diagnostic.yml")" = "$(git rev-parse "$WORKFLOW_SHA:.github/workflows/freebsd-temp-root-diagnostic.yml")"
-          python3 - <<'AUTH'
-          import hashlib,json,os,re,subprocess
-          def api(path): return json.loads(subprocess.check_output(['gh','api',path]))
-          for key in ['PAYLOAD_ARTIFACT_ID','PAYLOAD_ARTIFACT_SIZE']: assert re.fullmatch('[1-9][0-9]*',os.environ[key]),key
-          for key in ['MANIFEST_SHA','ARCHIVE_SHA']: assert re.fullmatch('[0-9a-f]{64}',os.environ[key]),key
-          assert re.fullmatch('sha256:[0-9a-f]{64}',os.environ['PAYLOAD_ARTIFACT_DIGEST'])
-          assert re.fullmatch('[0-9A-Za-z][0-9A-Za-z.+-]*',os.environ['PACKAGE_VERSION'])
-          patch=subprocess.check_output(['git','diff','--full-index','--no-renames','--binary',os.environ['PRODUCT_SHA'],os.environ['SOURCE_SHA']])
-          assert len(patch)==22914 and hashlib.sha256(patch).hexdigest()=='9b8bad2f556f48db1dd4101a541fbdf0b4a9b874bcb01af600f70c0c4817f48a'
-          repo=os.environ['PROOF_REPOSITORY'];run=api(f"repos/{repo}/actions/runs/{os.environ['PROOF_RUN_ID']}")
-          assert run['head_sha']==os.environ['HARNESS_SHA'] and run['run_attempt']==int(os.environ['PROOF_RUN_ATTEMPT'])
-          assert run['status']=='completed' and run['conclusion']=='success'
-          assert run['path']=='.github/workflows/freebsd-temp-root-diagnostic.yml'
-          job=api(f"repos/{repo}/actions/jobs/{os.environ['PROOF_JOB_ID']}")
-          assert job['run_id']==run['id'] and job['head_sha']==run['head_sha'] and job['run_attempt']==run['run_attempt']
-          assert job['name']=='candidate-package' and job['status']=='completed' and job['conclusion']=='success'
-          artifact=api(f"repos/{repo}/actions/artifacts/{os.environ['PAYLOAD_ARTIFACT_ID']}")
-          assert str(artifact['id'])==os.environ['PAYLOAD_ARTIFACT_ID'] and not artifact['expired']
-          assert artifact['name']==f"freebsd-temp-diagnostic-{run['id']}-{run['run_attempt']}"
-          assert artifact['workflow_run']['id']==run['id'] and artifact['workflow_run']['head_sha']==run['head_sha']
-          assert artifact['size_in_bytes']==int(os.environ['PAYLOAD_ARTIFACT_SIZE']) and artifact['digest']==os.environ['PAYLOAD_ARTIFACT_DIGEST']
-          print(json.dumps(dict(consumer=os.environ['CONSUMER_SHA'],workflow=os.environ['WORKFLOW_SHA'],producer=run['head_sha'],run=run['id'],attempt=run['run_attempt'],job=job['id'],artifact=artifact['id'],digest=artifact['digest'])))
-          AUTH
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          github-token: ${{ github.token }}
-          repository: openclaw/openclaw
-          run-id: ${{ env.PROOF_RUN_ID }}
-          artifact-ids: ${{ env.PAYLOAD_ARTIFACT_ID }}
-          digest-mismatch: error
-          path: proof-input
-          merge-multiple: true
-      - name: Admit the sealed observer and relay package
-        run: |
-          set -euo pipefail
-          python3 - <<'ADMIT'
-          import json,os
+          python3 - <<'SOURCE'
+          import base64,hashlib,json,os,subprocess
           from pathlib import Path
-          root=Path('proof-input');complete=json.loads((root/'complete.json').read_text())
-          assert complete['complete'] is True and complete['source']==os.environ['SOURCE_SHA'] and complete['tree']==os.environ['SOURCE_TREE']
-          assert complete['carrier']==os.environ['HARNESS_SHA'] and str(complete['run'])==os.environ['PROOF_RUN_ID'] and str(complete['attempt'])==os.environ['PROOF_RUN_ATTEMPT']
-          assert complete['manifestSha256']==os.environ['MANIFEST_SHA'] and complete['sourceArchiveSha256']==os.environ['ARCHIVE_SHA'] and complete['packageVersion']==os.environ['PACKAGE_VERSION']
-          sites=json.loads((root/'diagnostic-emission.json').read_text());assert sites['source']==os.environ['SOURCE_SHA'] and sites['complete'] and sites['emissionPassed'] and not sites['errors']
-          print(json.dumps(dict(sealedProducerAccepted=True,source=complete['source'],emissionPassed=True,nativeProof='unrun')))
-          ADMIT
-      - name: Run the single real-finalizer case on FreeBSD x64
+          root=Path('owner-input');root.mkdir(mode=0o700)
+          pins=[('old','OLD_OWNER_SHA','OLD_OWNER_DIGEST',5586,'aac8b6ccf5a0d933658213c87ede404df3d9ed60'),('new','NEW_OWNER_SHA','NEW_OWNER_DIGEST',5860,'b7f7c617a7859a73bf1c92885969d50f0ffc824f')]
+          for label,sha_key,digest_key,size,blob in pins:
+              ref=os.environ[sha_key]
+              item=json.loads(subprocess.check_output(['gh','api',f'repos/openclaw/fs-safe/contents/src/secure-temp-repair.ts?ref={ref}']))
+              assert item['type']=='file' and item['path']=='src/secure-temp-repair.ts' and item['encoding']=='base64'
+              content=base64.b64decode(item['content'],validate=False)
+              assert item['sha']==blob and item['size']==size and len(content)==size
+              assert hashlib.sha256(content).hexdigest()==os.environ[digest_key]
+              assert hashlib.sha1(f'blob {len(content)}\0'.encode()+content).hexdigest()==blob
+              with (root/f'{label}.ts').open('xb') as file:file.write(content)
+              print(json.dumps(dict(role=label,repository='openclaw/fs-safe',source=ref,path=item['path'],bytes=size,sha256=os.environ[digest_key],gitBlob=blob)))
+          SOURCE
+      - name: Prove the actual receipt and repair owners on a negative-device filesystem
         uses: vmactions/freebsd-vm@8b0f1a8fc0ea0def307835c258940ca358fe6480 # v1.5.6
         with:
           release: "15.1"
           arch: x86_64
-          mem: 8192
+          mem: 4096
           sync: rsync
           copyback: false
           disable-cache: true
           debug-on-error: false
-          envs: SOURCE_SHA HARNESS_SHA CONSUMER_SHA CONSUMER_RUN_ID CONSUMER_RUN_ATTEMPT SOURCE_PINS EXPECTED_NODE_ARCH MANIFEST_SHA ARCHIVE_SHA PACKAGE_VERSION PAYLOAD_ARTIFACT_ID PAYLOAD_ARTIFACT_DIGEST PROOF_REPOSITORY PROOF_RUN_ID PROOF_RUN_ATTEMPT
+          envs: CONSUMER_SHA OLD_OWNER_SHA OLD_OWNER_DIGEST NEW_OWNER_SHA NEW_OWNER_DIGEST
           prepare: |
             set -eu
             mkdir -p /usr/local/etc/pkg/repos
             cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<'REPO'
             FreeBSD-ports: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }
             REPO
-            pkg install -y node24 npm-node24 corepack ca_root_nss git-lite gmake python3 bash
+            pkg install -y node24 ca_root_nss
           run: |
             set -eu
-            umask 022
-            node --input-type=module <<'NODE'
-            import assert from 'node:assert/strict';
-            import { execFileSync } from 'node:child_process';
-            const release = execFileSync('/bin/freebsd-version', ['-u'], { encoding: 'utf8' }).trim();
-            assert.match(release, /^15\.1-RELEASE(?:-p\d+)?$/);
-            assert.equal(process.platform, 'freebsd');
-            assert.equal(process.arch, process.env.EXPECTED_NODE_ARCH);
-            assert.equal(process.getuid(), 0); assert.equal(process.geteuid(), 0);
-            assert.match(process.version, /^v24\./);
-            console.log(JSON.stringify({ release, platform: process.platform, arch: process.arch, node: process.version, uid: process.getuid(), euid: process.geteuid() }));
-            NODE
-            node scripts/install-smoke-candidate-payload.mts verify               --payload-dir proof-input/payload --manifest-sha256 "$MANIFEST_SHA"               --source-archive-sha256 "$ARCHIVE_SHA" --package-version "$PACKAGE_VERSION"               --repository "$PROOF_REPOSITORY" --target-sha "$SOURCE_SHA"               --harness-repository "$PROOF_REPOSITORY" --harness-sha "$HARNESS_SHA"               --run-id "$PROOF_RUN_ID" --run-attempt "$PROOF_RUN_ATTEMPT"
-            proof_root=$(mktemp -d /root/openclaw-temp-observation.XXXXXX)
-            chmod 0700 "$proof_root"
-            INPUT_ROOT="$(pwd)/proof-input"
-            export PROOF_ROOT="$proof_root" INPUT_ROOT
-            node --input-type=module <<'NODE'
-            import assert from 'node:assert/strict';
-            import { createHash } from 'node:crypto';
-            import fs from 'node:fs';
-            const root = process.env.INPUT_ROOT;
-            const hash = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-            assert.equal(hash(`${root}/source.tar.gz`), process.env.ARCHIVE_SHA);
-            console.log(JSON.stringify({source:process.env.SOURCE_SHA,consumer:process.env.CONSUMER_SHA,artifact:process.env.PAYLOAD_ARTIFACT_ID,digest:process.env.PAYLOAD_ARTIFACT_DIGEST}));
-            NODE
-            mkdir "$proof_root/source" "$proof_root/package-view" "$proof_root/reports"
-            python3 - "$INPUT_ROOT/source.tar.gz" <<'PY'
-            import json, sys, tarfile
-            with tarfile.open(sys.argv[1], 'r:gz') as archive:
-                members = {member.name.rstrip('/'): member for member in archive}
-                for name in ['openclaw', 'openclaw/package.json']:
-                    member = members[name]
-                    print(json.dumps({'rawSourceArchive': name, 'uid': member.uid, 'gid': member.gid, 'mode': oct(member.mode), 'kind': 'directory' if member.isdir() else 'file' if member.isfile() else 'other'}))
-            PY
-            # Git archives default to group-writable modes. Apply the guest's 022
-            # installation mask; root bsdtar otherwise restores the archive modes.
-            tar --no-same-permissions -xzf "$INPUT_ROOT/source.tar.gz" -C "$proof_root/source"
-            tar -xzf "$INPUT_ROOT/payload/candidate.tgz" -C "$proof_root/package-view"
-            source_root="$proof_root/source/openclaw"
-            export SOURCE_ROOT="$source_root" PACKAGED_ROOT="$proof_root/package-view/package"
-            node --input-type=module <<'NODE'
-            import assert from 'node:assert/strict';
-            import { createHash } from 'node:crypto';
-            import fs from 'node:fs';
-            import path from 'node:path';
-            let cursor=path.join(process.env.SOURCE_ROOT,'package.json');
-            for(let ancestor=0;;ancestor++) {
-              assert(ancestor<20);
-              const stat=fs.lstatSync(cursor);
-              console.log(JSON.stringify({installedSourceAncestor:ancestor,uid:stat.uid,gid:stat.gid,mode:(stat.mode&0o7777).toString(8),kind:stat.isDirectory()?'directory':stat.isFile()?'file':'other'}));
-              assert.equal(stat.uid,0); assert.equal(stat.mode&0o022,0);
-              assert(ancestor===0?stat.isFile():stat.isDirectory());
-              const parent=path.dirname(cursor); if(parent===cursor) break; cursor=parent;
-            }
-            for (const [file, digest] of Object.entries(JSON.parse(process.env.SOURCE_PINS))) {
-              assert.equal(createHash('sha256').update(fs.readFileSync(path.join(process.env.SOURCE_ROOT, file))).digest('hex'), digest, file);
-            }
-            const build = JSON.parse(fs.readFileSync(path.join(process.env.PACKAGED_ROOT, 'dist/build-info.json')));
-            assert.equal(build.commit, process.env.SOURCE_SHA); assert(build.buildId);
-            const manifest = JSON.parse(fs.readFileSync(path.join(process.env.PACKAGED_ROOT, 'package.json')));
-            assert.deepEqual(manifest.openclaw.schemaVersions, { state: 17, agent:22 });
-            console.log(JSON.stringify({ packageBuild: build }));
-            NODE
-            node --input-type=module <<'NODE'
+            node --input-type=module <<'PROBE'
             import assert from 'node:assert/strict';
             import fs from 'node:fs';
-            import path from 'node:path';
-            import { createHash } from 'node:crypto';
-            const pins=JSON.parse(process.env.SOURCE_PINS), packaged=process.env.PACKAGED_ROOT;
-            for (const file of ['scripts/freebsd-service-inspect.mjs','scripts/lib/freebsd-service-discovery.mjs','scripts/lib/freebsd-service-discovery.d.mts']) {
-              assert.equal(createHash('sha256').update(fs.readFileSync(path.join(packaged,file))).digest('hex'),pins[file],file);
-            }
-            NODE
-            # Archive ownership is producer metadata, not an installed root boundary.
-            # Record it without changing the package; use the documented installed copy.
-            node --input-type=module <<'NODE'
-            import fs from 'node:fs';
-            import path from 'node:path';
-            const roots = { node: process.execPath, inspector: `${process.env.PACKAGED_ROOT}/scripts/freebsd-service-inspect.mjs`, helper: `${process.env.PACKAGED_ROOT}/scripts/lib/freebsd-service-discovery.mjs` };
-            for (const [role, filename] of Object.entries(roots)) {
-              let current='/'; let ancestor=0;
-              for (const part of ['', ...filename.split('/').filter(Boolean)]) {
-                current=path.join(current,part); const stat=fs.lstatSync(current);
-                console.log(JSON.stringify({ownership:role,ancestor:ancestor++,uid:stat.uid,gid:stat.gid,mode:(stat.mode&0o7777).toString(8),directory:stat.isDirectory(),symlink:stat.isSymbolicLink()}));
-              }
-            }
-            NODE
-            test ! -e /usr/local/libexec/openclaw-service-inspect.mjs
-            test ! -L /usr/local/libexec/openclaw-service-inspect.mjs
-            test ! -e /usr/local/libexec/lib/freebsd-service-discovery.mjs
-            test ! -L /usr/local/libexec/lib/freebsd-service-discovery.mjs
-            install -d -o root -g wheel -m 0755 /usr/local/libexec/lib
-            install -o root -g wheel -m 0644 "$PACKAGED_ROOT/scripts/freebsd-service-inspect.mjs" /usr/local/libexec/openclaw-service-inspect.mjs
-            install -o root -g wheel -m 0644 "$PACKAGED_ROOT/scripts/lib/freebsd-service-discovery.mjs" /usr/local/libexec/lib/freebsd-service-discovery.mjs
-            node --input-type=module <<'NODE'
-            import assert from 'node:assert/strict';
-            import { createHash } from 'node:crypto';
-            import fs from 'node:fs';
-            const pins=JSON.parse(process.env.SOURCE_PINS);
-            for (const [file,installed] of [['scripts/freebsd-service-inspect.mjs','/usr/local/libexec/openclaw-service-inspect.mjs'],['scripts/lib/freebsd-service-discovery.mjs','/usr/local/libexec/lib/freebsd-service-discovery.mjs']]) {
-              const stat=fs.lstatSync(installed);
-              assert(stat.isFile()); assert.equal(stat.uid,0); assert.equal(stat.mode&0o7777,0o644);
-              assert.equal(createHash('sha256').update(fs.readFileSync(installed)).digest('hex'),pins[file],file);
-              console.log(JSON.stringify({installed:file,uid:stat.uid,gid:stat.gid,mode:(stat.mode&0o7777).toString(8),sha256:pins[file]}));
-            }
-            NODE
-            (cd / && /usr/bin/env -i HOME=/ PATH=/sbin:/bin:/usr/sbin:/usr/bin LC_ALL=C /usr/local/bin/node /usr/local/libexec/openclaw-service-inspect.mjs) > "$proof_root/initial-discovery.json"
-            node -e 'const a=require("node:assert/strict"),r=JSON.parse(require("node:fs").readFileSync(process.argv[1]));a.equal(r.status,"absent");a.equal(r.authority,"diagnostic-only")' "$proof_root/initial-discovery.json"
-            export OPENCLAW_TEST_FREEBSD_DISPOSABLE=1 CI=true OPENCLAW_VITEST_MAX_WORKERS=1
-            export TMPDIR="$proof_root/tmp" TMP="$proof_root/tmp" TEMP="$proof_root/tmp"
-            mkdir -m 0700 "$TMPDIR"
-            cd "$source_root"
-              # Corepack omits optional packages and its v12 downloader rejects FreeBSD.
-              # The official npm wrapper supports the installed FreeBSD x64 package.
-              (cd "$PROOF_ROOT" && npm install --prefix "$PROOF_ROOT/pnpm" --ignore-scripts --include=optional --no-audit --no-fund --registry=https://registry.npmjs.org/ pnpm@12.4.0)
-              node --input-type=module <<'NODE'
-              import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import {pathToFileURL} from 'node:url';
-              const root=path.join(process.env.PROOF_ROOT,'pnpm'),lock=JSON.parse(fs.readFileSync(path.join(root,'package-lock.json')));
-              for(const [name,integrity,tarball] of [
-                ['pnpm','sha512-N1NsJu1Aq0E0tlEeCfayfz67RWh0aPJAbKOAUnmk5coVjBkxNQrZd01qshCNcbPbrrOZQxWSlDdeTQU+jgVoXA==','https://registry.npmjs.org/pnpm/-/pnpm-12.4.0.tgz'],
-                ['@pnpm/exe.freebsd-x64','sha512-A45d6axdQIFNyNTYZAC64wh5+6LJ6dNKhNAoNMNi/EC5y9CRfv0GL3ZYDBqpkmsN9KMAkVsFWizq/Ng6xtjnhw==','https://registry.npmjs.org/@pnpm/exe.freebsd-x64/-/exe.freebsd-x64-12.4.0.tgz'],
-              ]){const entry=lock.packages[`node_modules/${name}`];assert.equal(entry.version,'12.4.0');assert.equal(entry.integrity,integrity);assert.equal(entry.resolved,tarball);const installed=JSON.parse(fs.readFileSync(path.join(root,'node_modules',name,'package.json')));assert.equal(installed.name,name);assert.equal(installed.version,'12.4.0');}
-              const {resolveInstalledBinary}=await import(pathToFileURL(path.join(root,'node_modules/pnpm/native-binary.mjs')));
-              assert.equal(resolveInstalledBinary(),path.join(root,'node_modules/@pnpm/exe.freebsd-x64/pnpm'));
-              console.log(JSON.stringify({nativePnpm:'12.4.0',platformPackage:'@pnpm/exe.freebsd-x64',registryIntegrityVerified:true,lifecycleScripts:false}));
-            NODE
-              export PATH="$PROOF_ROOT/pnpm/node_modules/.bin:$PATH"
-              # Use pnpm's documented private store owner, as in the repo remote bootstrap.
-              export PNPM_HOME="$PROOF_ROOT/pnpm-home"
-              mkdir "$PNPM_HOME"
-              test "$(pnpm --version)" = 12.4.0
-              test "$(pnpm store path)" = "$PNPM_HOME/store/v11"
-              echo "Authenticated pnpm12.4.0 active task store: $PNPM_HOME/store/v11"
-              # Include the root dependency closure and Markdown Core used by the canonical
-              # source-worker compiler, without unrelated plugin builds. Keep normal hooks.
-              pnpm --filter 'openclaw...' --filter '@openclaw/markdown-core...' --fail-if-no-match list --depth -1 --json > "$proof_root/source-scope.json"
-              node --input-type=module <<'NODE'
-              import assert from 'node:assert/strict';
-              import fs from 'node:fs';
-              import path from 'node:path';
-              const selected=JSON.parse(fs.readFileSync(`${process.env.PROOF_ROOT}/source-scope.json`));
-              const actual=selected.map(({name,path:directory})=>[name,path.relative(process.env.SOURCE_ROOT,directory)||'.']).sort();
-              const expected=[['openclaw','.'],['@openclaw/ai','packages/ai'],['@openclaw/markdown-core','packages/markdown-core'],['@openclaw/model-catalog-core','packages/model-catalog-core'],['@openclaw/normalization-core','packages/normalization-core'],['@openclaw/session-url-contract','packages/session-url-contract']].sort();
-              assert.deepEqual(actual,expected);
-              console.log(JSON.stringify({nativeSourceWorkspaceSelection:actual}));
-            NODE
-              pnpm --filter 'openclaw...' --filter '@openclaw/markdown-core...' --fail-if-no-match install --frozen-lockfile
-              node --input-type=module <<'NODE'
-              import assert from 'node:assert/strict';
-              import fs from 'node:fs';
-              import { createHash } from 'node:crypto';
-              for(const [file,digest] of Object.entries(JSON.parse(process.env.SOURCE_PINS))) assert.equal(createHash('sha256').update(fs.readFileSync(file)).digest('hex'),digest,file);
-              console.log('Frozen source, lock, workspace and npmrc identities preserved after pnpm12.4.0 install');
-            NODE
-              # Source-hosted CLI children need the same root and AI runtime pair
-              # as the sealed package; workspace links alone do not build AI exports.
-              node --input-type=module <<'NODE'
-              import assert from 'node:assert/strict';
-              import fs from 'node:fs';
-              import path from 'node:path';
-              import { createHash } from 'node:crypto';
-              const entries=[],packaged=process.env.PACKAGED_ROOT;
-              const roots=[['dist','dist'],['node_modules/@openclaw/ai/dist','packages/ai/dist']];
-              for(const [source,target] of roots) {
-                const original=path.join(packaged,source);
-                assert(fs.lstatSync(original).isDirectory());assert(!fs.lstatSync(original).isSymbolicLink());
-                if(target.startsWith('packages/')) for(const directory of ['packages','packages/ai']) {
-                  assert(fs.lstatSync(directory).isDirectory());assert(!fs.lstatSync(directory).isSymbolicLink());
-                }
-                assert(!fs.existsSync(target));assert(!fs.lstatSync(target,{throwIfNoEntry:false}));
-                fs.cpSync(original,target,{recursive:true,errorOnExist:true,force:false});
-                function walk(relative='') {
-                  const a=path.join(original,relative),b=path.join(target,relative);
-                  assert.deepEqual(fs.readdirSync(a).sort(),fs.readdirSync(b).sort());
-                  for(const name of fs.readdirSync(a)) {
-                    const next=path.join(relative,name),file=path.join(original,next),copy=path.join(target,next),stat=fs.lstatSync(file);
-                    if(stat.isDirectory()) { assert(fs.lstatSync(copy).isDirectory());walk(next); }
-                    else {
-                      assert(stat.isFile());assert(fs.lstatSync(copy).isFile());
-                      const digest=createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-                      assert.equal(createHash('sha256').update(fs.readFileSync(copy)).digest('hex'),digest,file);
-                      entries.push([copy,digest]);
-                    }
-                  }
-                }
-                walk();
-              }
-              assert.equal(fs.realpathSync('node_modules/@openclaw/ai'),fs.realpathSync('packages/ai'));
-              const ai=JSON.parse(fs.readFileSync(path.join(packaged,'node_modules/@openclaw/ai/package.json')));
-              const workspaceAi=JSON.parse(fs.readFileSync('packages/ai/package.json'));
-              assert.equal(ai.name,'@openclaw/ai');assert.equal(ai.version,process.env.PACKAGE_VERSION);
-              assert.deepEqual(ai.exports,workspaceAi.exports);
-              const targets=[];
-              function checkExports(value) {
-                if(typeof value==='string') {
-                  assert(value.startsWith('./dist/'));assert(!value.split('/').includes('..'));
-                  const file=path.join('packages/ai',value);assert(fs.lstatSync(file).isFile());targets.push(value);
-                } else { assert(value&&typeof value==='object');for(const next of Object.values(value)) checkExports(next); }
-              }
-              checkExports(ai.exports);assert(targets.length>0);
-              assert(entries.some(([file])=>file==='dist/infra/update-migrated-finalize.worker.js'));
-              fs.writeFileSync(`${process.env.PROOF_ROOT}/dist-graph.json`,JSON.stringify(entries),{flag:'wx'});
-              console.log(JSON.stringify({candidateDistGraph:createHash('sha256').update(JSON.stringify(entries)).digest('hex'),files:entries.length,roots:roots.map(([,target])=>target),aiExportTargets:[...new Set(targets)].sort(),source:process.env.SOURCE_SHA,candidateRebuilt:false}));
-            NODE
-            test_file=src/cli/update-cli/update-command-freebsd-worker.test.ts
-            test_title='the real finalizer adopts and completes its admitted run after replaying buffered history'
-            if node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts "$test_file" \
-              --testNamePattern "^$test_title$" --passWithNoTests=false --reporter=default --reporter=json \
-              --reporter="$source_root/scripts/lib/vitest-report-capture.mts" \
-              --outputFile.json="$proof_root/reports/finalizer.json" > "$proof_root/finalizer.log" 2>&1; then test_status=0; else test_status=$?; fi
-            preserve_test_status() { shell_status=$?; trap - 0; if [ "$test_status" -ne 0 ]; then exit "$test_status"; fi; exit "$shell_status"; }
-            trap preserve_test_status 0
-            echo "Finalizer output (last 64 KiB, exit $test_status):"
-            tail -c 65536 "$proof_root/finalizer.log"
-            if TEST_STATUS="$test_status" TEST_TITLE="$test_title" node --input-type=module <<'RESULT'
-            import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';
-            const file=`${process.env.PROOF_ROOT}/reports/finalizer.json`,bytes=fs.readFileSync(file),report=JSON.parse(bytes),capture=JSON.parse(fs.readFileSync(`${file}.capture.json`));
-            const relative='src/cli/update-cli/update-command-freebsd-worker.test.ts';
-            assert.equal(report.numTotalTests,9);assert.equal(report.numPendingTests,8);assert.equal(report.numTodoTests,0);
-            assert.equal(report.numPassedTests+report.numFailedTests,1);assert.equal(report.testResults.length,1);
-            assert.equal(path.relative(process.cwd(),report.testResults[0].name),relative);
-            const all=report.testResults[0].assertionResults;assert.equal(all.length,9);
-            const selected=all.filter(test=>['passed','failed'].includes(test.status));assert.equal(selected.length,1);assert.equal(selected[0].title,process.env.TEST_TITLE);assert.equal(selected[0].fullName,process.env.TEST_TITLE);
-            assert(all.filter(test=>!selected.includes(test)).every(test=>['pending','skipped'].includes(test.status)));
-            assert.equal(capture.modules.length,1);assert.equal(path.relative(process.cwd(),capture.modules[0].file),relative);assert.equal(capture.modules[0].name,'cli');
-            assert.equal(capture.processTimedOut,false);assert.equal(capture.ignoreUnhandledErrors,false);assert.equal(capture.passWithNoTests,false);
-            assert.equal(capture.ended.unhandledErrors,0);assert.equal(capture.ended.suiteErrors,0);
-            const passed=selected[0].status==='passed';assert.equal(capture.ended.failedModules,passed?0:1);assert.equal(report.success,passed);assert.equal(Number(process.env.TEST_STATUS)===0,passed);
-            const failures=selected[0].failureMessages;assert(Array.isArray(failures));
-            assert(failures.every(message=>typeof message==='string'&&message.trim().length>0));assert.equal(failures.length===0,passed);
-            assert(!failures.some(message=>/\b(?:Test|Hook) timed out in [^\s]+ms(?:[.\s])/u.test(message)),'individual test or hook timeout is inconclusive');
-            console.log(JSON.stringify({singleFinalizerCase:relative,title:selected[0].title,status:selected[0].status,filtered:8,unhandledErrors:0,suiteErrors:0,processTimedOut:false,source:process.env.SOURCE_SHA,nativeReportSha256:createHash('sha256').update(bytes).digest('hex'),interpretation:passed?'nonreproduction; no fix claim':'original test failure preserved; relay evidence evaluated separately'}));
-            RESULT
-            then report_status=0; else report_status=$?; fi
-            if node --input-type=module <<'DEPENDENCY'
-            import assert from 'node:assert/strict';
-            import fs from 'node:fs';
-            import path from 'node:path';
             import os from 'node:os';
-            import { createHash } from 'node:crypto';
-            import { createRequire } from 'node:module';
-            const phase='candidate-after-finalizer',installed=fs.realpathSync(process.env.SOURCE_ROOT);
-            assert.equal(phase,'candidate-after-finalizer');
-            const manifest=JSON.parse(fs.readFileSync(path.join(installed,'package.json')));
-            const build=JSON.parse(fs.readFileSync(path.join(installed,'dist/build-info.json')));
-            assert.equal(manifest.version,process.env.PACKAGE_VERSION);
-            assert.equal(build.commit,process.env.SOURCE_SHA);
-            assert.equal(manifest.dependencies['@openclaw/fs-safe'],'0.18.0');
-            const require=createRequire(path.join(installed,'package.json'));
-            const metaPath=fs.realpathSync(require.resolve('@openclaw/fs-safe/package.json'));
-            const root=path.dirname(metaPath),relativeRoot=path.relative(installed,root);
-            assert(relativeRoot!==''&&!relativeRoot.startsWith('..')&&!path.isAbsolute(relativeRoot));
-            const meta=JSON.parse(fs.readFileSync(metaPath));
-            assert.equal(meta.name,'@openclaw/fs-safe'); assert.equal(meta.version,'0.18.0');
-            const hash=file=>createHash('sha256').update(fs.readFileSync(file)).digest('hex'),files=[];
-            function inventory(relative='') {
-              for(const name of fs.readdirSync(path.join(root,relative)).sort()) {
-                if(name==='node_modules') continue;
-                const member=path.join(relative,name),file=path.join(root,member),stat=fs.lstatSync(file);
-                assert(!stat.isSymbolicLink(),member);
-                if(stat.isDirectory()) inventory(member);
-                else { assert(stat.isFile(),member); files.push({path:member,bytes:stat.size,sha256:hash(file)}); }
+            import path from 'node:path';
+            import {execFileSync} from 'node:child_process';
+            import {createHash} from 'node:crypto';
+            import {pathToFileURL} from 'node:url';
+            const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
+            const identity=stat=>({dev:stat.dev.toString(),ino:stat.ino.toString(),uid:stat.uid.toString(),mode:stat.mode.toString(),directory:stat.isDirectory(),symlink:stat.isSymbolicLink()});
+            const stat=file=>fs.lstatSync(file,{bigint:true});
+            const snapshot=file=>({identity:identity(stat(file)),bytes:fs.readFileSync(file).length,sha256:hash(fs.readFileSync(file))});
+            const result={consumer:process.env.CONSUMER_SHA,oldSource:process.env.OLD_OWNER_SHA,newSource:process.env.NEW_OWNER_SHA,platform:process.platform,arch:process.arch,node:process.version,scope:'actual source-owner proof on real filesystem; no OpenClaw package or dependency override',cases:[]};
+            let stage='runtime',status=1,root,rootIdentity,parent,parentIdentity,oldMask;
+            try {
+              assert.equal(process.platform,'freebsd');assert.equal(process.arch,'x64');assert.match(process.version,/^v24\./);
+              assert.equal(process.getuid(),0);assert.equal(process.geteuid(),0);
+              result.release=execFileSync('/bin/freebsd-version',['-u'],{encoding:'utf8'}).trim();
+              assert.equal(result.release,'15.1-RELEASE-p3');
+              stage='source';
+              const modules={};
+              for(const role of ['old','new']) {
+                const filename=path.resolve('owner-input',`${role}.ts`),bytes=fs.readFileSync(filename);
+                assert.equal(hash(bytes),process.env[`${role.toUpperCase()}_OWNER_DIGEST`]);
+                modules[role]=await import(pathToFileURL(filename).href);
               }
+              stage='fixture';oldMask=process.umask(0o077);
+              parent=fs.realpathSync(os.tmpdir());parentIdentity=identity(stat(parent));
+              root=fs.mkdtempSync(path.join(parent,'fs-safe-signed-owner-'));fs.chmodSync(root,0o700);rootIdentity=identity(stat(root));
+              assert(rootIdentity.directory&&!rootIdentity.symlink);assert.equal(rootIdentity.uid,'0');
+              const sentinel=path.join(root,'sentinel');fs.writeFileSync(sentinel,'native-owner-proof\n',{flag:'wx',mode:0o600});const sentinelBefore=snapshot(sentinel);
+              const observed=stat(root);result.observed=identity(observed);
+              if(observed.dev>=0n) {
+                result.outcome='inconclusive';result.reason='real-negative-device-unavailable';status=78;
+              } else {
+                stage='old-receipt';
+                assert.throws(()=>modules.old.secureTempDirectoryReceipt(observed,0),error=>error instanceof Error&&error.message==='Secure temp directory identity, owner, or type could not be verified.');
+                result.oldRejected=true;
+                stage='new-receipt';
+                const admitted=modules.new.secureTempDirectoryReceipt(observed,0);
+                assert.deepEqual(admitted,{dev:observed.dev,ino:observed.ino,uid:observed.uid,mode:observed.mode});result.newAdmitted=true;
+                const original=modules.new.captureSecureTempRepairAdapter(undefined,false);assert(original);
+                assert.equal(original.lstatSync,fs.lstatSync);assert.equal(original.fstatSync,fs.fstatSync);assert.equal(original.openSync,fs.openSync);assert.equal(original.fchmodSync,fs.fchmodSync);assert.equal(original.closeSync,fs.closeSync);
+                for(const mode of [0o777,0o500])for(const finalize of [false,true]) {
+                  stage=`repair-${mode.toString(8)}-${finalize?'finalize':'ordinary'}`;
+                  const directory=path.join(root,`case-${mode.toString(8)}-${finalize}`);fs.mkdirSync(directory,{mode:0o700});
+                  const leaf=path.join(directory,'sentinel');fs.writeFileSync(leaf,'unchanged\n',{flag:'wx',mode:0o600});const leafBefore=snapshot(leaf);
+                  fs.chmodSync(directory,mode);const before=stat(directory);
+                  assert.equal(before.dev,observed.dev);assert(before.dev<0n);assert.equal(before.mode&0o7777n,BigInt(mode));
+                  const receipt=modules.new.secureTempDirectoryReceipt(before,0);
+                  let opens=0,closes=0,accesses=0,repaired=0,fd;
+                  // Observe the actual default open/close calls; all authority comes
+                  // from the original builtin adapter and real lstat/fstat results.
+                  const adapter={...original,openSync(...args){fd=original.openSync(...args);opens++;return fd;},closeSync(value){assert.equal(value,fd);original.closeSync(value);closes++;}};
+                  modules.new.repairSecureTempDirectory(directory,receipt,0,adapter,()=>{accesses++;fs.accessSync(directory,fs.constants.W_OK|fs.constants.X_OK);},()=>{repaired++;},finalize);
+                  assert.deepEqual([opens,closes,accesses,repaired],[1,1,1,1]);
+                  assert.throws(()=>fs.fstatSync(fd),error=>error?.code==='EBADF');
+                  const after=stat(directory);assert.deepEqual([after.dev,after.ino,after.uid],[before.dev,before.ino,before.uid]);
+                  assert(after.isDirectory()&&!after.isSymbolicLink());assert.equal(after.mode&0o7777n,0o700n);
+                  assert.deepEqual(snapshot(leaf),leafBefore);assert.deepEqual(snapshot(sentinel),sentinelBefore);
+                  assert.deepEqual(identity(stat(root)),rootIdentity);assert.deepEqual(identity(stat(parent)),parentIdentity);
+                  result.cases.push({modeBefore:mode.toString(8),finalize,modeAfter:'700',rawIdentityPreserved:true,sentinelPreserved:true,opens,closes,descriptorClosed:true,accesses,repaired});
+                }
+                stage='post-source';
+                for(const role of ['old','new'])assert.equal(hash(fs.readFileSync(path.resolve('owner-input',`${role}.ts`))),process.env[`${role.toUpperCase()}_OWNER_DIGEST`]);
+                assert.equal(result.cases.length,4);result.outcome='passed';status=0;
+              }
+            } catch(error) {
+              result.outcome='failed';result.failedStage=stage;
+              result.failureClass=error?.code==='ERR_ASSERTION'?'assertion':'operation';status=1;
+            } finally {
+              if(oldMask!==undefined)process.umask(oldMask);
+              result.cleanup='uncreated';
+              if(root) {
+                try {
+                  assert.deepEqual(identity(stat(root)),rootIdentity);
+                  fs.rmSync(root,{recursive:true});assert.equal(fs.existsSync(root),false);
+                  assert.deepEqual(identity(stat(parent)),parentIdentity);result.cleanup='removed';
+                } catch {result.cleanup='failed-or-retained';if(status===0){status=1;result.outcome='failed';result.failedStage='cleanup';}}
+              }
+              result.exit=status;console.log(JSON.stringify(result));process.exitCode=status;
             }
-            inventory();
-            const entries=['package.json','dist/advanced.js','dist/native.js','dist/file-hash.js'].map(file=>{
-              const entry=files.find(row=>row.path===file); assert(entry,file); return entry;
-            });
-            console.log(JSON.stringify({installedDependencyPhase:phase,source:process.env.SOURCE_SHA,
-              installedPackageVersion:manifest.version,buildId:build.buildId,platform:process.platform,release:os.release(),node:process.versions.node,
-              dependency:meta.name,version:meta.version,files:files.length,entries,
-              inventorySha256:createHash('sha256').update(JSON.stringify(files)).digest('hex'),
-              scope:'source-hosted fs-safe package files, excluding nested dependencies; no addon loading probe or cross-stage byte equality claim'}));
-            DEPENDENCY
-            then dependency_status=0; else dependency_status=$?; fi
-            if node --input-type=module <<'NODE'
-              import assert from 'node:assert/strict';
-              import fs from 'node:fs';
-              import { createHash } from 'node:crypto';
-              const hash=file=>createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-              for(const [file,digest] of JSON.parse(fs.readFileSync(`${process.env.PROOF_ROOT}/dist-graph.json`))) assert.equal(hash(file),digest,file);
-              for(const [file,digest] of Object.entries(JSON.parse(process.env.SOURCE_PINS))) assert.equal(hash(file),digest,file);
-              const manifest=JSON.parse(fs.readFileSync(`${process.env.INPUT_ROOT}/payload/install-smoke-candidate-payload.json`));
-              assert.equal(hash(`${process.env.INPUT_ROOT}/payload/candidate.tgz`),manifest.files.find(file=>file.name==='candidate.tgz').sha256);
-              console.log('source, sealed package and restored root/AI graph identities preserved');
-            NODE
-            then posthash_status=0; else posthash_status=$?; fi
-            if REPORT_STATUS="$report_status" TEST_STATUS="$test_status" node --input-type=module <<'RELAY'
-            import assert from 'node:assert/strict';import fs from 'node:fs';
-            const marker='OPENCLAW_FREEBSD_TEMP_DIAGNOSTIC_V1 ';
-            const isRecord=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
-            function validate(line) {
-              assert(Buffer.byteLength(line)<=8192);
-            const object = (value         , keys          )                          => {
-              if (
-                !isRecord(value) ||
-                Object.keys(value).length !== keys.length ||
-                keys.some((key) => !Object.hasOwn(value, key))
-              )
-                throw new Error("Invalid diagnostic fields");
-              return value;
-            };
-            const choice = (value         , values                   )         => {
-              if (typeof value !== "string" || !values.includes(value))
-                throw new Error("Invalid diagnostic label");
-              return value;
-            };
-            const boolean = (value         )          => {
-              if (typeof value !== "boolean") throw new Error("Invalid diagnostic boolean");
-              return value;
-            };
-            const integer = (value         , signed = false)                => {
-              if (value === null) return null;
-              if (
-                typeof value !== "number" ||
-                !Number.isSafeInteger(value) ||
-                value < (signed ? -0x80000000 : 0) ||
-                value > (signed ? 0x7fffffff : 0xffffffff)
-              )
-                throw new Error("Invalid diagnostic integer");
-              return value;
-            };
-            const decimal = (
-              value         ,
-              min = -0x8000000000000000n,
-              max = 0x7fffffffffffffffn,
-            )                => {
-              if (value === null) return null;
-              if (
-                typeof value !== "string" ||
-                !/^(?:0|-?[1-9][0-9]{0,18})$/u.test(value) ||
-                BigInt(value) < min ||
-                BigInt(value) > max
-              )
-                throw new Error("Invalid diagnostic metadata");
-              return value;
-            };
-            const array = (value         , max        )            => {
-              if (!Array.isArray(value) || value.length > max)
-                throw new Error("Invalid diagnostic array");
-              return value;
-            };
-            const roleValues = [
-              "logging-preferred",
-              "logging-fallback",
-              "sqlite-cache-preferred",
-              "sqlite-cache-fallback",
-            ];
-            const roles = (value         ) => {
-              const selected = array(value, 4).map((role) => choice(role, roleValues));
-              if (new Set(selected).size !== selected.length)
-                throw new Error("Duplicate diagnostic role");
-              return selected;
-            };
-            const codes = [
-              "EACCES",
-              "EPERM",
-              "ENOENT",
-              "EEXIST",
-              "ENOTDIR",
-              "EISDIR",
-              "ELOOP",
-              "EMLINK",
-              "EINVAL",
-              "EBADF",
-              "EIO",
-              "EROFS",
-              "ENOSPC",
-              "EDQUOT",
-              "EMFILE",
-              "ENFILE",
-              "ENAMETOOLONG",
-              "ENOSYS",
-              "ENOTSUP",
-              "ECANCELED",
-              "EFTYPE",
-              "EOPNOTSUPP",
-              "ESTALE",
-              "ENXIO",
-              "ENODEV",
-              "EFAULT",
-              "EINTR",
-              "EOVERFLOW",
-              "ERANGE",
-              "UNKNOWN",
-            ];
-            const syscalls = [
-              "lstat",
-              "stat",
-              "open",
-              "fstat",
-              "fchmod",
-              "close",
-              "access",
-              "mkdir",
-              "UNKNOWN",
-            ];
-            const fields = (value                         ) => ({
-              code: value.code === null ? null : choice(value.code, codes),
-              syscall: value.syscall === null ? null : choice(value.syscall, syscalls),
-              errno: integer(value.errno, true),
-            });
-            const input = object(JSON.parse(line.slice(marker.length)), [
-              "v",
-              "origin",
-              "timing",
-              "pid",
-              "ppid",
-              "uid",
-              "euid",
-              "selection",
-              "selectedRoles",
-              "causes",
-              "causeTruncated",
-              "causeCycle",
-              "paths",
-            ]);
-            if (
-              input.v !== 1 ||
-              input.origin !== "config-validator-relay" ||
-              input.timing !== "post-failure"
-            )
-              throw new Error("Invalid diagnostic origin");
-            const selectedRoles = roles(input.selectedRoles);
-            const selection = choice(input.selection, ["exact", "ambiguous", "unknown"]);
-            if (
-              selection !==
-                (selectedRoles.length === 0
-                  ? "unknown"
-                  : selectedRoles.length === 1
-                    ? "exact"
-                    : "ambiguous") ||
-              selectedRoles.some((role) => !role.endsWith("-fallback"))
-            )
-              throw new Error("Invalid diagnostic selection");
-            const causes = array(input.causes, 8).map((value, id) => {
-              const cause = object(value, [
-                "id",
-                "parent",
-                "via",
-                "kind",
-                "operation",
-                "code",
-                "syscall",
-                "errno",
-              ]);
-              const parent = integer(cause.parent);
-              const via = choice(cause.via, ["root", "cause", "aggregate"]);
-              if (
-                cause.id !== id ||
-                (id === 0
-                  ? parent !== null || via !== "root"
-                  : parent === null || parent >= id || via === "root")
-              )
-                throw new Error("Invalid diagnostic cause graph");
-              return {
-                id,
-                parent,
-                via,
-                kind: choice(cause.kind, ["Error", "AggregateError", "other"]),
-                operation: choice(cause.operation, [
-                  "fallback-admission",
-                  "descriptor-unavailable",
-                  "identity-owner-type",
-                  "identity-changed",
-                  "descriptor-invalid",
-                  "permissions-unsafe",
-                  "chmod-verification",
-                  "repair-close",
-                  "native-syscall",
-                  "unknown",
-                ]),
-                ...fields(cause),
-              };
-            });
-            if (causes.length === 0 || causes[0] .operation !== "fallback-admission")
-              throw new Error("Missing diagnostic failure");
-            const pathRoles = new Set        ();
-            const paths = array(input.paths, 4).map((value) => {
-              const observation = object(value, ["roles", "lstat", "access"]);
-              const aliases = roles(observation.roles);
-              if (
-                aliases.length === 0 ||
-                aliases.some(
-                  (role) =>
-                    pathRoles.has(role) ||
-                    !selectedRoles.some(
-                      (selected) =>
-                        selected.replace(/-fallback$/u, "") ===
-                        role.replace(/-(?:preferred|fallback)$/u, ""),
-                    ),
-                )
-              )
-                throw new Error("Invalid diagnostic path roles");
-              for (const role of aliases) pathRoles.add(role);
-              const stat = object(observation.lstat, [
-                "status",
-                "uid",
-                "mode",
-                "dev",
-                "ino",
-                "metadataUnknown",
-                "isDirectory",
-                "isSymbolicLink",
-                "code",
-                "syscall",
-                "errno",
-              ]);
-              const status = choice(stat.status, ["ok", "error"]);
-              const metadata = {
-                uid: decimal(stat.uid, 0n, 0xffffffffn),
-                mode: decimal(stat.mode, 0n, 0xffffffffn),
-                dev: decimal(stat.dev),
-                ino: decimal(stat.ino),
-              };
-              const metadataUnknown = boolean(stat.metadataUnknown);
-              if (metadataUnknown !== Object.values(metadata).some((item) => item === null))
-                throw new Error("Invalid diagnostic metadata status");
-              const isDirectory = stat.isDirectory === null ? null : boolean(stat.isDirectory);
-              const isSymbolicLink =
-                stat.isSymbolicLink === null ? null : boolean(stat.isSymbolicLink);
-              const statFields = fields(stat);
-              if (
-                status === "ok"
-                  ? isDirectory === null ||
-                    isSymbolicLink === null ||
-                    Object.values(statFields).some((item) => item !== null)
-                  : Object.values(metadata).some((item) => item !== null) ||
-                    isDirectory !== null ||
-                    isSymbolicLink !== null
-              )
-                throw new Error("Invalid diagnostic stat result");
-              const accessInput = object(observation.access, ["status", "code", "syscall", "errno"]);
-              const accessStatus = choice(accessInput.status, ["ok", "error", "not-run"]);
-              const accessFields = fields(accessInput);
-              if (
-                accessStatus !== "error" &&
-                Object.values(accessFields).some((item) => item !== null)
-              )
-                throw new Error("Invalid diagnostic access result");
-              if ((status !== "ok" || !isDirectory || isSymbolicLink) && accessStatus !== "not-run")
-                throw new Error("Invalid diagnostic access admission");
-              return {
-                roles: aliases,
-                lstat: {
-                  status,
-                  ...metadata,
-                  metadataUnknown,
-                  isDirectory,
-                  isSymbolicLink,
-                  ...statFields,
-                },
-                access: { status: accessStatus, ...accessFields },
-              };
-            });
-            if (selection === "unknown" && paths.length !== 0)
-              throw new Error("Unknown diagnostic path observation");
-            const record = {
-              v: 1,
-              origin: "config-validator-relay",
-              timing: "post-failure",
-              pid: integer(input.pid),
-              ppid: integer(input.ppid),
-              uid: integer(input.uid),
-              euid: integer(input.euid),
-              selection,
-              selectedRoles,
-              causes,
-              causeTruncated: boolean(input.causeTruncated),
-              causeCycle: boolean(input.causeCycle),
-              paths,
-            };
-
-            return record;
-            }
-            const records=[];let parentMarkers=0,invalid=0;
-            for(const raw of fs.readFileSync(`${process.env.PROOF_ROOT}/finalizer.log`,'utf8').split('\n')) {
-              const start=raw.indexOf(marker);if(start<0)continue;const line=raw.slice(start)+'\n';
-              try {
-                const input=JSON.parse(line.slice(marker.length));if(input.origin==='config-snapshot'){parentMarkers++;continue;}
-                const record=validate(line);if(records.length<2)records.push(record);else invalid++;
-              } catch {invalid++;}
-            }
-            const causal=process.env.REPORT_STATUS==='0'&&Number(process.env.TEST_STATUS)!==0&&records.length===1&&invalid===0;
-            console.log(JSON.stringify({temporaryDirectoryObservation:true,source:process.env.SOURCE_SHA,relayRecords:records,parentMarkers,invalid,causalEvidence:causal,interpretation:causal?'validated child relay; post-failure metadata is not atomic throw-time evidence':'nonreproduction, unqualified test failure, or missing/multiple/malformed child relay is inconclusive'}));
-            RELAY
-            then relay_status=0; else relay_status=$?; fi
-            echo "Native diagnostic statuses: test=$test_status report=$report_status posthash=$posthash_status dependency=$dependency_status relay=$relay_status"
-            if [ "$test_status" -ne 0 ]; then exit "$test_status"; fi
-            if [ "$report_status" -ne 0 ]; then exit "$report_status"; fi
-            if [ "$posthash_status" -ne 0 ]; then exit "$posthash_status"; fi
-            if [ "$dependency_status" -ne 0 ]; then exit "$dependency_status"; fi
-            if [ "$relay_status" -ne 0 ]; then exit "$relay_status"; fi
-            echo 'One original real-finalizer case passed; nonreproduction only, not a shipping fix'
-            # Hosted-job disposal owns the VM; the original fixture owns and joins its child cleanup.
+            PROBE
