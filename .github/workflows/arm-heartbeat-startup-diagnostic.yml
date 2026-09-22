@@ -16,7 +16,7 @@ jobs:
       github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
       github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
       github.event.pull_request.number == 155264 &&
-      github.event.before == '38c50da3fa3b361b6d8f41dd9e0c0a66f0f48890' &&
+      github.event.before == '59ab92030a0a779c0986760a0b61f8c0693e2551' &&
       github.event.pull_request.state == 'open' && github.event.pull_request.draft &&
       github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
@@ -37,15 +37,17 @@ jobs:
       CANDIDATE_TREE: 9356615b6e6525373835bda8381565973cbf8022
       PRODUCT_SHA: 10725d8613c64f5efdc8ea58eae70a3b8f4276ac
       PRODUCT_TREE: 74bddc0882c455c519931e40040c260df9951ee8
-      PREVIOUS_CARRIER_SHA: 38c50da3fa3b361b6d8f41dd9e0c0a66f0f48890
-      PREVIOUS_CARRIER_TREE: 61439271ba5b590632c1f11b2292a6fecbd61da8
+      PREVIOUS_CARRIER_SHA: 59ab92030a0a779c0986760a0b61f8c0693e2551
+      PREVIOUS_CARRIER_TREE: de85de423b047a5f6b5e5933e09f70e35c18be1a
+      FIRST_CARRIER_SHA: 38c50da3fa3b361b6d8f41dd9e0c0a66f0f48890
+      FIRST_CARRIER_TREE: 61439271ba5b590632c1f11b2292a6fecbd61da8
       CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
       WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 6
+          fetch-depth: 7
           persist-credentials: false
       - name: Bind the diagnostic derivative and sole workflow carrier
         run: |
@@ -54,7 +56,9 @@ jobs:
           [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
           test "$(git show -s --format=%P HEAD)" = "$PREVIOUS_CARRIER_SHA"
-          test "$(git show -s --format=%P "$PREVIOUS_CARRIER_SHA")" = "$CANDIDATE_SHA"
+          test "$(git show -s --format=%P "$PREVIOUS_CARRIER_SHA")" = "$FIRST_CARRIER_SHA"
+          test "$(git rev-parse "$FIRST_CARRIER_SHA^{tree}")" = "$FIRST_CARRIER_TREE"
+          test "$(git show -s --format=%P "$FIRST_CARRIER_SHA")" = "$CANDIDATE_SHA"
           test "$(git rev-parse "$PREVIOUS_CARRIER_SHA^{tree}")" = "$PREVIOUS_CARRIER_TREE"
           test "$(git show -s --format=%P "$CANDIDATE_SHA")" = "$PRODUCT_SHA"
           test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
@@ -235,89 +239,145 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'EMIT'
-          import hashlib,json,os,tarfile
+          import hashlib,json,os,sys,tarfile
           from pathlib import Path,PurePosixPath
           root=Path(os.environ['RUNNER_TEMP']);proof=root/'arm-heartbeat-diagnostic-proof'
-          modules=[];candidates=[];retained_bytes=0
-          with tarfile.open(root/'sqlite-candidate-package/candidate.tgz','r:gz') as archive:
-              members=archive.getmembers();names=[member.name for member in members]
-              assert len(names)==len(set(names)),'duplicate package members'
-              for member in members:
-                  name=member.name;parts=PurePosixPath(name).parts
-                  assert not name.startswith('/') and '\\' not in name and '..' not in parts and parts[0]=='package','unsafe package member'
-                  if not name.startswith('package/dist/') or PurePosixPath(name).suffix not in {'.js','.mjs'}: continue
-                  assert member.isfile(),'runtime JavaScript must be a regular package member'
-                  data=archive.extractfile(member).read();relative=name.removeprefix('package/')
-                  marker=b'[lease-startup-observation]' in data
-                  item=dict(file=relative,bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),markerCandidate=marker,
-                      parentRegion=b'#region src/state/openclaw-state-lease-heartbeat.ts' in data)
-                  modules.append(item)
-                  if not marker: continue
-                  assert data==(root/'sqlite-candidate'/relative).read_bytes(),'packaged parent differs from the source build'
-                  retained_bytes+=len(data)
-                  assert len(candidates)<16 and len(data)<=8*1024*1024 and retained_bytes<=32*1024*1024,'parent evidence exceeds retention bound'
-                  retained=f'parent-candidate-{len(candidates)+1}.js'
-                  (proof/retained).write_bytes(data)
-                  candidates.append(dict(**item,retained=retained))
-          inventory=dict(source=os.environ['CANDIDATE_SHA'],modules=modules,candidates=candidates)
-          encoded=json.dumps(inventory,indent=2)+'\n'
-          assert len(encoded.encode())<=8*1024*1024,'module inventory exceeds retention bound'
-          (proof/'observation-module-inventory.json').write_text(encoded)
-          print(json.dumps(dict(runtimeModules=len(modules),parentCandidates=candidates)))
-          assert candidates,'no packaged JavaScript observation candidates; retained inventory records the search'
+          inventory=dict(source=os.environ['CANDIDATE_SHA'],complete=False,modules=[],candidates=[],errors=[])
+          stage='archive';current=None
+          try:
+              with tarfile.open(root/'sqlite-candidate-package/candidate.tgz','r:gz') as archive:
+                  members=archive.getmembers();names=[member.name for member in members]
+                  stage='unique-members';assert len(names)==len(set(names))
+                  for member in members:
+                      current=member.name;parts=PurePosixPath(current).parts;stage='safe-member'
+                      assert not current.startswith('/') and '\\' not in current and '..' not in parts and parts[0]=='package'
+                  for member in members:
+                      current=member.name
+                      if not current.startswith('package/dist/') or PurePosixPath(current).suffix not in {'.js','.mjs'}: continue
+                      stage='regular-javascript';assert member.isfile()
+                      stage='read-package-member';data=archive.extractfile(member).read();relative=current.removeprefix('package/')
+                      marker=b'[lease-startup-observation]' in data
+                      item=dict(file=relative,bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),markerCandidate=marker)
+                      inventory['modules'].append(item)
+                      if not marker: continue
+                      candidate=dict(**item,packageBuildEqual=False,retention='bounded-excerpts-only')
+                      inventory['candidates'].append(candidate)
+                      try:
+                          built=(root/'sqlite-candidate'/relative).read_bytes()
+                          candidate['packageBuildEqual']=data==built
+                          candidate['buildBytes']=len(built);candidate['buildSha256']=hashlib.sha256(built).hexdigest()
+                          candidate['condition']='verified' if candidate['packageBuildEqual'] else 'package-build-mismatch'
+                      except OSError:
+                          candidate['condition']='build-read-failed'
+              inventory['complete']=True
+          except Exception:
+              inventory['errors'].append(dict(stage=stage,code='collector-failed',member=current if stage!='safe-member' else None))
+          finally:
+              try:
+                  (proof/'observation-module-inventory.json').write_text(json.dumps(inventory,indent=2)+'\n')
+              except Exception:
+                  print(json.dumps(dict(stage='inventory-write',code='collector-failed')))
+                  raise SystemExit(1)
+          print(json.dumps(dict(complete=inventory['complete'],runtimeModules=len(inventory['modules']),parentCandidates=inventory['candidates'],errors=inventory['errors'])))
+          if not inventory['complete']: sys.exit(1)
           EMIT
           node --input-type=module <<'EMIT'
-          import assert from 'node:assert/strict'; import fs from 'node:fs'; import {createRequire} from 'node:module';
-          import {createHash} from 'node:crypto';
+          import assert from 'node:assert/strict';import fs from 'node:fs';import {createRequire} from 'node:module';import {createHash} from 'node:crypto';
           const require=createRequire(`${process.env.RUNNER_TEMP}/sqlite-candidate/package.json`),{parse}=require('acorn');
           const dir=`${process.env.RUNNER_TEMP}/arm-heartbeat-diagnostic-proof`,sha=b=>createHash('sha256').update(b).digest('hex');
-          const inventory=JSON.parse(fs.readFileSync(`${dir}/observation-module-inventory.json`));
           const parentRequired=['parentConstructStart','parentConstructReturned','parentTimerArmed','parentTimerCallback','parentSettleCasStart','parentSettleCasReturned','parentFailure','parentStopRequested','parentStopJoined'];
-          const roles=[
-            {file:'candidate-heartbeat.worker.js',required:['workerBody','openStart','openReturned','renewStart','coordinatorStart','coordinatorOperation','busyPolicyStart','transactionStart','transactionCallback','renewalQueryStart','renewalQueryReturned','transactionCallbackReturned','transactionReturned','busyPolicyReturned','coordinatorReturned','renewalCatch','expiryReadStart','expiryReadReturned','renewReturned','readyCasStart','readyCasReturned']},
-            ...inventory.candidates.map(parent=>({file:parent.retained,required:parentRequired,parent})),
-          ];
-          const receipts=[],parents=[];
-          const member=(node,object,property)=>node?.type==='MemberExpression'&&!node.computed&&node.object?.type==='Identifier'&&node.object.name===object&&node.property?.name===property;
-          function markerInArgument(node) {
-            if(!node||typeof node!=='object')return false;
-            if(node.type==='Literal'&&typeof node.value==='string'&&node.value.includes('[lease-startup-observation]'))return true;
-            if(node.type==='TemplateElement'&&(node.value.cooked??node.value.raw).includes('[lease-startup-observation]'))return true;
-            if(node.type==='TemplateLiteral')return node.quasis.some(markerInArgument);
-            if(node.type==='BinaryExpression'&&node.operator==='+')return markerInArgument(node.left)||markerInArgument(node.right);
-            return false;
+          const workerRequired=['workerBody','openStart','openReturned','renewStart','coordinatorStart','coordinatorOperation','busyPolicyStart','transactionStart','transactionCallback','renewalQueryStart','renewalQueryReturned','transactionCallbackReturned','transactionReturned','busyPolicyReturned','coordinatorReturned','renewalCatch','expiryReadStart','expiryReadReturned','renewReturned','readyCasStart','readyCasReturned'];
+          const MAX_DEBUG_BYTES=256*1024,MAX_EXCERPT_BYTES=64*1024;
+          let retainedBytes=0;
+          const result={source:process.env.CANDIDATE_SHA,complete:false,proofPassed:false,parents:[],receipts:[],errors:[],debug:{maxBytes:MAX_DEBUG_BYTES,retainedBytes:0,excerpts:[]}};
+          const member=(n,object,property)=>n?.type==='MemberExpression'&&!n.computed&&n.object?.type==='Identifier'&&n.object.name===object&&n.property?.name===property;
+          function markerInArgument(n) {
+            if(!n||typeof n!=='object')return false;
+            if(n.type==='Literal'&&typeof n.value==='string'&&n.value.includes('[lease-startup-observation]'))return true;
+            if(n.type==='TemplateElement'&&(n.value.cooked??n.value.raw).includes('[lease-startup-observation]'))return true;
+            if(n.type==='TemplateLiteral')return n.quasis.some(markerInArgument);
+            return n.type==='BinaryExpression'&&n.operator==='+'&&(markerInArgument(n.left)||markerInArgument(n.right));
           }
-          for(const role of roles) {
-            const bytes=fs.readFileSync(`${dir}/${role.file}`),source=bytes.toString('utf8'),ast=parse(source,{ecmaVersion:'latest',sourceType:'module'}),seen=new Set();
-            let writes=0,clockCalls=0,casCalls=0;
-            function visit(n) {
-              if(!n||typeof n!=='object')return;
-              if(n.type==='CallExpression') {
-                if(n.callee.type==='Identifier'&&/^mark(?:\$\d+)?$/.test(n.callee.name)) {
-                  const arg=n.arguments[0];if(arg?.type==='MemberExpression'&&!arg.computed)seen.add(arg.property.name);
+          function excerpt(bytes,source,file,bundleSha,start,end,kind) {
+            const byteStart=Buffer.byteLength(source.slice(0,start),'utf8'),byteEnd=Buffer.byteLength(source.slice(0,end),'utf8');
+            const slice=bytes.subarray(byteStart,byteEnd);assert(slice.equals(Buffer.from(source.slice(start,end),'utf8')));
+            const item={file,fullBundleBytes:bytes.length,fullBundleSha256:bundleSha,kind,utf16Start:start,utf16End:end,byteStart,byteEnd,bytes:slice.length,sha256:sha(slice)};
+            if(slice.length>MAX_EXCERPT_BYTES)item.omission='excerpt-size';
+            else if(retainedBytes+slice.length>MAX_DEBUG_BYTES)item.omission='total-debug-budget';
+            else {item.text=slice.toString('utf8');retainedBytes+=slice.length;item.omission=null;}
+            result.debug.excerpts.push(item);
+          }
+          try {
+            const inventory=JSON.parse(fs.readFileSync(`${dir}/observation-module-inventory.json`));
+            assert.equal(inventory.complete,true);assert.equal(inventory.source,process.env.CANDIDATE_SHA);
+            const roles=[{file:'candidate-heartbeat.worker.js',path:`${dir}/candidate-heartbeat.worker.js`,required:workerRequired},
+              ...inventory.candidates.map(parent=>({file:parent.file,path:`${process.env.RUNNER_TEMP}/sqlite-candidate/${parent.file}`,required:parentRequired,parent}))];
+            for(const role of roles) {
+              const receipt={file:role.file,parent:Boolean(role.parent),classification:'unclassified',parsed:false,requiredMarkers:role.required,seen:[],clockCalls:0,casCalls:0,observationWrites:0,errors:[]};
+              result.receipts.push(receipt);
+              let stage='read-build',bytes,source,bundleSha;
+              const fail=(code,extra={})=>receipt.errors.push({stage,code,...extra});
+              try {
+                bytes=fs.readFileSync(role.path);bundleSha=sha(bytes);receipt.bytes=bytes.length;receipt.sha256=bundleSha;
+                stage='package-build-identity';
+                if(role.parent&&(!role.parent.packageBuildEqual||bytes.length!==role.parent.bytes||bundleSha!==role.parent.sha256))fail('package-build-mismatch');
+                source=bytes.toString('utf8');assert(Buffer.from(source,'utf8').equals(bytes));
+                stage='ast-parse';
+                const ast=parse(source,{ecmaVersion:'latest',sourceType:'module'}),seen=new Set(),sites=[],owners=new Map();
+                receipt.parsed=true;stage='ast-check';
+                function visit(n,ancestors=[]) {
+                  if(!n||typeof n!=='object')return;
+                  if(n.type==='CallExpression') {
+                    let kind;
+                    if(n.callee.type==='Identifier'&&/^mark(?:\$\d+)?$/.test(n.callee.name)) {
+                      const arg=n.arguments[0];if(arg?.type==='MemberExpression'&&!arg.computed){seen.add(arg.property.name);if(role.required.includes(arg.property.name))kind=`mark:${arg.property.name}`;}
+                    }
+                    const callee=n.callee;
+                    if(callee.type==='MemberExpression'&&!callee.computed&&callee.property?.name==='write'&&member(callee.object,'process','stderr')&&n.arguments.some(markerInArgument)) {
+                      receipt.observationWrites++;kind='observation-write';
+                      const owner=ancestors.findLast(a=>['FunctionDeclaration','FunctionExpression','ArrowFunctionExpression'].includes(a.type));
+                      if(owner)owners.set(`${owner.start}:${owner.end}`,owner);
+                    }
+                    if(callee.type==='MemberExpression'&&!callee.computed&&callee.property?.name==='bigint'&&member(callee.object,'process','hrtime')){receipt.clockCalls++;if(receipt.clockCalls===1)kind='clock';}
+                    if(member(callee,'Atomics','compareExchange')){receipt.casCalls++;if(receipt.casCalls===1)kind='compare-exchange';}
+                    if(kind)sites.push({start:n.start,end:n.end,kind});
+                  }
+                  const next=[...ancestors,n];
+                  for(const value of Object.values(n))if(Array.isArray(value))value.forEach(v=>visit(v,next));else if(value&&typeof value==='object')visit(value,next);
                 }
-                const callee=n.callee;
-                if(callee.type==='MemberExpression'&&!callee.computed&&callee.property?.name==='write'&&member(callee.object,'process','stderr')&&n.arguments.some(markerInArgument))writes++;
-                if(callee.type==='MemberExpression'&&!callee.computed&&callee.property?.name==='bigint'&&member(callee.object,'process','hrtime'))clockCalls++;
-                if(member(callee,'Atomics','compareExchange'))casCalls++;
+                visit(ast);receipt.seen=[...seen].sort();receipt.sites=sites;
+                receipt.classification=role.parent?(receipt.observationWrites?'executable-parent':'marker-only'):'worker';
+                if(!role.parent||receipt.observationWrites) {
+                  for(const phase of role.required)if(!seen.has(phase))fail('required-marker-missing',{phase});
+                  if(!receipt.clockCalls)fail('clock-call-missing');if(!receipt.casCalls)fail('compare-exchange-missing');
+                  if(role.parent&&!receipt.errors.length)result.parents.push({...role.parent,observationWrites:receipt.observationWrites});
+                }
+                stage='debug-excerpt';
+                for(const owner of owners.values())excerpt(bytes,source,role.file,bundleSha,owner.start,owner.end,'owner-function');
+                for(const site of sites)excerpt(bytes,source,role.file,bundleSha,site.start,site.end,site.kind);
+              } catch(error) {
+                fail('collector-failed',stage==='ast-parse'&&Number.isSafeInteger(error?.pos)?{utf16Position:error.pos}:{});
+                if(stage==='ast-parse'&&source!==undefined) {
+                  const position=Number.isSafeInteger(error?.pos)?Math.min(source.length,Math.max(0,error.pos)):0;
+                  try {excerpt(bytes,source,role.file,bundleSha,Math.max(0,position-256),Math.min(source.length,position+256),'parse-error-context');}
+                  catch {fail('debug-excerpt-failed');}
+                }
               }
-              for(const value of Object.values(n))if(Array.isArray(value))value.forEach(visit);else if(value&&typeof value==='object')visit(value);
+              result.errors.push(...receipt.errors.map(error=>({file:role.file,...error})));
             }
-            visit(ast);
-            if(role.parent&&!writes)continue;
-            for(const phase of role.required)assert(seen.has(phase),`${role.file}: missing actual marker call ${phase}`);
-            assert(clockCalls>0,`${role.file}: missing actual monotonic clock call`);
-            assert(casCalls>0,`${role.file}: missing actual compareExchange call`);
-            if(role.parent) {
-              assert.equal(bytes.length,role.parent.bytes);assert.equal(sha(bytes),role.parent.sha256);
-              parents.push({...role.parent,observationWrites:writes});
-            }
-            receipts.push({file:role.file,requiredMarkers:role.required,clockCalls,casCalls,observationWrites:writes});
+            if(!result.parents.length)result.errors.push({stage:'parent-coverage',code:'no-qualified-executable-parent'});
+            result.complete=true;
+          } catch {result.errors.push({stage:'collector-input',code:'collector-failed'});}
+          finally {
+            result.debug.retainedBytes=retainedBytes;
+            result.proofPassed=result.complete&&result.errors.length===0;
+            try {
+              fs.writeFileSync(`${dir}/observation-sites.json`,JSON.stringify(result,null,2)+'\n',{flag:'wx'});
+              fs.writeFileSync(`${dir}/observation-emissions.json`,JSON.stringify({source:result.source,proofPassed:result.proofPassed,parents:result.parents,errors:result.errors},null,2)+'\n',{flag:'wx'});
+            } catch {result.errors.push({stage:'receipt-write',code:'collector-failed'});result.proofPassed=false;}
           }
-          assert(parents.length>0,'no executable packaged parent observation writes; retained candidates/inventory are diagnostic evidence');
-          fs.writeFileSync(`${dir}/observation-emissions.json`,JSON.stringify({source:process.env.CANDIDATE_SHA,parents},null,2)+'\n',{flag:'wx'});
-          fs.writeFileSync(`${dir}/observation-sites.json`,JSON.stringify({source:process.env.CANDIDATE_SHA,receipts},null,2)+'\n',{flag:'wx'});
-          console.log(JSON.stringify({observationSitesPassed:true,parents,receipts}));
+          console.log(JSON.stringify({observationSitesPassed:result.proofPassed,complete:result.complete,parents:result.parents,receipts:result.receipts,debugRetainedBytes:retainedBytes,errors:result.errors}));
+          if(!result.proofPassed)process.exitCode=1;
           EMIT
       - name: Prove unchanged startup, diagnostics and real heartbeat behavior
         run: |
