@@ -605,11 +605,13 @@ describe("worker provider project preparation ownership", () => {
     "revokes retained project callbacks after provider %s",
     async (outcome) => {
       const git = await repository("closure-project");
+      const entered = createDeferredCore();
       const release = createDeferredCore();
       let retained: ProjectPreparation | undefined;
       const service = createService(
         async (_profile, _operationId, options) => {
           retained = options?.project;
+          entered.resolve();
           if (outcome === "timeout") {
             await release.promise;
           }
@@ -617,13 +619,24 @@ describe("worker provider project preparation ownership", () => {
         },
         outcome === "timeout" ? 20 : undefined,
       );
+      if (outcome === "timeout") {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      }
+      const creation = service.createWithRequest({
+        profileId: "development",
+        idempotencyKey: "closure",
+        projectPath: git.root,
+      });
+      const settled = creation.catch((error: unknown) => error);
       try {
-        const creation = service.createWithRequest({
-          profileId: "development",
-          idempotencyKey: "closure",
-          projectPath: git.root,
-        });
         if (outcome === "timeout") {
+          await Promise.race([
+            entered.promise,
+            settled.then((result) => {
+              throw new Error("Creation ended before provider entry", { cause: result });
+            }),
+          ]);
+          await vi.advanceTimersByTimeAsync(20);
           await expect(creation).rejects.toMatchObject({ code: "provider_failure" });
         } else {
           await expect(creation).resolves.toMatchObject({ state: "ready" });
@@ -640,6 +653,8 @@ describe("worker provider project preparation ownership", () => {
         expect(transport.upload).not.toHaveBeenCalled();
       } finally {
         release.resolve();
+        vi.useRealTimers();
+        await settled;
       }
     },
   );
