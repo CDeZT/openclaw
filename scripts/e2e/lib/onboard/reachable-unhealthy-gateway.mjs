@@ -21,7 +21,9 @@ sockets.on("connection", (front) => {
   peers.add(peer);
 
   front.on("message", (raw) => {
-    const request = JSON.parse(raw.toString());
+    const request = JSON.parse(
+      Array.isArray(raw) ? Buffer.concat(raw).toString("utf8") : Buffer.from(raw).toString("utf8"),
+    );
     if (request.type === "req" && request.method === "health") {
       front.send(
         JSON.stringify({
