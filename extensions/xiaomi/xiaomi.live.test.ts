@@ -38,12 +38,13 @@ describe.each([
   },
 ])("$provider plugin live", ({ provider, apiKey, baseUrl, models }) => {
   // UltraSpeed is a separately provisioned service, even when /models lists its ID.
-  if (provider === "xiaomi" && process.env.OPENCLAW_LIVE_XIAOMI_ULTRASPEED === "1") {
-    models = [...models, "mimo-v2.6-pro-ultraspeed"];
-  }
+  const selectedModels =
+    provider === "xiaomi" && process.env.OPENCLAW_LIVE_XIAOMI_ULTRASPEED === "1"
+      ? [...models, "mimo-v2.6-pro-ultraspeed"]
+      : models;
   const itLive =
     isLiveTestEnabled() && apiKey && (provider !== "xiaomi-token-plan" || baseUrl) ? it : it.skip;
-  itLive.each(models)(
+  itLive.each(selectedModels)(
     "MiMo V2.6 %s preserves tool reasoning across turns and recognizes image input",
     async (modelId) => {
       const { providers } = await registerXiaomiPlugin();
