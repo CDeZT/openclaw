@@ -109,7 +109,18 @@ it("routes each iOS simulator test through workflow-owned log capture and retain
     (step) => step.name === "Prove native managed document download and export",
   );
   expect(attachments?.run).toBe('/bin/bash scripts/test-ios-chat-attachments.sh "$BASELINE_SHA"');
-  expect(attachments?.if).toContain("matrix.phase == 'smoke'");
+  expect(attachments?.if).toBe(
+    "matrix.phase == 'tests' && needs.preflight.outputs.compatibility_target != 'true'",
+  );
+  const smoke = steps.find((step) => step.name === "Run focused iOS voice cleanup simulator tests");
+  expect(smoke?.if).toContain("matrix.phase == 'smoke'");
+  for (const suite of [
+    "ManagedDocumentEnvelopeTests",
+    "IOSMediaArtifactLoaderTests",
+    "OpenClawTypographyTests",
+  ]) {
+    expect(smoke?.run).toContain(`-only-testing:OpenClawTests/${suite}`);
+  }
 
   const upload = steps.find((step) => step.name === "Upload iOS lifecycle simulator evidence");
   expect(upload?.if).toContain("always()");

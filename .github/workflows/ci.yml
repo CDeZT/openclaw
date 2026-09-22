@@ -5585,9 +5585,10 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      # Full pairing/share UI proof stays in full-manual validation; fast regressions join smoke below.
       - name: Prove native managed document download and export
         id: ios_attachment_tests
-        if: (matrix.phase == 'smoke' || matrix.phase == 'tests') && needs.preflight.outputs.compatibility_target != 'true'
+        if: matrix.phase == 'tests' && needs.preflight.outputs.compatibility_target != 'true'
         env:
           BASELINE_SHA: ${{ github.event.pull_request.base.sha }}
         run: /bin/bash scripts/test-ios-chat-attachments.sh "$BASELINE_SHA"
@@ -5622,6 +5623,9 @@ jobs:
             -only-testing:OpenClawTests/TalkRealtimeConsultCancellationTests \
             -only-testing:OpenClawTests/TalkRealtimeTranscriptWriteQueueTests \
             -only-testing:OpenClawTests/TalkModeManagerTests \
+            -only-testing:OpenClawTests/ManagedDocumentEnvelopeTests \
+            -only-testing:OpenClawTests/IOSMediaArtifactLoaderTests \
+            -only-testing:OpenClawTests/OpenClawTypographyTests \
             test
 
       # App compilation and screenshots do not execute approval or notification
