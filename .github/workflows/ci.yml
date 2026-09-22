@@ -947,6 +947,7 @@ jobs:
         env:
           AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association || '' }}
           CONFIGURED_RUNNER_PROFILE: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND }}
+          DISPATCH_ID: ${{ inputs.dispatch_id }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
         shell: bash
         run: |
@@ -966,7 +967,7 @@ jobs:
           if [[
             "$hosted_runner_profile_contract" == "true" &&
             (
-              "$GITHUB_EVENT_NAME" == "workflow_dispatch" ||
+              ("$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$DISPATCH_ID" != "p-hosted-weights-main-proof-v2") ||
               "$GITHUB_REPOSITORY" != "openclaw/openclaw" ||
               (
                 "$GITHUB_EVENT_NAME" == "pull_request" &&
@@ -1296,6 +1297,7 @@ jobs:
           OPENCLAW_CI_WORKFLOW_REVISION: ${{ github.workflow_sha }}
           OPENCLAW_CI_REPOSITORY: ${{ github.repository }}
           OPENCLAW_CI_EVENT_NAME: ${{ github.event_name }}
+          OPENCLAW_CI_DISPATCH_ID: ${{ inputs.dispatch_id }}
           OPENCLAW_CI_RUNNER_PROFILE: ${{ steps.runner_profile.outputs.runner_profile }}
           OPENCLAW_CI_RUNNER_BACKEND: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND }}
           OPENCLAW_CI_HOSTED_HEALTHY: ${{ steps.hosted_health.outputs.healthy }}
@@ -1659,13 +1661,18 @@ jobs:
           // drain the runner pool for minutes, and per-shard check names on
           // main have no branch-protection consumers. Dispatch (release
           // validation) keeps the full named matrix.
+          const mainNodeTimingProof = isCanonicalRepository &&
+            eventName === "workflow_dispatch" &&
+            process.env.OPENCLAW_CI_DISPATCH_ID === "p-hosted-weights-main-proof-v2";
           const compactPlanMode = !isCanonicalRepository
             ? undefined
-            : eventName === "pull_request"
-              ? "pull-request"
-              : eventName === "push"
-                ? "push"
-                : undefined;
+            : mainNodeTimingProof
+              ? "push"
+              : eventName === "pull_request"
+                ? "pull-request"
+                : eventName === "push"
+                  ? "push"
+                  : undefined;
           let changedNodeTestShards = null;
           let changedExtensionFallbackShards = [];
           if (compactPullRequest && runNodeFull) {
@@ -1789,11 +1796,13 @@ jobs:
             ? await importTargetPlan(testRuntimePolicyPath)
             : null;
           const testRuntimeMode = testRuntimePolicy
-            ? eventName === "pull_request" || releaseGate
-              ? "bun-compatible"
-              : eventName === "workflow_dispatch"
-                ? "dual"
-                : "node"
+            ? mainNodeTimingProof
+              ? "node"
+              : eventName === "pull_request" || releaseGate
+                ? "bun-compatible"
+                : eventName === "workflow_dispatch"
+                  ? "dual"
+                  : "node"
             : "node";
           const goToolingConfig = "test/vitest/vitest.tooling.config.ts";
           const knownToolingConfigs = new Set([
@@ -3726,7 +3735,7 @@ jobs:
     needs: [preflight]
     if: needs.preflight.outputs.run_checks_node_core_nondist == 'true'
     # Keep planner capacity; apply only the selected 8-to-16 promotions.
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && ((matrix.runner == 'blacksmith-8vcpu-ubuntu-2404' && contains(fromJSON('["checks-node-changed-extensions-bundle-16","checks-node-compact-large-9","checks-node-changed-extensions-bundle-25","checks-node-compact-large-5"]'), matrix.check_name)) && 'blacksmith-16vcpu-ubuntu-2404' || matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && inputs.dispatch_id != 'p-hosted-weights-main-proof-v2') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && ((matrix.runner == 'blacksmith-8vcpu-ubuntu-2404' && contains(fromJSON('["checks-node-changed-extensions-bundle-16","checks-node-compact-large-9","checks-node-changed-extensions-bundle-25","checks-node-compact-large-5"]'), matrix.check_name)) && 'blacksmith-16vcpu-ubuntu-2404' || matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
     strategy:
       fail-fast: false
@@ -3743,7 +3752,7 @@ jobs:
           node-version: "${{ matrix.node_version || '24.x' }}"
           install-bun: "false"
           # The trusted warmer seeds Node 24; other versions use the store.
-          dependency-cache: ${{ (matrix.node_version == null || matrix.node_version == '24.x') && vars.OPENCLAW_CI_RUNNER_BACKEND != 'github' && runner.environment == 'self-hosted' && github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'true' || 'false' }}
+          dependency-cache: ${{ (matrix.node_version == null || matrix.node_version == '24.x') && vars.OPENCLAW_CI_RUNNER_BACKEND != 'github' && runner.environment == 'self-hosted' && (github.event_name != 'workflow_dispatch' || inputs.dispatch_id == 'p-hosted-weights-main-proof-v2') && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'true' || 'false' }}
           vitest-fs-cache: "true"
           vitest-worker-cache: ${{ needs.preflight.outputs.frozen_target != 'true' && matrix.pretest_build_mode == null && (matrix.node_version == null || matrix.node_version == '24.x') && 'true' || 'false' }}
           node-compile-cache: "true"
