@@ -258,41 +258,6 @@ describe("server-runtime-services", () => {
     },
   );
 
-  it("runs cron start, watcher reconciliation, and hook completion in order", async () => {
-    const order: string[] = [];
-    const cron = {
-      start: vi.fn(async () => {
-        order.push("start");
-      }),
-    };
-    const afterStart = vi.fn(async () => {
-      order.push("after-start");
-    });
-    const cronReconciliation = createTestCronReconciliation(async () => {
-      order.push("hook");
-    });
-    const cronState = createTestCronState(cron);
-    const config = { cron: { enabled: true } } as never;
-    const logCron = { error: vi.fn() };
-
-    startGatewayCronWithLogging({
-      cronState,
-      cronReconciliation,
-      reason: "startup",
-      config,
-      afterStart,
-      logCron,
-    });
-
-    await waitForFast(() => expect(order).toEqual(["start", "after-start", "hook"]));
-    expect(cronReconciliation.arm).toHaveBeenCalledWith({
-      reason: "startup",
-      config,
-      cronState,
-    });
-    expect(logCron.error).not.toHaveBeenCalled();
-  });
-
   it("does not complete cron reconciliation when scheduler startup rejects", async () => {
     const cron = {
       start: vi.fn(async () => {

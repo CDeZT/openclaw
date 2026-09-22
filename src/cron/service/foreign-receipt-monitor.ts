@@ -1,3 +1,4 @@
+import { runInDetachedAsyncContext } from "../../shared/async-work-scope.js";
 import type { CronRunReceiptRecoveryCandidate } from "../store/run-receipt-store.js";
 import type { CronServiceState } from "./state.js";
 
@@ -27,12 +28,17 @@ function arm(state: CronServiceState): void {
     return;
   }
   current.timer = setTimeout(() => {
-    current.timer = null;
-    void reconcile()
-      .catch((error: unknown) => {
-        state.deps.log.warn({ err: String(error) }, "cron: foreign receipt reconciliation failed");
-      })
-      .finally(() => arm(state));
+    runInDetachedAsyncContext(() => {
+      current.timer = null;
+      void (state.deps.runSchedulerOwned ? state.deps.runSchedulerOwned(reconcile) : reconcile())
+        .catch((error: unknown) => {
+          state.deps.log.warn(
+            { err: String(error) },
+            "cron: foreign receipt reconciliation failed",
+          );
+        })
+        .finally(() => arm(state));
+    });
   }, CRON_FOREIGN_RECEIPT_RECHECK_MS);
   current.timer.unref?.();
 }

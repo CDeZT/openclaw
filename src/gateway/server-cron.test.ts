@@ -916,6 +916,19 @@ describe("buildGatewayCronService", () => {
   );
 
   it("fires an on-exit payload after persisting its terminal disable", async () => {
+    const gatewayContext = {
+      terminalSessions: {},
+      resolveGatewayContext: () => gatewayContext,
+    } as never;
+    const creatorContext = { terminalSessions: { retired: true } } as never;
+    const creatorClient = { id: "retired-request" } as never;
+    let observedContext: unknown = "never-ran";
+    let observedClient: unknown = "never-ran";
+    runHeartbeatOnceMock.mockImplementationOnce(async () => {
+      observedContext = getInProcessGatewayToolContext();
+      observedClient = getPluginRuntimeGatewayRequestScope()?.client;
+      return { status: "ran", durationMs: 1 };
+    });
     let resolveWait!: (result: {
       reason: "exit";
       exitCode: number;
@@ -937,20 +950,30 @@ describe("buildGatewayCronService", () => {
     }));
     getProcessSupervisorMock.mockReturnValue({ spawn, cancelScope: vi.fn() });
     const cfg = createCronConfig("server-cron-on-exit-fire");
-    const state = loadCronService(cfg);
+    const state = loadCronService(cfg, { resolveGatewayContext: () => gatewayContext });
 
     try {
-      const job = await addCronJob(
-        state,
-        "watch and fire",
-        { kind: "systemEvent", text: "done" },
+      const job = await withPluginRuntimeGatewayRequestScope(
         {
-          schedule: { kind: "on-exit", command: "true" },
-          sessionTarget: "main",
-          wakeMode: "now",
+          context: creatorContext,
+          client: creatorClient,
+          isWebchatConnect: () => false,
+        } as never,
+        async () => {
+          const created = await addCronJob(
+            state,
+            "watch and fire",
+            { kind: "systemEvent", text: "done" },
+            {
+              schedule: { kind: "on-exit", command: "true" },
+              sessionTarget: "main",
+              wakeMode: "now",
+            },
+          );
+          await state.reconcileExitWatchers?.();
+          return created;
         },
       );
-      await state.reconcileExitWatchers?.();
       resolveWait({
         reason: "exit",
         exitCode: 0,
@@ -963,6 +986,9 @@ describe("buildGatewayCronService", () => {
       });
 
       await vi.waitFor(() => expect(runHeartbeatOnceMock).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(state.cron.getJob(job.id)?.state.lastRunStatus).toBe("ok"));
+      expect(observedContext).toBe(gatewayContext);
+      expect(observedClient).toBeUndefined();
       expect(state.cron.getJob(job.id)?.enabled).toBe(false);
     } finally {
       state.cron.stop();

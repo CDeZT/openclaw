@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -105,13 +106,22 @@ const flush = async () => {
 };
 
 describe("createCronExitWatchers", () => {
-  it("arms a watcher for an enabled on-exit job and fires the job on exit", async () => {
+  it("owns watcher callbacks after the creating request returns", async () => {
     const { supervisor, runs } = makeFakeSupervisor();
+    const creatorContext = new AsyncLocalStorage<string>();
+    const observedContexts: Array<string | undefined> = [];
+    const spawn = expectDefined(supervisor.spawn.getMockImplementation(), "supervisor spawn");
+    supervisor.spawn.mockImplementationOnce(async (input) => {
+      observedContexts.push(creatorContext.getStore());
+      return await spawn(input);
+    });
     const order: string[] = [];
     const persistCompletion = vi.fn(async () => {
+      observedContexts.push(creatorContext.getStore());
       order.push("persist");
     });
     const fireOnExit = vi.fn(async (_job: CronJob, _exit: CronExitResult) => {
+      observedContexts.push(creatorContext.getStore());
       order.push("fire");
     });
     const w = createCronExitWatchers({
@@ -121,7 +131,7 @@ describe("createCronExitWatchers", () => {
       logger: noopLogger,
     });
 
-    w.reconcile([onExitJob("job-a")]);
+    creatorContext.run("creator", () => w.reconcile([onExitJob("job-a")]));
     await flush();
     expect(supervisor.spawn).toHaveBeenCalledTimes(1);
     expect(w.activeJobIds()).toEqual(["job-a"]);
@@ -144,6 +154,7 @@ describe("createCronExitWatchers", () => {
     // One-shot terminal state is persisted BEFORE firing (restart-safe).
     expect(persistCompletion).toHaveBeenCalledWith(expect.objectContaining({ id: "job-a" }));
     expect(order).toEqual(["persist", "fire"]);
+    expect(observedContexts).toEqual([undefined, undefined, undefined]);
   });
 
   it("rebinds live watchers but drains callbacks already owned by the previous scheduler", async () => {

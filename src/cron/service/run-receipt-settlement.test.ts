@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
@@ -52,6 +53,65 @@ function latestReceiptStatus(storePath: string, jobId: string): string | undefin
 }
 
 describe("cron run receipt settlement", () => {
+  it.each(["startup", "manual"] as const)(
+    "retains the %s execution owner through settlement",
+    async (source) => {
+      const { storePath } = await makeStorePath();
+      const context = new AsyncLocalStorage<"caller" | "scheduler">();
+      const observed: string[] = [];
+      let schedulerEntries = 0;
+      const service = new CronService({
+        storePath,
+        cronEnabled: true,
+        log: logger,
+        enqueueSystemEvent: vi.fn(),
+        requestHeartbeat: vi.fn(),
+        runSchedulerOwned: (run) => {
+          schedulerEntries += 1;
+          return context.run("scheduler", run);
+        },
+        onEvent: (event) => {
+          if (event.action === "started" || event.action === "finished") {
+            observed.push(`${event.action}:${context.getStore()}`);
+          }
+        },
+        runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+        runCommandJob: async () => {
+          await Promise.resolve();
+          observed.push(`payload:${context.getStore()}`);
+          return { status: "ok" as const };
+        },
+      });
+      try {
+        const job = await service.add({
+          agentId: "alpha",
+          name: `execution context ${source}`,
+          enabled: true,
+          schedule:
+            source === "startup"
+              ? { kind: "at", at: new Date(Date.now() - 1_000).toISOString() }
+              : { kind: "every", everyMs: 60_000 },
+          sessionTarget: "isolated",
+          wakeMode: "next-heartbeat",
+          payload: { kind: "command", argv: ["true"] },
+          delivery: { mode: "none" },
+        });
+        await context.run("caller", async () => {
+          const outcome =
+            source === "startup" ? await service.start() : await service.run(job.id, "force");
+          expect(outcome).toEqual(source === "startup" ? undefined : { ok: true, ran: true });
+          expect(context.getStore()).toBe("caller");
+        });
+
+        const owner = source === "manual" ? "caller" : "scheduler";
+        expect(observed).toEqual([`started:${owner}`, `payload:${owner}`, `finished:${owner}`]);
+        expect(schedulerEntries).toBe(source === "manual" ? 0 : 1);
+      } finally {
+        service.stop();
+      }
+    },
+  );
+
   it.each(["manual", "startup"] as const)(
     "keeps a timed-out %s runner fenced until its underlying work settles",
     async (trigger) => {

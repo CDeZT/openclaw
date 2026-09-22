@@ -1,13 +1,20 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { CronJob } from "../cron/types.js";
 import { createProcessSupervisor } from "../process/supervisor/supervisor.js";
-import type { ManagedRun, ProcessSupervisor, RunExit } from "../process/supervisor/types.js";
+import type {
+  ManagedRun,
+  ProcessSupervisor,
+  RunExit,
+  SpawnInput,
+} from "../process/supervisor/types.js";
 import { resolveStreamStopReason } from "./cron-stream-watchers.js";
 import {
   createCronStreamWatcherFixture,
   createWatchers,
   exitResult,
+  fakeSupervisor,
   job,
   settle,
 } from "./cron-stream-watchers.test-helpers.js";
@@ -15,6 +22,46 @@ import {
 describe("cron stream watchers", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("owns stream callbacks after the creating request returns", async () => {
+    vi.useFakeTimers();
+    const creatorContext = new AsyncLocalStorage<string>();
+    const observedContexts: Array<string | undefined> = [];
+    const delivered: string[] = [];
+    const fake = fakeSupervisor();
+    const watchers = createWatchers({
+      getProcessSupervisor: () => ({
+        ...fake.supervisor,
+        spawn: async (input: SpawnInput) => {
+          observedContexts.push(creatorContext.getStore());
+          return await fake.spawn(input);
+        },
+      }),
+      minIntervalMs: 1,
+      updateState: async () => {
+        observedContexts.push(creatorContext.getStore());
+      },
+      recordFailure: vi.fn(async () => {}),
+      fireBatch: async (_job, batch) => {
+        observedContexts.push(creatorContext.getStore());
+        delivered.push(batch);
+        return "fired" as const;
+      },
+      logger: { info: vi.fn(), warn: vi.fn() },
+    });
+    try {
+      await creatorContext.run("creator", () => watchers.start(job()));
+      fake.inputs[0]?.onStdout?.("owned output\n");
+      await settle();
+      await vi.advanceTimersByTimeAsync(50);
+      await settle();
+
+      expect(delivered).toEqual(["owned output"]);
+      expect(observedContexts.every((context) => context === undefined)).toBe(true);
+    } finally {
+      await watchers.stopAll("shutdown");
+    }
   });
 
   it("keeps lifecycle ownership when a diagnostic state write fails", async () => {

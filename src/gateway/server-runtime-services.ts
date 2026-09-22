@@ -20,6 +20,7 @@ import {
   runWithGatewayIndependentRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
 import { startSessionUpstreamMonitor } from "../sessions/session-upstream-monitor.js";
+import { runInDetachedAsyncContext } from "../shared/async-work-scope.js";
 import { resolveSkillWorkshopConfig } from "../skills/workshop/config.js";
 import { assertQueuedConversationDeliveryAttemptAuthorized } from "./conversation-route-ownership.js";
 import { resolveGatewayPluginConfig } from "./runtime-plugin-config.js";
@@ -63,19 +64,21 @@ export function startGatewayCronWithLogging(params: {
     config: params.config,
     cronState: params.cronState,
   });
-  void runWithGatewayIndependentRootWorkAdmission(async () => {
-    try {
-      await params.cronState.cron.start();
-      await params.afterStart?.();
-      await reconciliation.complete();
-    } catch (err) {
-      params.logCron.error(`failed to start: ${String(err)}`);
-      // Recovery callbacks must run before this independent root releases its
-      // admission fence; restart and suspension cannot race past this point.
-      params.onStartError?.(err);
-    }
-  }, "runtime:cron-start").catch((err: unknown) =>
-    params.logCron.error(`failed to enter start root: ${String(err)}`),
+  void runInDetachedAsyncContext(() =>
+    runWithGatewayIndependentRootWorkAdmission(async () => {
+      try {
+        await params.cronState.cron.start();
+        await params.afterStart?.();
+        await reconciliation.complete();
+      } catch (err) {
+        params.logCron.error(`failed to start: ${String(err)}`);
+        // Recovery callbacks must run before this independent root releases its
+        // admission fence; restart and suspension cannot race past this point.
+        params.onStartError?.(err);
+      }
+    }, "runtime:cron-start").catch((err: unknown) =>
+      params.logCron.error(`failed to enter start root: ${String(err)}`),
+    ),
   );
 }
 

@@ -468,40 +468,45 @@ export async function run(
   mode?: CronRunMode,
   opts?: ManualRunOptions,
 ) {
-  const prepared = await prepareManualRun(state, id, mode, opts);
-  if (!prepared.ok || !prepared.ran) {
-    return prepared;
-  }
-  const admission = await runWithCronAdmission(state, async () => {
-    let activeRun: Awaited<ReturnType<typeof activatePreparedManualRun>>;
-    try {
-      activeRun = await activatePreparedManualRun(state, prepared, mode);
-    } catch (error) {
-      // Activation failures still own the original durable reservation. Once
-      // activation succeeds, finishPreparedManualRun releases it after execution.
+  const execute = async () => {
+    const prepared = await prepareManualRun(state, id, mode, opts);
+    if (!prepared.ok || !prepared.ran) {
+      return prepared;
+    }
+    const admission = await runWithCronAdmission(state, async () => {
+      let activeRun: Awaited<ReturnType<typeof activatePreparedManualRun>>;
       try {
-        await locked(state, async () => {
-          await releasePreparedManualReservationWithRetry(state, prepared);
-        });
-      } catch (cleanupError) {
-        state.deps.log.warn(
-          { jobId: prepared.jobId, err: String(cleanupError) },
-          "cron: failed to release manual run reservation after activation error",
-        );
+        activeRun = await activatePreparedManualRun(state, prepared, mode);
+      } catch (error) {
+        // Activation failures still own the original durable reservation. Once
+        // activation succeeds, finishPreparedManualRun releases it after execution.
+        try {
+          await locked(state, async () => {
+            await releasePreparedManualReservationWithRetry(state, prepared);
+          });
+        } catch (cleanupError) {
+          state.deps.log.warn(
+            { jobId: prepared.jobId, err: String(cleanupError) },
+            "cron: failed to release manual run reservation after activation error",
+          );
+        }
+        throw error;
       }
-      throw error;
+      if (!activeRun.ran) {
+        return activeRun;
+      }
+      await finishPreparedManualRun(state, activeRun, mode);
+      return { ok: true, ran: true } as const;
+    });
+    if (admission.kind === "stopped") {
+      await releasePreparedManualReservationAfterReloadWithRetry(state, prepared);
+      return { ok: true, ran: false, reason: "stopped" } as const;
     }
-    if (!activeRun.ran) {
-      return activeRun;
-    }
-    await finishPreparedManualRun(state, activeRun, mode);
-    return { ok: true, ran: true } as const;
-  });
-  if (admission.kind === "stopped") {
-    await releasePreparedManualReservationAfterReloadWithRetry(state, prepared);
-    return { ok: true, ran: false, reason: "stopped" } as const;
-  }
-  return admission.value;
+    return admission.value;
+  };
+  return await (opts?.streamBatch !== undefined && state.deps.runSchedulerOwned
+    ? state.deps.runSchedulerOwned(execute)
+    : execute());
 }
 
 /** Queues a manual cron run behind the cron command lane and returns an immediate run id. */

@@ -1,6 +1,7 @@
 import type { CronJob } from "../cron/types.js";
 import { markOpenClawExecEnv } from "../infra/openclaw-exec-env.js";
 import type { ManagedRun, ProcessSupervisor } from "../process/supervisor/index.js";
+import { runInDetachedAsyncContext } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveExitWatchShell } from "./cron-exit-watch-shell.js";
 
@@ -206,7 +207,7 @@ export function createCronExitWatchers(
         `cron-exit: watcher ${phase} failed; retry scheduled`,
       );
     };
-    void (async () => {
+    const runWatcher = async () => {
       let run: ManagedRun;
       try {
         run = await handlers.getProcessSupervisor().spawn({
@@ -317,7 +318,8 @@ export function createCronExitWatchers(
       } finally {
         slot.terminalPersisting = false;
       }
-    })().finally(() => {
+    };
+    void runInDetachedAsyncContext(runWatcher).finally(() => {
       slot.lifecycleSettled = true;
       settlingCancelledSlots.delete(slot);
       if (slot.cancelled && active.get(job.id) === slot) {

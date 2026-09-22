@@ -1,10 +1,13 @@
 // Cron service timer tests cover timer scheduling, cancellation, and wakeups.
+import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { setupCronServiceSuite, writeCronStoreSnapshot } from "../../cron/service.test-harness.js";
 import { createCronServiceState as createCronServiceStateBase } from "../../cron/service/state.js";
+import { ensureLoaded } from "../../cron/service/store.js";
+import { armTimer } from "../../cron/service/timer-scheduler.js";
 import { executeJobCore, onTimer } from "../../cron/service/timer.test-support.js";
 import { loadCronStore } from "../../cron/store.js";
 import type { CronJob } from "../../cron/types.js";
@@ -111,6 +114,70 @@ afterEach(() => {
 });
 
 describe("cron service timer seam coverage", () => {
+  it("detaches a timer tick from the request that armed it", async () => {
+    vi.useFakeTimers();
+    const { storePath } = await makeStorePath();
+    const now = Date.parse("2026-09-21T12:00:00.000Z");
+    vi.setSystemTime(now);
+    await writeCronStoreSnapshot({
+      storePath,
+      jobs: [
+        {
+          ...createDueCommandJob({ now }),
+          state: { nextRunAtMs: now + 1_000 },
+        },
+      ],
+    });
+    const context = new AsyncLocalStorage<"creator" | "scheduler">();
+    const observed: string[] = [];
+    const finished = createDeferred();
+    const state = createCronServiceState({
+      storePath,
+      cronEnabled: true,
+      log: logger,
+      nowMs: () => Date.now(),
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runSchedulerOwned: (run) => {
+        observed.push(`admission:${context.getStore() ?? "detached"}`);
+        return context.run("scheduler", run);
+      },
+      onEvent: (event) => {
+        if (event.action === "started" || event.action === "finished") {
+          observed.push(`${event.action}:${context.getStore() ?? "detached"}`);
+        }
+        if (event.action === "finished") {
+          finished.resolve();
+        }
+      },
+      runCommandJob: async () => {
+        observed.push(`payload:${context.getStore() ?? "detached"}`);
+        return { status: "ok" as const };
+      },
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
+
+    try {
+      await ensureLoaded(state);
+      context.run("creator", () => armTimer(state));
+      await vi.advanceTimersByTimeAsync(1_000);
+      await finished.promise;
+
+      expect(observed).toEqual([
+        "admission:detached",
+        "started:scheduler",
+        "payload:scheduler",
+        "finished:scheduler",
+      ]);
+    } finally {
+      state.stopped = true;
+      if (state.timer) {
+        clearTimeout(state.timer);
+      }
+      vi.useRealTimers();
+    }
+  });
+
   it("routes main cron jobs to the owning agent's main session", async () => {
     const { storePath } = await makeStorePath();
     const now = Date.parse("2026-03-23T12:00:00.000Z");
