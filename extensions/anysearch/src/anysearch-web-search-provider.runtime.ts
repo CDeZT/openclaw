@@ -21,6 +21,7 @@ import {
   type SearchConfigRecord,
 } from "openclaw/plugin-sdk/provider-web-search";
 import {
+  asOptionalRecord,
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -62,16 +63,13 @@ type AnysearchSearchHit = {
 type AnysearchSearchResponse = {
   code?: unknown;
   message?: unknown;
-  data?: { results?: unknown } | null;
+  data?: unknown;
 };
 
 type AnysearchErrorPayload = { error: string; message: string; docs: string };
 
 function resolveAnysearchConfig(searchConfig?: SearchConfigRecord): AnysearchConfig {
-  const anysearch = searchConfig?.anysearch;
-  return anysearch && typeof anysearch === "object" && !Array.isArray(anysearch)
-    ? (anysearch as AnysearchConfig)
-    : {};
+  return asOptionalRecord(searchConfig?.anysearch) ?? {};
 }
 
 function resolveAnysearchApiKey(anysearch?: AnysearchConfig): string | undefined {
@@ -98,9 +96,7 @@ function normalizeAnysearchZone(value: string | undefined): AnysearchZone | unde
   if (!normalized) {
     return undefined;
   }
-  return ANYSEARCH_ZONES.includes(normalized as AnysearchZone)
-    ? (normalized as AnysearchZone)
-    : undefined;
+  return ANYSEARCH_ZONES.find((zone) => zone === normalized);
 }
 
 function parseAnysearchTagParams(
@@ -109,22 +105,22 @@ function parseAnysearchTagParams(
   if (raw === undefined) {
     return { value: undefined };
   }
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+  const rawRecord = asOptionalRecord(raw);
+  if (!rawRecord) {
     return anysearchErrorPayload("invalid_params", "params must be an object of tag parameters.");
   }
 
-  const entries = Object.entries(raw as Record<string, unknown>).filter(
-    ([, value]) => value !== undefined,
-  );
+  const entries = Object.entries(rawRecord).filter(([, value]) => value !== undefined);
   return entries.length > 0 ? { value: Object.fromEntries(entries) } : { value: undefined };
 }
 
 function normalizeAnysearchSearchHits(payload: unknown, count: number): AnysearchSearchHit[] {
-  if (!payload || typeof payload !== "object") {
+  const record = asOptionalRecord(payload);
+  if (!record) {
     return [];
   }
 
-  const response = payload as AnysearchSearchResponse;
+  const response: AnysearchSearchResponse = record;
   // A rejected request answers with a non-zero envelope code. The search
   // endpoint reports those as HTTP 4xx today, so this covers a 2xx response
   // that still carries a failure code.
@@ -133,7 +129,7 @@ function normalizeAnysearchSearchHits(payload: unknown, count: number): Anysearc
     throw new Error(`AnySearch API error (code ${response.code})${detail ? `: ${detail}` : ""}`);
   }
 
-  const results = response.data?.results;
+  const results = asOptionalRecord(response.data)?.results;
   if (!Array.isArray(results)) {
     return [];
   }
@@ -253,11 +249,12 @@ export async function executeAnysearchWebSearchProviderTool(
   args: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
+  // SAFETY: mergeScopedSearchConfig widens to a plain record by design.
   const searchConfig = mergeScopedSearchConfig(
     ctx.searchConfig,
     "anysearch",
     resolveProviderWebSearchPluginConfig(ctx.config, "anysearch"),
-  ) as SearchConfigRecord | undefined;
+  ) as SearchConfigRecord | undefined; // SAFETY: the SDK helper returns the scoped record shape.
   const anysearch = resolveAnysearchConfig(searchConfig);
   const apiKey = resolveAnysearchApiKey(anysearch);
 

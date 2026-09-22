@@ -6,6 +6,50 @@
   "description": "Bundled fallback feed for official external OpenClaw plugins.",
   "entries": [
     {
+      "name": "@openclaw/anysearch-plugin",
+      "description": "OpenClaw AnySearch provider plugin for web search.",
+      "source": "official",
+      "kind": "plugin",
+      "openclaw": {
+        "plugin": {
+          "id": "anysearch",
+          "label": "AnySearch"
+        },
+        "contracts": {
+          "webSearchProviders": [
+            "anysearch"
+          ]
+        },
+        "webSearchProviders": [
+          {
+            "id": "anysearch",
+            "label": "AnySearch",
+            "hint": "Hosted web search with anonymous access and vertical domain routing",
+            "onboardingScopes": [
+              "text-inference"
+            ],
+            "requiresCredential": false,
+            "credentialLabel": "AnySearch API key",
+            "envVars": [
+              "ANYSEARCH_API_KEY"
+            ],
+            "placeholder": "as_sk_...",
+            "signupUrl": "https://anysearch.com/console/api-keys",
+            "docsUrl": "https://docs.openclaw.ai/tools/anysearch-search",
+            "credentialPath": "plugins.entries.anysearch.config.webSearch.apiKey",
+            "autoDetectOrder": 110
+          }
+        ],
+        "install": {
+          "clawhubSpec": "clawhub:@openclaw/anysearch-plugin",
+          "npmSpec": "@openclaw/anysearch-plugin",
+          "defaultChoice": "npm",
+          "minHostVersion": ">=2026.6.9",
+          "allowInvalidConfigRecovery": true
+        }
+      }
+    },
+    {
       "name": "@openclaw/acpx",
       "description": "OpenClaw ACP runtime backend",
       "source": "official",

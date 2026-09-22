@@ -282,6 +282,7 @@
     "!dist/extensions/anthropic-vertex/**",
     "!dist/extensions/node_modules/**",
     "!dist/extensions/*/node_modules/**",
+    "!dist/extensions/anysearch/**",
     "!dist/extensions/arcee/**",
     "!dist/extensions/baseten/**",
     "!dist/extensions/brave/**",

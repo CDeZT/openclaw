@@ -796,6 +796,12 @@
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/anthropic-vertex/**"
+"extensions: anysearch":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "extensions/anysearch/**"
+          - "docs/tools/anysearch-search.md"
+          - "docs/plugins/reference/anysearch.md"
 "extensions: apple-fm":
   - changed-files:
       - any-glob-to-any-file:

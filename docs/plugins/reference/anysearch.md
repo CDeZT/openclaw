@@ -15,7 +15,7 @@ OpenClaw AnySearch provider plugin for web search.
 ## Distribution
 
 - Package: `@openclaw/anysearch-plugin`
-- Install route: included in OpenClaw, and also from npm or ClawHub: `clawhub:@openclaw/anysearch-plugin`
+- Install route: npm or ClawHub: `clawhub:@openclaw/anysearch-plugin`
 
 ## Surface
 
