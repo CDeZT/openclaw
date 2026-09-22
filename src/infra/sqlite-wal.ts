@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { DatabaseSync } from "node:sqlite";
+import { probeTreeClone } from "@openclaw/fs-safe/copy";
 import { decodeMountInfoPath } from "@openclaw/normalization-core/mountinfo-path";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import type { Result } from "@openclaw/normalization-core/result";
@@ -289,10 +290,22 @@ function resolveMountEntryJournalPolicy(
 }
 
 function combineMountEntryJournalPolicies(
-  targetPaths: readonly string[],
+  targetPaths: readonly [string, string],
 ): SqliteFilesystemJournalPolicy {
   const mountResult = readMountEntries();
   if (!mountResult.ok) {
+    const [originalPath, canonicalPath] = targetPaths;
+    if (process.platform === "darwin" && originalPath === canonicalPath) {
+      try {
+        // This read-only probe identifies APFS by its native name, not a numeric type.
+        // Aliased paths still require mount metadata for both original and real locations.
+        if (probeTreeClone(canonicalPath) === "apfs") {
+          return "wal";
+        }
+      } catch {
+        // Failed native inspection cannot override the unknown-filesystem policy.
+      }
+    }
     return "rollback";
   }
   const policies = new Set(
@@ -337,7 +350,7 @@ function resolvePathJournalPolicy(targetPath: string): SqliteFilesystemJournalPo
   if (!checkedPaths) {
     return "wal";
   }
-  const mountLookupPaths = [checkedPaths.originalPath, checkedPaths.canonicalPath];
+  const mountLookupPaths = [checkedPaths.originalPath, checkedPaths.canonicalPath] as const;
   if (typeof fs.statfsSync !== "function") {
     return combineMountEntryJournalPolicies(mountLookupPaths);
   }

@@ -35,6 +35,41 @@ plugin coverage lives in the separate
 [`Full Release Validation`](/ci/release-validation#full-release-validation) or an explicit manual
 dispatch.
 
+The full named Node plan retains the complete maintainer-tooling family through
+`RELEASE_ONLY_TOOLING_SHARDS` and the matching maintainer leaves in mixed fast
+configs. Product-only PRs omit this family in both precise and broad fallback
+plans. A PR touching a tooling test or owner runs the full family:
+`scripts/**`, `src/scripts/**`, `test/**`, `.github/**`, `config/**`, root
+package and pnpm inputs, tooling configs, and the other inputs classified as
+tooling by the shared changed-path owner in `scripts/test-projects.test-support.mts`.
+That owner also covers Docker, agent/Crabbox tooling, app scripts/Fastlane, and
+extension scripts/package inputs. The existing tooling Vitest configs and fast
+config inventories still determine execution. Maintainer leaves keep their
+original ordinary, isolated, or fake-timer config and process pins; filtering a
+mixed group retains its product tests and uses separate subset timing identities.
+The five `test/scripts/*.e2e.test.ts` product integration gates remain outside
+this maintainer tier.
+
+Every CI manual dispatch includes the full tooling family. Full Release
+Validation's `normal_ci` child dispatches CI on the frozen candidate, where
+`Run Node test shard` executes those unchanged tests before the regular release
+publication gate accepts the campaign. OpenClaw Release Checks and Plugin
+Prerelease are separate proof owners. This is candidate validation, not a test
+deferred until promotion. Direct human beta publication with approved
+preflight-only evidence remains an explicit existing exception to full-campaign
+validation; this tier does not change publication authority.
+Fork repositories keep their existing full tooling coverage because they do not
+use the canonical changed-test planner. Fork-origin PRs targeting this repository
+use the canonical PR selection and retain changed-owner coverage.
+
+Main push plans already omitted named tooling shards; they now also omit the
+maintainer leaves previously retained by fast configs, even for tooling-owner
+changes. A regression introduced by a later main merge can therefore remain invisible to
+main CI until an affected PR or full manual/release validation runs the family.
+The PR merge-ref result proves only the tree it tested. The current `ci-gate`
+aggregates selected jobs; it does not add a separate tooling proof against later
+main revisions.
+
 Scheduled QA runs nightly at 04:41 UTC. Its live runtime job runs the
 `gateway-restart-full-access-live` scenario with `openai/gpt-5.6-luna` alongside
 the three-restart replay-safety scenario. The Full Access check must preserve
@@ -312,11 +347,19 @@ have a 30-second timeout. Secondary limits without timing guidance use at least
 one minute of exponential backoff. Small randomized delays spread retries after
 quota resets. Jobs have a 75-minute ceiling, and waiting occupies their runner.
 Recovery is automatic in the same run and does not require another PR event or
-manual dispatch. Exhausted recovery fails the job without publishing success;
-quota exhaustion can also prevent a new status from being published. Ordinary
-permission errors, uncertain writes, and other evaluation errors are not retried.
+manual dispatch. Exhausted recovery fails the job; GitHub errors can also prevent
+a new status from being published. Ordinary permission errors and other
+evaluation errors are not retried.
 Checkout, runtime setup, and separately minted autoscrub token expiry are outside
 this recovery mechanism.
+
+Transient commit-status publication failures also restart the complete evaluation.
+HTTP `500`, `502`, `503`, and `504` responses and recognized connection failures
+use one-, two-, and four-second delays, sharing the three-restart limit and job
+deadline with rate-limit recovery. GitHub may have accepted the failed write, so
+the review rereads current PR, approval, role, and CI data instead of replaying an
+old decision. This recovery applies only to commit-status publication; other
+uncertain writes, cancellation, and request timeouts remain errors.
 
 Separately, read-only `GET` and `HEAD` requests retry HTTP `500`, `502`, `503`,
 and `504` responses and recognized transient connection failures before a

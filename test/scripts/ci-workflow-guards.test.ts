@@ -16,7 +16,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { devNull, tmpdir } from "node:os";
+import { availableParallelism, devNull, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runInNewContext } from "node:vm";
@@ -625,6 +625,7 @@ function runCiManifestFixture(options: {
   nodeFastCiRouting?: boolean;
   runNode?: boolean;
   historicalReader?: boolean;
+  toolingOwnerSelection?: boolean;
   runnerBackend?: "blacksmith" | "github" | "hybrid";
   runnerProfile?: "blacksmith" | "github" | "hybrid";
   targetHostedRunnerProfileContract?: boolean;
@@ -670,20 +671,23 @@ function runCiManifestFixture(options: {
             runner: "ubuntu-24.04",
             shardName: "legacy-node-plan",
           }];
-          export const createNodeTestShardBundles = (options = {}) => [{
-            checkName: "bundled-node-plan",
-            configs: ["test/vitest/bundled.config.ts"],
-            includePatterns: options.changedPaths,
-            env: {
-              OPENCLAW_CI_TEST_COMPACT_MODE: options.compactMode ?? "full",
-              OPENCLAW_CI_TEST_COMPACT_NODE_JOB_CAP: String(options.compactNodeJobCap ?? ""),
-              OPENCLAW_CI_TEST_RUNNER_BACKEND: options.runnerBackend ?? "",
-              OPENCLAW_CI_TEST_PROOF_TIER: String(options.includeProofTests),
-            },
-            requiresDist: false,
-            runner: "ubuntu-24.04",
-            shardName: "bundled-node-plan",
-          }];
+          export const createNodeTestShardBundles = (options = {}) => {
+            console.log("node-test-plan-options:" + JSON.stringify(options));
+            return [{
+              checkName: "bundled-node-plan",
+              configs: ["test/vitest/bundled.config.ts"],
+              includePatterns: options.changedPaths,
+              env: {
+                OPENCLAW_CI_TEST_COMPACT_MODE: options.compactMode ?? "full",
+                OPENCLAW_CI_TEST_COMPACT_NODE_JOB_CAP: String(options.compactNodeJobCap ?? ""),
+                OPENCLAW_CI_TEST_RUNNER_BACKEND: options.runnerBackend ?? "",
+                OPENCLAW_CI_TEST_PROOF_TIER: String(options.includeProofTests),
+              },
+              requiresDist: false,
+              runner: "ubuntu-24.04",
+              shardName: "bundled-node-plan",
+            }];
+          };
         `
           : `
           export const createNodeTestShards = () => [{
@@ -704,6 +708,12 @@ function runCiManifestFixture(options: {
           targets: ["test/windows-part-" + (index + 1) + ".test.ts"],
           predicted_seconds: 400,
         }));\n`,
+      );
+    }
+    if (options.toolingOwnerSelection) {
+      appendFileSync(
+        path.join(scriptsDir, "ci-node-test-plan.mts"),
+        `\nexport { isToolingTestOwnerPath } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/ci-node-test-plan.mts")).href)};\n`,
       );
     }
     if (options.startupCorpusCoverage) {
@@ -5722,7 +5732,7 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       "Android SDK package install step",
     );
 
-    expect(javaStep.uses).toBe("actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c");
+    expect(javaStep.uses).toBe("actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6");
     expect(javaStep.with).toMatchObject({
       distribution: "temurin",
       "java-version": 17,
@@ -6871,6 +6881,7 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
         "precise planner coverage input",
       );
       expect(JSON.parse(coverage.slice("dedicated-coverage:".length))).toEqual({
+        includeReleaseOnlyToolingShards: false,
         runnerBackend: runnerProfile,
         dedicatedContractShards: dedicated,
         dedicatedUiE2e: uiE2e,
@@ -13903,6 +13914,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       writeExecutable(path.join(bin, "node"), [
         "#!/bin/sh",
         'test -f dist/.buildstamp || { echo "runtime not prepared" >&2; exit 1; }',
+        'if [ "$1" = "-p" ]; then exec "$STARTUP_CORPUS_NODE" "$@"; fi',
         'label="${OPENCLAW_TEST_STARTUP_CORPUS_SHARD:-config}"',
         'case "$label" in */*) label="${label%/*}-${label#*/}" ;; esac',
         'printf "%s\\n" "$@" > "$STARTUP_CORPUS_ARGS.$label"',
@@ -13924,6 +13936,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           ...process.env,
           PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
           STARTUP_CORPUS_ARGS: argsPath,
+          STARTUP_CORPUS_NODE: testNodeExecPath,
         },
       });
       expect(result.status, result.stdout + result.stderr).toBe(0);
@@ -13950,7 +13963,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       if (scenario.splitCorpus) {
         expect(readArgs("config")).toEqual([
           ...commonArgs,
-          "--maxWorkers=4",
+          `--maxWorkers=${Math.min(4, availableParallelism())}`,
           "src/config/config-startup-corpus.test.ts",
           ...stateStartupCorpusTestFiles.toSorted(),
         ]);
@@ -14632,12 +14645,37 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
   );
 
   it.each([
+    { changedPath: "scripts/lib/ci-changed-node-test-plan.mts", docsOnly: false },
+    { changedPath: "scripts/README.md", docsOnly: true },
+    { changedPath: "test/scripts/changed-lanes.test.ts", docsOnly: false },
+  ])("retains full tooling over scope shortcuts for $changedPath", ({ changedPath, docsOnly }) => {
+    const manifest = runCiManifestFixture({
+      bundledPlanner: true,
+      toolingOwnerSelection: true,
+      changedPaths: [changedPath],
+      eventName: "pull_request",
+      nodeFastOnly: true,
+      runNode: !docsOnly,
+      scopeEnv: { OPENCLAW_CI_DOCS_ONLY: String(docsOnly) },
+    });
+    expect(manifest.status, manifest.output).toBe(0);
+    expect(manifest.outputs.run_node).toBe("true");
+    expect(manifest.outputs.run_checks_node_core_nondist).toBe("true");
+    const rows = JSON.parse(
+      expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "tooling matrix"),
+    ).include;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].check_name).toBe("bundled-node-plan");
+  });
+
+  it.each([
     ["pull_request", "openclaw/openclaw", true],
     ["pull_request", "example/openclaw", false],
     ["push", "openclaw/openclaw", false],
+    ["push", "example/openclaw", false],
     ["workflow_dispatch", "openclaw/openclaw", false],
   ] as const)(
-    "forwards changed paths only to canonical PR fallback (%s, %s)",
+    "forwards release tiers and canonical PR changed paths (%s, %s)",
     (eventName, repository, forwardsChangedPaths) => {
       const changedPaths = [
         "src/plugins/manifest-tool-availability.ts",
@@ -14645,11 +14683,31 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       ];
       const manifest = runCiManifestFixture({
         bundledPlanner: true,
+        changedPlannerSource: `
+          export const createChangedNodeTestShards = (_paths, options) => {
+            if (options.includeReleaseOnlyToolingShards !== false) {
+              throw new Error("automatic precise plan must defer unrelated tooling");
+            }
+            return null;
+          };
+          export const createChangedExtensionFallbackShards = () => [];
+        `,
         changedPaths,
         eventName,
         repository,
       });
       expect(manifest.status, manifest.output).toBe(0);
+      const plannerOptions = JSON.parse(
+        expectDefined(
+          manifest.output.split("\n").find((line) => line.startsWith("node-test-plan-options:")),
+          "Node planner invocation",
+        ).slice("node-test-plan-options:".length),
+      );
+      expect(plannerOptions).toMatchObject({
+        includeReleaseOnlyPluginShards: false,
+        includeReleaseOnlyToolingShards:
+          eventName === "workflow_dispatch" || repository !== "openclaw/openclaw",
+      });
       const rows = JSON.parse(
         expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "fallback matrix"),
       ).include;

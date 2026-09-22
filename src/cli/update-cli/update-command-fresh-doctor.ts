@@ -35,7 +35,10 @@ import {
 import { POST_CORE_UPDATE_ENV } from "../../infra/update-post-core-context.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { buildUpdateDoctorEnv } from "../../infra/update-runner-doctor.js";
-import { redactSupportString } from "../../logging/diagnostic-support-redaction.js";
+import {
+  redactPublicSupportDiagnosticLine,
+  redactSupportString,
+} from "../../logging/diagnostic-support-redaction.js";
 import { formatCommandOutput } from "../../process/command-error.js";
 import {
   createSanitizedCommandError,
@@ -408,9 +411,22 @@ async function validatePostPluginConfigInFreshProcess(params: {
         },
         ...(["stderr", "stdout"] as const).flatMap((stream) => {
           const output = result[stream];
-          return typeof output === "string" && output.trim()
-            ? [{ check: "config", code: "command-failed", message: `${stream}: ${output}` }]
-            : [];
+          if (typeof output !== "string" || !output.trim()) {
+            return [];
+          }
+          // Node may print a location or source frame before the actual error.
+          // Extract known public causes before single-line fact normalization loses them.
+          const diagnostic = redactPublicSupportDiagnosticLine(output, {
+            env: process.env,
+            stateDir: resolveStateDir(),
+          });
+          return [
+            {
+              check: "config",
+              code: "command-failed",
+              message: `${stream}: ${diagnostic === "[redacted-diagnostic]" ? output : diagnostic}`,
+            },
+          ];
         }),
       ]),
     };
