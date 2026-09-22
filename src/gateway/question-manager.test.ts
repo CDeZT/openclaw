@@ -17,6 +17,7 @@ import {
   QuestionManager,
   QuestionManagerError,
   QuestionManagerErrorCodes,
+  type QuestionObservation,
 } from "./question-manager.js";
 
 const QUESTION_RESOLVED_ENTRY_GRACE_MS = 15_000;
@@ -618,7 +619,7 @@ it.each(["fulfilled", "rejected"] as const)(
     const releaseWait = vi.fn(() => parent!.release());
     let id = "";
     await parent!.run(async () => {
-      id = manager.request({
+      const request = {
         questions,
         timeoutMs: 10_000,
         registerHumanInputWait: () => releaseWait,
@@ -631,7 +632,8 @@ it.each(["fulfilled", "rejected"] as const)(
           }
           return { published: true };
         },
-      } satisfies PublicQuestionRequest).id;
+      };
+      id = manager.request(request satisfies PublicQuestionRequest).id;
     });
     const suspension = tryBeginGatewaySuspendAdmission(() => {});
     expect(suspension?.commit()).toBe(true);
@@ -677,7 +679,7 @@ it.each(["fulfilled", "rejected", "reset", "close", "reused id"] as const)(
     const releaseWait = vi.fn(() => parent!.release());
     let id = "";
     await parent!.run(async () => {
-      id = manager.request({
+      const request = {
         questions,
         timeoutMs: 60_000,
         registerHumanInputWait: () => releaseWait,
@@ -688,7 +690,7 @@ it.each(["fulfilled", "rejected", "reset", "close", "reused id"] as const)(
           assertCurrent: () => {},
           release: releaseSession,
         },
-        onResolved: async (event, observation) => {
+        onResolved: async (event: QuestionResolvedEvent, observation: QuestionObservation) => {
           await gate.promise;
           if (outcome === "rejected") {
             throw new Error("Question publication fixture failure");
@@ -697,7 +699,8 @@ it.each(["fulfilled", "rejected", "reset", "close", "reused id"] as const)(
             delivered(event);
           }
         },
-      }).id;
+      };
+      id = manager.request(request satisfies PublicQuestionRequest).id;
     });
     const observation = manager.observe(id)!;
     const waiting = manager.waitAnswer(id);
