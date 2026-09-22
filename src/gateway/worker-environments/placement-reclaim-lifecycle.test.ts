@@ -227,7 +227,8 @@ describe("placement reclaim with provider-owned node teardown", () => {
       );
       invoke.mockClear();
       vi.mocked(harness.environments.startTunnel).mockClear();
-      vi.useFakeTimers();
+      // Keep the monotonic clock shared with real SQLite workers on its native epoch.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const request = {
         sessionId: active.sessionId,
         sessionKey: active.sessionKey,
