@@ -841,90 +841,93 @@ describe("sessions.assignOwner", () => {
     });
   });
 
-  it("lets a write-scoped viewer assign a shared session without changing sharing authority", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const sessionKey = "agent:main:handoff";
-      await upsertSessionEntryCore(
-        { agentId: "main", env: state.env, sessionKey },
-        {
-          sessionId: "session-handoff",
-          updatedAt: 1,
-          visibility: "shared",
-          createdActor: { type: "human", source: "profile", id: "profile-creator" },
-        },
-      );
-      const cfg = {
-        agents: {
-          list: [
-            { id: "main", default: true },
-            { id: "research", identity: { name: "Research" } },
+  it.each(["shared", "read-only", "suggest"] as const)(
+    "lets a write-scoped viewer assign a %s session without changing sharing authority",
+    async (visibility) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const sessionKey = "agent:main:handoff";
+        await upsertSessionEntryCore(
+          { agentId: "main", env: state.env, sessionKey },
+          {
+            sessionId: "session-handoff",
+            updatedAt: 1,
+            visibility,
+            createdActor: { type: "human", source: "profile", id: "profile-creator" },
+          },
+        );
+        const cfg = {
+          agents: {
+            list: [
+              { id: "main", default: true },
+              { id: "research", identity: { name: "Research" } },
+            ],
+          },
+        } as OpenClawConfig;
+        vi.spyOn(Date, "now").mockReturnValue(4242);
+
+        const result = await invoke({
+          cfg,
+          client: client("profile-viewer"),
+          request: { key: sessionKey, owner: { type: "agent", id: "research" } },
+        });
+
+        expect(result.authorization.error).toBeNull();
+        expect(result.responses).toMatchObject([
+          [
+            true,
+            {
+              ok: true,
+              key: sessionKey,
+              owner: {
+                actor: { type: "agent", id: "research", label: "Research" },
+                assignedBy: { type: "human", id: "profile-viewer" },
+                assignedAt: 4242,
+              },
+            },
+            undefined,
           ],
-        },
-      } as OpenClawConfig;
-      vi.spyOn(Date, "now").mockReturnValue(4242);
-
-      const result = await invoke({
-        cfg,
-        client: client("profile-viewer"),
-        request: { key: sessionKey, owner: { type: "agent", id: "research" } },
-      });
-
-      expect(result.authorization.error).toBeNull();
-      expect(result.responses).toMatchObject([
-        [
-          true,
-          {
-            ok: true,
+        ]);
+        expect(loadSessionEntry({ agentId: "main", env: state.env, sessionKey })?.owner).toEqual({
+          actor: { type: "agent", id: "research" },
+          assignedBy: { type: "human", id: "profile-viewer" },
+          assignedAt: 4242,
+        });
+        const durableOwner = ensureProfileForEmail("next-owner@example.test");
+        const reassigned = await invoke({
+          cfg,
+          client: client("profile-viewer"),
+          request: {
             key: sessionKey,
-            owner: {
-              actor: { type: "agent", id: "research", label: "Research" },
-              assignedBy: { type: "human", id: "profile-viewer" },
-              assignedAt: 4242,
-            },
+            owner: { type: "human", id: durableOwner.id },
           },
-          undefined,
-        ],
-      ]);
-      expect(loadSessionEntry({ agentId: "main", env: state.env, sessionKey })?.owner).toEqual({
-        actor: { type: "agent", id: "research" },
-        assignedBy: { type: "human", id: "profile-viewer" },
-        assignedAt: 4242,
-      });
-      const durableOwner = ensureProfileForEmail("next-owner@example.test");
-      const reassigned = await invoke({
-        cfg,
-        client: client("profile-viewer"),
-        request: {
-          key: sessionKey,
-          owner: { type: "human", id: durableOwner.id },
-        },
-      });
-      expect(reassigned.responses).toMatchObject([
-        [
-          true,
-          {
-            owner: {
-              actor: { type: "human", id: durableOwner.id },
-              assignedBy: { type: "human", id: "profile-viewer" },
+        });
+        expect(reassigned.responses).toMatchObject([
+          [
+            true,
+            {
+              owner: {
+                actor: { type: "human", id: durableOwner.id },
+                assignedBy: { type: "human", id: "profile-viewer" },
+              },
             },
-          },
-          undefined,
-        ],
-      ]);
-      expect(
-        loadSessionEntry({ agentId: "main", env: state.env, sessionKey })?.owner?.actor,
-      ).toEqual({ type: "human", id: durableOwner.id });
+            undefined,
+          ],
+        ]);
+        expect(
+          loadSessionEntry({ agentId: "main", env: state.env, sessionKey })?.owner?.actor,
+        ).toEqual({ type: "human", id: durableOwner.id });
 
-      const target = resolveSessionSharingTarget({ cfg, sessionKey, agentId: "main" });
-      if (!target) {
-        throw new Error("expected assigned session target");
-      }
-      expect(resolveSessionSharingRole({ client: client("profile-creator"), target })).toBe(
-        "owner",
-      );
-      expect(resolveSessionSharingRole({ client: client("research"), target })).toBe("viewer");
-    });
-  });
+        const target = resolveSessionSharingTarget({ cfg, sessionKey, agentId: "main" });
+        if (!target) {
+          throw new Error("expected assigned session target");
+        }
+        expect(resolveSessionSharingRole({ client: client("profile-creator"), target })).toBe(
+          "owner",
+        );
+        expect(resolveSessionSharingRole({ client: client("research"), target })).toBe("viewer");
+      });
+    },
+  );
 
   it("rejects hidden viewers, unidentified callers, and unknown owner targets", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
