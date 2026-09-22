@@ -4434,6 +4434,7 @@ describe("grouped chat rendering", () => {
     if (kind === "video") {
       expect(onOpenImage).toHaveBeenCalledWith({
         kind: "video",
+        connectVideo: expect.any(Function),
         originalSrc: source,
         src: source,
         title: label,
