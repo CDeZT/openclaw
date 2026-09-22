@@ -40,7 +40,10 @@ describe.each(["sync", "async", "scoped"] as const)("SQLite child compile cache 
        fs.writeFileSync(path.join(installRoot, "package.json"), '{"version":"2026.9.6"}');
        assert.equal(getCompileCacheDir(), undefined);
        const beforeEnable = { ...process.env };
-       if (testCase.active) enableOpenClawCompileCache({ installRoot });
+       if (testCase.active) enableOpenClawCompileCache({
+         installRoot,
+         env: { ...process.env, NODE_COMPILE_CACHE: path.join(root, "native-cache") },
+       });
        assert.deepEqual({ ...process.env }, beforeEnable);
        const activeDirectory = getCompileCacheDir();
        assert.equal(Boolean(activeDirectory), testCase.active);
@@ -104,10 +107,8 @@ describe.each(["sync", "async", "scoped"] as const)("SQLite child compile cache 
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       HOME: root,
-      TMP: root,
-      TEMP: root,
-      TMPDIR: root,
     };
+    // Isolate the native cache above; retain the runner-owned TSX transform cache.
     delete env.NODE_COMPILE_CACHE;
     delete env.NODE_DISABLE_COMPILE_CACHE;
     delete env.NODE_OPTIONS;
