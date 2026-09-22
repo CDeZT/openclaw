@@ -5565,9 +5565,37 @@ jobs:
             echo "Swift lint wrappers are absent; skipping iOS lint for this frozen target."
           fi
 
+      - name: Prepare iOS simulator
+        if: (matrix.phase == 'smoke' || matrix.phase == 'tests') && needs.preflight.outputs.compatibility_target != 'true'
+        run: |
+          set -euo pipefail
+          simulator_id="$(
+            xcrun simctl list devices available --json | node --input-type=module -e '
+              const chunks = [];
+              for await (const chunk of process.stdin) chunks.push(chunk);
+              const runtimes = JSON.parse(Buffer.concat(chunks).toString("utf8")).devices;
+              const simulator = Object.values(runtimes)
+                .flat()
+                .find((device) => device.isAvailable && device.name.startsWith("iPhone"));
+              if (!simulator) throw new Error("No available iPhone simulator for iOS tests");
+              process.stdout.write(simulator.udid);
+            '
+          )"
+          echo "IOS_SIMULATOR_ID=$simulator_id" >> "$GITHUB_ENV"
+          # Finish first-boot setup before XCTest's launch deadline starts.
+          xcrun simctl bootstatus "$simulator_id" -b
+
       - name: Build iOS app
         if: matrix.phase == 'smoke' || matrix.phase == 'tests'
-        run: pnpm ios:build
+        env:
+          IOS_CI_PHASE: ${{ matrix.phase }}
+        run: |
+          set -euo pipefail
+          if [[ "$IOS_CI_PHASE" == "smoke" && "$HISTORICAL_TARGET" != "true" ]]; then
+            # Full manual validation retains the universal simulator build.
+            export IOS_DEST="platform=iOS Simulator,id=${IOS_SIMULATOR_ID:?}"
+          fi
+          pnpm ios:build
 
       # Debug's incremental compilation can miss actor-isolation diagnostics
       # that Swift's optimized whole-module Release build enforces.
@@ -5593,24 +5621,12 @@ jobs:
         run: |
           set -euo pipefail
           source .ci-harness/scripts/lib/swift-toolchain.sh
-          simulator_id="$(
-            xcrun simctl list devices available --json | node --input-type=module -e '
-              const chunks = [];
-              for await (const chunk of process.stdin) chunks.push(chunk);
-              const runtimes = JSON.parse(Buffer.concat(chunks).toString("utf8")).devices;
-              const simulator = Object.values(runtimes)
-                .flat()
-                .find((device) => device.isAvailable && device.name.startsWith("iPhone"));
-              if (!simulator) throw new Error("No available iPhone simulator for voice cleanup tests");
-              process.stdout.write(simulator.udid);
-            '
-          )"
           mkdir -p apps/ios/build/LifecycleTestResults
           run_apple_command_logged apps/ios/build/LifecycleTestResults/OpenClawVoiceCleanupTests.log xcodebuild \
             -project apps/ios/OpenClaw.xcodeproj \
             -scheme OpenClaw \
             -configuration Debug \
-            -destination "platform=iOS Simulator,id=${simulator_id}" \
+            -destination "platform=iOS Simulator,id=${IOS_SIMULATOR_ID:?}" \
             -resultBundlePath apps/ios/build/LifecycleTestResults/OpenClawVoiceCleanupTests.xcresult \
             -parallel-testing-enabled NO \
             -only-testing:OpenClawTests/TalkRealtimeVoiceSessionCleanupTests \
@@ -5627,28 +5643,13 @@ jobs:
         run: |
           set -euo pipefail
           source .ci-harness/scripts/lib/swift-toolchain.sh
-          simulator_id="$(
-            xcrun simctl list devices available --json | node --input-type=module -e '
-              const chunks = [];
-              for await (const chunk of process.stdin) chunks.push(chunk);
-              const runtimes = JSON.parse(Buffer.concat(chunks).toString("utf8")).devices;
-              const simulator = Object.values(runtimes)
-                .flat()
-                .find((device) => device.isAvailable && device.name.startsWith("iPhone"));
-              if (!simulator) {
-                console.error("No available iPhone simulator for iOS lifecycle tests");
-                process.exit(1);
-              }
-              process.stdout.write(simulator.udid);
-            '
-          )"
           result_bundle="apps/ios/build/LifecycleTestResults/OpenClawLifecycleTests.xcresult"
           mkdir -p "apps/ios/build/LifecycleTestResults"
           run_apple_command_logged "${result_bundle%.xcresult}.log" xcodebuild \
             -project apps/ios/OpenClaw.xcodeproj \
             -scheme OpenClaw \
             -configuration Debug \
-            -destination "platform=iOS Simulator,id=${simulator_id}" \
+            -destination "platform=iOS Simulator,id=${IOS_SIMULATOR_ID:?}" \
             -resultBundlePath "$result_bundle" \
             -parallel-testing-enabled NO \
             -only-testing:OpenClawLogicTests/WatchVoiceTurnTrackerTests \
@@ -5669,7 +5670,7 @@ jobs:
             -project apps/ios/OpenClaw.xcodeproj \
             -scheme OpenClawUITests \
             -configuration Debug \
-            -destination "platform=iOS Simulator,id=${simulator_id}" \
+            -destination "platform=iOS Simulator,id=${IOS_SIMULATOR_ID:?}" \
             -resultBundlePath apps/ios/build/LifecycleTestResults/OpenClawWatchDeliveryUITests.xcresult \
             -parallel-testing-enabled NO \
             -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testWatchMessageDeliveryIsReachableFromSettings \
