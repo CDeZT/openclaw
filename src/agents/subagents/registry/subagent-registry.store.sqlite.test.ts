@@ -16,6 +16,7 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../../test-utils/env.js";
+import { normalizeSubagentRunState } from "./subagent-delivery-state.js";
 import {
   clearSubagentRunsReadCacheForTest,
   getSubagentRunsSnapshotForRead,
@@ -24,7 +25,10 @@ import {
   persistSubagentRunsToDiskOrThrow,
   prepareSubagentSessionListReadCache,
 } from "./subagent-registry-state.js";
-import { bindSubagentRunRecord } from "./subagent-registry.store.codec.js";
+import {
+  bindCapturedSubagentRunRecord,
+  bindSubagentRunRecord,
+} from "./subagent-registry.store.codec.js";
 import { upsertSubagentRunRowInDatabase } from "./subagent-registry.store.kernel.js";
 import {
   readSubagentRun,
@@ -835,6 +839,43 @@ describe("subagent registry sqlite store", () => {
     });
   });
 
+  it.each([
+    { kind: "success", hasReply: false },
+    { kind: "bigint", hasReply: false },
+    { kind: "bigint", hasReply: true },
+    { kind: "cycle", hasReply: false },
+    { kind: "cycle", hasReply: true },
+  ] as const)(
+    "restores captured completion after $kind encoding (reply present=$hasReply)",
+    ({ kind, hasReply }) => {
+      const timestamp = "[Mon 2026-09-21 12:00 UTC] ";
+      const captured = normalizeSubagentRunState(
+        createRun({
+          completion: {
+            required: true,
+            terminalReply: { disposition: "visible", text: `${timestamp}${timestamp}reply` },
+          },
+        }),
+      );
+      if (!hasReply) {
+        delete captured.completion!.terminalReply;
+      }
+      captured.queuedLaunch = {
+        request: { value: kind === "bigint" ? 1n : kind === "cycle" ? captured : "plain" },
+        timeoutMs: 100,
+        schedulerGroupKey: "synthetic",
+        maxConcurrent: 1,
+      };
+      const before = structuredClone(captured);
+      if (kind === "success") {
+        expect(bindCapturedSubagentRunRecord(captured)).toEqual(bindSubagentRunRecord(captured));
+      } else {
+        expect(() => bindCapturedSubagentRunRecord(captured)).toThrow(TypeError);
+      }
+      expect(captured).toStrictEqual(before);
+    },
+  );
+
   it("rejects writes outside the canonical nested state", async () => {
     await withTempStateEnv(async () => {
       const missingState = createRun({ execution: undefined });
@@ -843,9 +884,14 @@ describe("subagent registry sqlite store", () => {
       const invalidStatus = createRun({
         execution: { status: "running\n" } as unknown as SubagentRunRecord["execution"],
       });
+      const arrayRoot = Object.assign([], createRun());
+      const arrayCompletion = createRun({ completion: Object.assign([], { required: true }) });
 
-      for (const run of [missingState, retiredState, invalidStatus]) {
+      for (const run of [missingState, retiredState, invalidStatus, arrayRoot, arrayCompletion]) {
         expect(() => saveSubagentRegistryToSqlite(new Map([[run.runId, run]]))).toThrow(
+          "subagent run is missing canonical nested state",
+        );
+        expect(() => bindCapturedSubagentRunRecord(run)).toThrow(
           "subagent run is missing canonical nested state",
         );
       }
