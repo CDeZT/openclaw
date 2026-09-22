@@ -141,7 +141,7 @@ type SessionTitleFieldsWorkerResult = {
   fields: SessionTitleFields;
 };
 
-export type SessionTranscriptHydrationWorkerInput = {
+type SessionTranscriptHydrationWorkerInput = {
   kind: "transcript-hydration";
   database: { agentId: string; path: string };
   target: SessionTranscriptRuntimeTarget & { env?: NodeJS.ProcessEnv };
