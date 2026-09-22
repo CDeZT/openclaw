@@ -17,6 +17,7 @@ const loadMatrixCredentialsMock = vi.hoisted(() =>
 );
 
 vi.mock("./credentials-read.js", () => ({
+  captureMatrixCredentialsEnv: (env: NodeJS.ProcessEnv) => env,
   loadMatrixCredentials: (env?: NodeJS.ProcessEnv, accountId?: string | null) =>
     loadMatrixCredentialsMock(env, accountId),
   loadMatrixCredentialsAsync: async (env?: NodeJS.ProcessEnv, accountId?: string | null) =>

@@ -14,6 +14,7 @@ import {
 } from "./account-config.js";
 import { resolveGlobalMatrixEnvConfig, resolveScopedMatrixEnvConfig } from "./client/env-auth.js";
 import {
+  captureMatrixCredentialsEnv,
   credentialsMatchConfig,
   loadMatrixCredentials,
   loadMatrixCredentialsAsync,
@@ -111,7 +112,7 @@ export async function resolveConfiguredMatrixBotUserIds(params: {
   env?: NodeJS.ProcessEnv;
   abortSignal?: AbortSignal;
 }): Promise<Set<string>> {
-  const env = { ...(params.env ?? process.env) };
+  const env = params.env ?? process.env;
   const currentAccountId = normalizeAccountId(params.accountId);
   const accountIds = new Set([
     ...resolveConfiguredMatrixAccountIds(params.cfg, env),
@@ -122,11 +123,15 @@ export async function resolveConfiguredMatrixBotUserIds(params: {
     .filter((accountId) => normalizeAccountId(accountId) !== currentAccountId)
     .map((accountId) => prepareMatrixAccount({ cfg: params.cfg, accountId, env }));
   const ids = new Set<string>();
+  if (accounts.length === 0 || params.abortSignal?.aborted) {
+    return ids;
+  }
+  const credentialsEnv = captureMatrixCredentialsEnv(env);
   for (const prepared of accounts) {
     if (params.abortSignal?.aborted) {
       break;
     }
-    const stored = await loadMatrixCredentialsAsync(env, prepared.account.accountId);
+    const stored = await loadMatrixCredentialsAsync(credentialsEnv, prepared.account.accountId);
     if (!isMatrixAccountConfigured(prepared, stored)) {
       continue;
     }
