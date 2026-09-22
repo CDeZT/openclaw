@@ -5,9 +5,12 @@ import type { SubagentCompletionToolHandoffRegistration } from "../agents/subage
 import {
   captureGatewayToolCallerAssertion,
   getGatewayToolCallerIdentity,
+  withoutGatewayToolCallerIdentity,
 } from "../agents/tools/gateway-caller-context.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import {
+  getCanonicalGatewayContextResolver,
+  getGatewayContextLifetime,
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../plugins/runtime/gateway-request-scope.js";
@@ -146,15 +149,13 @@ export function runWithOperatorToolGatewayCleanupContext<T>(run: () => T): T {
   );
 }
 
-/** Holds the original operator source until an accepted asynchronous follow-up settles. */
-export async function runWithOperatorToolGatewayContinuationContext<T>(
-  run: () => Promise<T>,
-): Promise<T> {
+/** Captured while live; its accepting owner, not the original invocation, releases it. */
+export function captureOperatorToolGatewayContinuationContext() {
   const scope = getPluginRuntimeGatewayRequestScope();
   const caller = getGatewayToolCallerIdentity();
   const resolveGatewayContext = caller?.gatewayContextResolver ?? scope?.resolveGatewayContext;
   if (!getInProcessGatewayRequestContext(resolveGatewayContext)) {
-    return await runWithOperatorToolGatewayCleanupContext(run);
+    return undefined;
   }
   // Use the normal dispatch owner to intersect scopes and validate the live caller
   // before transferring its source. A cleanup scope alone retains request lifetime.
@@ -169,28 +170,72 @@ export async function runWithOperatorToolGatewayContinuationContext<T>(
     context: resolved.context,
     hasCurrentClientAuthority: resolved.hasCurrentClientAuthority,
   });
-  try {
-    return await runWithOperatorToolGatewayCleanupContext(() =>
-      withPluginRuntimeGatewayRequestScope(
-        {
-          ...getPluginRuntimeGatewayRequestScope(),
-          client: captured
-            ? mergePluginRuntimeClientInternal(resolved.client, {
-                operatorRunAuthority: captured.authority,
-              })
-            : resolved.client,
-          context: resolved.context,
-          resolveGatewayContext,
-          isWebchatConnect: resolved.isWebchatConnect,
-          // The retained source still checks device/profile/role and Gateway revocation;
-          // the completed request or disconnected transport no longer owns this work.
-          hasCurrentClientAuthority: captured ? undefined : resolved.hasCurrentClientAuthority,
-        },
-        run,
-      ),
-    );
-  } finally {
+  const continuationScope = runWithOperatorToolGatewayCleanupContext(() => ({
+    ...getPluginRuntimeGatewayRequestScope(),
+    client: captured
+      ? mergePluginRuntimeClientInternal(resolved.client, {
+          operatorRunAuthority: captured.authority,
+        })
+      : resolved.client,
+    context: resolved.context,
+    resolveGatewayContext,
+    isWebchatConnect: resolved.isWebchatConnect,
+    // The retained source still checks device/profile/role and Gateway revocation;
+    // the completed request or disconnected transport no longer owns this work.
+    hasCurrentClientAuthority: captured ? undefined : resolved.hasCurrentClientAuthority,
+  }));
+  const ownerResolver = resolved.context.resolveGatewayContext ?? resolveGatewayContext;
+  const gatewayOwner = ownerResolver && getCanonicalGatewayContextResolver(ownerResolver);
+  const signals = [
+    captured?.authority.signal,
+    gatewayOwner && getGatewayContextLifetime(gatewayOwner).signal,
+  ].filter((signal): signal is AbortSignal => Boolean(signal));
+  const lifetime = new AbortController();
+  const release = () => {
+    if (lifetime.signal.aborted) {
+      return;
+    }
+    lifetime.abort(new Error("Gateway continuation authority is no longer active"));
+    for (const signal of signals) {
+      signal.removeEventListener("abort", release);
+    }
     captured?.release();
+  };
+  for (const signal of signals) {
+    signal.addEventListener("abort", release, { once: true });
+  }
+  if (signals.some((signal) => signal.aborted)) {
+    release();
+  }
+  return {
+    operatorAuthority: captured?.authority,
+    signal: lifetime.signal,
+    release,
+    run<T>(run: () => T): T {
+      lifetime.signal.throwIfAborted();
+      resolved.assertContextCurrent();
+      captured?.authority.assertCurrent();
+      return withoutGatewayToolCallerIdentity(() =>
+        operatorToolGatewayAuthority.exit(() =>
+          withPluginRuntimeGatewayRequestScope(continuationScope, run),
+        ),
+      );
+    },
+  };
+}
+
+/** Holds the original operator source until an accepted asynchronous follow-up settles. */
+export async function runWithOperatorToolGatewayContinuationContext<T>(
+  run: () => Promise<T>,
+): Promise<T> {
+  const captured = captureOperatorToolGatewayContinuationContext();
+  if (!captured) {
+    return await runWithOperatorToolGatewayCleanupContext(run);
+  }
+  try {
+    return await captured.run(run);
+  } finally {
+    captured.release();
   }
 }
 
