@@ -18,7 +18,6 @@ import {
 import { coreGatewayHandlers } from "../gateway/server-methods/core-handlers.js";
 import { hashWorkerCredential } from "../gateway/worker-environments/credential.js";
 import { projectWorkerSessionTurnClaim } from "../gateway/worker-environments/placement-record.js";
-import * as workerSessionTarget from "../gateway/worker-environments/session-target.js";
 import { createWorkerTurnRunOwner } from "../gateway/worker-environments/worker-turn-run-owner.js";
 import {
   getAgentEventLifecycleGeneration,
@@ -26,7 +25,6 @@ import {
   rotateAgentEventLifecycleGeneration,
 } from "../infra/agent-events.js";
 import { claimAgentRunContext, getAgentRunContext } from "../infra/agent-run-registry.js";
-import { withEnv } from "../test-utils/env.js";
 import { runWorkerCommand } from "./worker-command.runtime.js";
 import {
   ComposedGatewayHarness,
@@ -38,26 +36,17 @@ import {
 } from "./worker-fault-injection.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-const resolveGatewaySessionTarget = workerSessionTarget.resolveWorkerSessionTarget;
 
 describe("worker chat.abort settlement", () => {
   let harness: ComposedGatewayHarness;
 
   beforeEach(async () => {
     harness = await ComposedGatewayHarness.create(tempDirs.make("oc-wa-"));
-    // These roles share a process only in this fixture; worker setup changes its ambient state.
-    vi.spyOn(workerSessionTarget, "resolveWorkerSessionTarget").mockImplementation((cfg, id) =>
-      withEnv({ OPENCLAW_STATE_DIR: harness.stateDir }, () => resolveGatewaySessionTarget(cfg, id)),
-    );
     await harness.start();
   });
 
   afterEach(async () => {
-    try {
-      await harness.close();
-    } finally {
-      vi.mocked(workerSessionTarget.resolveWorkerSessionTarget).mockRestore();
-    }
+    await harness.close();
   });
 
   it.each([

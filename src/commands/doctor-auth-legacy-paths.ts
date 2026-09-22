@@ -5,6 +5,7 @@ import { listAgentIds, resolveAgentDir } from "../agents/agent-scope.js";
 import { resolveSharedMainAuthAgentDir } from "../agents/auth-profiles/shared-main-dir.js";
 import { resolveLegacyInheritedAuthAgentDir } from "../agents/legacy-inherited-auth-dir.js";
 import { resolveStateDir } from "../config/paths.js";
+import { resolveConfiguredAgentDatabaseCandidatePaths } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { hasErrnoCode } from "../infra/errno.js";
 import { createRetainedAgentDatabaseMatcher } from "../state/agent-deletion-discovery.js";
@@ -88,7 +89,10 @@ export function listAuthProfileRepairCandidates(
     env,
     () =>
       listAgentIds(cfg).map((agentId) => ({ agentId, path: resolveAgentDir(cfg, agentId, env) })),
-    "agent-directory",
+    {
+      kind: "agent-directory",
+      readDatabasePaths: () => resolveConfiguredAgentDatabaseCandidatePaths(cfg, { env }),
+    },
   );
   const addCandidate = (agentDir: string | undefined): void => {
     // Retain the selected home's expanded directory for later SQLite writes too.

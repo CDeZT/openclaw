@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import { resolveStateDir } from "../config/paths.js";
+import { hasErrnoCode } from "../infra/errno.js";
 import { isPathInside } from "../infra/path-guards.js";
+import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import {
   readAgentDatabaseDeletionSnapshot,
@@ -10,8 +12,23 @@ import {
   createOpenClawAgentDatabasePathMatcher,
   isPersistentOpenClawAgentDatabasePath,
 } from "./openclaw-agent-db-registry.js";
+import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 
 type Target = { agentId: string; path: string };
+
+function hasSqliteArtifacts(directory: string): boolean {
+  try {
+    return fs
+      .readdirSync(directory)
+      .some((name) => /\.(?:sqlite3?|db)(?:-(?:wal|shm|journal))?$/iu.test(name));
+  } catch (error) {
+    if (!hasErrnoCode(error, "ENOENT")) {
+      throw error;
+    }
+    // A dangling directory is unavailable, rather than an empty legacy layout.
+    return fs.lstatSync(directory, { throwIfNoEntry: false }) !== undefined;
+  }
+}
 
 /** Recorded surviving owners can share retained files; directory-name inference cannot. */
 export function createAgentDatabaseDeletionClassifier(params: {
@@ -60,9 +77,20 @@ export function createAgentDatabaseDeletionClassifier(params: {
 export function createRetainedAgentDatabaseMatcher(
   env: NodeJS.ProcessEnv,
   readConfiguredTargets: () => readonly Target[],
-  namespace: "database" | "agent-directory" = "database",
+  namespace:
+    | "database"
+    | { kind: "agent-directory"; readDatabasePaths: () => readonly string[] } = "database",
 ) {
   const snapshot = readAgentDatabaseDeletionSnapshot(env);
+  if (!snapshot && namespace !== "database") {
+    // Legacy credentials can predate SQLite; existing families still have unknown history.
+    const unavailable =
+      [resolveOpenClawStateSqlitePath(env), ...namespace.readDatabasePaths()]
+        .flatMap(resolveSqliteDatabaseFilePaths)
+        .some((file) => fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined) ||
+      readConfiguredTargets().some(({ path }) => hasSqliteArtifacts(path));
+    return (directory: string, _agentId?: string) => unavailable || hasSqliteArtifacts(directory);
+  }
   const retainedDeletions = snapshot?.retainedDeletions ?? "unavailable";
   if (retainedDeletions === "unavailable" || retainedDeletions.length === 0) {
     return (_pathname: string, _agentId?: string) => retainedDeletions === "unavailable";
@@ -72,7 +100,7 @@ export function createRetainedAgentDatabaseMatcher(
     env,
     retainedDeletions,
     configuredAgentDatabaseTargets: configured,
-    artifactDirectories: namespace === "agent-directory" ? configured : undefined,
+    artifactDirectories: namespace !== "database" ? configured : undefined,
     registeredAgentDatabases: snapshot?.registeredAgentDatabases ?? [],
   });
 }

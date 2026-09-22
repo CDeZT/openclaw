@@ -24,6 +24,7 @@ import {
   loadPersistedPluginModelCatalogsReadOnly,
 } from "../agents/plugin-model-catalog.js";
 import { resolveStateDir } from "../config/paths.js";
+import { resolveConfiguredAgentDatabaseCandidatePaths } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { listAgentModelsJsonPaths } from "../secrets/storage-scan.js";
@@ -300,7 +301,10 @@ export async function maybeMigrateModelCatalogCredentials(params: {
         agentId,
         path: resolveAgentDir(params.cfg, agentId, env),
       })),
-    "agent-directory",
+    {
+      kind: "agent-directory",
+      readDatabasePaths: () => resolveConfiguredAgentDatabaseCandidatePaths(params.cfg, { env }),
+    },
   );
   const agentDirs = listAgentModelsJsonPaths(params.cfg, stateDir, env)
     .map((modelsPath) => path.dirname(modelsPath))
