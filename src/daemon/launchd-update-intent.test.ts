@@ -16,6 +16,7 @@ import {
   createManagedHandoffLeaseStore,
   resolveManagedUpdateLeaseDatabasePath,
 } from "../infra/update-managed-service-handoff-lease.js";
+import * as exec from "../process/exec.js";
 import * as pidIdentity from "../shared/pid-alive.js";
 import { getFileLockProcessStartTime, isPidAlive } from "../shared/pid-alive.js";
 import * as existingWrites from "../state/openclaw-state-db-existing-write.js";
@@ -25,6 +26,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import * as launchctl from "./launchd-exec.js";
 import { buildLaunchAgentPlist } from "./launchd-plist.js";
+import { decodeLaunchAgentPlistFixture } from "./launchd-plist.test-support.js";
 import { resolveLaunchAgentPlistPath } from "./launchd-service-files.js";
 import { stopLaunchAgent } from "./launchd-stop.js";
 import { withGatewayServiceOperationLock } from "./service-operation-lock.js";
@@ -127,6 +129,13 @@ async function transferred() {
 }
 
 beforeEach(async () => {
+  // Keep the real plist/environment reader; only native plutil transport is host-specific.
+  vi.spyOn(exec, "runExec").mockImplementation(async (command, args, options) => {
+    if (command !== "/usr/bin/plutil" || typeof options !== "object" || !options.input) {
+      throw new Error(`Unexpected fixture subprocess: ${command}`);
+    }
+    return decodeLaunchAgentPlistFixture(options.input, args[1]);
+  });
   root = fs.realpathSync(dirs.make("launchd-update-intent-"));
   fs.mkdirSync(path.join(root, "dist"));
   fs.writeFileSync(
@@ -277,7 +286,7 @@ describe("managed-update LaunchAgent stop intent", () => {
             return result;
           },
         );
-        await expect(stop()).rejects.toThrow();
+        await expect(stop()).rejects.toThrow("Cannot verify a live serving Gateway owner");
         expect(recorded).toBe(true);
         expect(mutations).toEqual([]);
         expect(intentRow()).toBeUndefined();
@@ -369,7 +378,7 @@ describe("managed-update LaunchAgent stop intent", () => {
     database()
       .prepare("UPDATE state_leases SET payload_json=? WHERE scope='gateway-owner'")
       .run(JSON.stringify(payload));
-    await expect(stop()).rejects.toThrow();
+    await expect(stop()).rejects.toThrow("Cannot verify a live serving Gateway owner");
     expect(mutations).toEqual([]);
     expect(isPidAlive(pid)).toBe(true);
   });
@@ -381,13 +390,15 @@ describe("managed-update LaunchAgent stop intent", () => {
           .run();
       }
     };
-    await expect(stop()).rejects.toThrow();
+    await expect(stop()).rejects.toThrow("Cannot verify a live serving Gateway owner");
     expect(mutations).toEqual([]);
     expect(intentRow()).toBeUndefined();
   });
   it("preserves runtime and disable policy if effective command preparation fails", async () => {
     fs.rmSync(resolveLaunchAgentPlistPath(env));
-    await expect(stop(true, true)).rejects.toThrow();
+    await expect(stop(true, true)).rejects.toThrow(
+      "Effective LaunchAgent service command could not be inspected.",
+    );
     expect(mutations).toEqual([]);
     expect(isPidAlive(pid)).toBe(true);
     expect(intentRow()).toBeUndefined();
@@ -417,7 +428,7 @@ describe("managed-update LaunchAgent stop intent", () => {
         return result;
       },
     );
-    await expect(stop()).rejects.toThrow();
+    await expect(stop()).rejects.toThrow("Cannot verify a live serving Gateway owner");
     expect(mutations).toEqual([]);
     expect(intentRow()).toBeUndefined();
     expect(isPidAlive(pid)).toBe(true);
