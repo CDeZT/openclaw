@@ -78,7 +78,9 @@ describe("inheritSpawnSessionOwner", () => {
   const spawningAgent = { type: "agent" as const, id: "roboclaw" };
 
   it("assigns an authenticated human parent creator to the visible child", () => {
-    expect(inheritSpawnSessionOwner({ createdActor: creator }, spawningAgent, 42)).toEqual({
+    expect(
+      inheritSpawnSessionOwner({ createdActor: creator }, spawningAgent, "profile-vito", 42),
+    ).toEqual({
       actor: { type: "human", id: "profile-vito" },
       assignedBy: spawningAgent,
       assignedAt: 42,
@@ -90,9 +92,40 @@ describe("inheritSpawnSessionOwner", () => {
       inheritSpawnSessionOwner(
         { owner: { actor: { type: "human", id: "profile-owner" } }, createdActor: creator },
         spawningAgent,
+        "profile-owner",
         42,
       ),
     ).toMatchObject({ actor: { type: "human", id: "profile-owner" } });
+  });
+
+  it("requires the active requester to match the effective human owner", () => {
+    expect(
+      inheritSpawnSessionOwner({ createdActor: creator }, spawningAgent, "profile-other"),
+    ).toMatchObject({ actor: spawningAgent });
+    expect(
+      inheritSpawnSessionOwner({ createdActor: creator }, spawningAgent, undefined),
+    ).toMatchObject({ actor: spawningAgent });
+  });
+
+  it("matches a historical owner alias to the requester's canonical profile", () => {
+    const resolveProfileId = (profileId: string) =>
+      profileId === "profile-before-merge" ? "profile-after-merge" : profileId;
+    expect(
+      inheritSpawnSessionOwner(
+        {
+          owner: { actor: { type: "human", id: "profile-before-merge" } },
+          createdActor: creator,
+        },
+        spawningAgent,
+        "profile-after-merge",
+        42,
+        resolveProfileId,
+      ),
+    ).toEqual({
+      actor: { type: "human", id: "profile-after-merge" },
+      assignedBy: spawningAgent,
+      assignedAt: 42,
+    });
   });
 
   it("does not override an explicit agent owner or adopt an unlinked channel identity", () => {
@@ -100,13 +133,15 @@ describe("inheritSpawnSessionOwner", () => {
       inheritSpawnSessionOwner(
         { owner: { actor: { type: "agent", id: "another-agent" } }, createdActor: creator },
         spawningAgent,
+        "profile-vito",
       ),
-    ).toBeUndefined();
+    ).toMatchObject({ actor: spawningAgent });
     expect(
       inheritSpawnSessionOwner(
         { createdActor: { type: "human", source: "channel", id: "discord-user" } },
         spawningAgent,
+        "discord-user",
       ),
-    ).toBeUndefined();
+    ).toMatchObject({ actor: spawningAgent });
   });
 });

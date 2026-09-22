@@ -15,6 +15,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { registerInternalHook, unregisterInternalHook } from "../../hooks/internal-hooks.js";
+import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
@@ -41,6 +42,7 @@ import type {
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
   RespondFn,
+  SessionMutationAuthorization,
 } from "./types.js";
 
 afterEach(async () => {
@@ -91,6 +93,7 @@ async function invoke(params: {
   cfg: OpenClawConfig;
   client: GatewayClient;
   request: Record<string, unknown>;
+  authorizationOverride?: SessionMutationAuthorization;
 }) {
   const requestContext = context(params.cfg);
   const authorization = resolveSessionMutationAuthorization({
@@ -105,7 +108,7 @@ async function invoke(params: {
       params: params.request,
       client: params.client,
       context: requestContext,
-      sessionMutationAuthorization: authorization.authorization,
+      sessionMutationAuthorization: params.authorizationOverride ?? authorization.authorization,
       respond: (...response: Parameters<RespondFn>) => responses.push(response),
     } as never);
   }
@@ -669,6 +672,122 @@ describe("sessions.patch", () => {
 });
 
 describe("sessions.assignOwner", () => {
+  it("serializes assignment with an active session lifecycle mutation", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const sessionKey = "agent:main:lifecycle-handoff";
+      const sessionId = "session-lifecycle-handoff";
+      await upsertSessionEntryCore(
+        { agentId: "main", env: state.env, sessionKey },
+        {
+          sessionId,
+          updatedAt: 1,
+          visibility: "shared",
+          createdActor: { type: "human", source: "profile", id: "profile-creator" },
+        },
+      );
+      const cfg = {
+        agents: { list: [{ id: "main", default: true }, { id: "research" }] },
+      } as OpenClawConfig;
+      const target = resolveSessionSharingTarget({ cfg, sessionKey, agentId: "main" });
+      if (!target) {
+        throw new Error("expected lifecycle assignment target");
+      }
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const lifecycle = runExclusiveSessionLifecycleMutation({
+        scope: target.storePath,
+        identities: [target.storeKey, sessionId],
+        run: async () => {
+          entered.resolve();
+          await release.promise;
+        },
+      });
+      await entered.promise;
+      const assignment = invoke({
+        cfg,
+        client: client("profile-viewer"),
+        request: { key: sessionKey, owner: { type: "agent", id: "research" } },
+      });
+      try {
+        await expect(
+          Promise.race([
+            assignment.then(() => "settled" as const),
+            new Promise<"blocked">((resolve) => {
+              setImmediate(() => resolve("blocked"));
+            }),
+          ]),
+        ).resolves.toBe("blocked");
+        expect(
+          loadSessionEntry({ agentId: "main", env: state.env, sessionKey })?.owner,
+        ).toBeUndefined();
+      } finally {
+        release.resolve();
+        await lifecycle;
+      }
+      await expect(assignment).resolves.toMatchObject({
+        responses: [[true, { owner: { actor: { type: "agent", id: "research" } } }, undefined]],
+      });
+    });
+  });
+
+  it("rejects an assignment whose requester authority ends while queued", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const sessionKey = "agent:main:revoked-handoff";
+      const sessionId = "session-revoked-handoff";
+      await upsertSessionEntryCore(
+        { agentId: "main", env: state.env, sessionKey },
+        {
+          sessionId,
+          updatedAt: 1,
+          visibility: "shared",
+          createdActor: { type: "human", source: "profile", id: "profile-creator" },
+        },
+      );
+      const cfg = {
+        agents: { list: [{ id: "main", default: true }, { id: "research" }] },
+      } as OpenClawConfig;
+      const target = resolveSessionSharingTarget({ cfg, sessionKey, agentId: "main" });
+      if (!target) {
+        throw new Error("expected queued assignment target");
+      }
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const lifecycle = runExclusiveSessionLifecycleMutation({
+        scope: target.storePath,
+        identities: [target.storeKey, sessionId],
+        run: async () => {
+          entered.resolve();
+          await release.promise;
+        },
+      });
+      await entered.promise;
+      let requesterCurrent = true;
+      const assignment = invoke({
+        cfg,
+        client: client("profile-viewer"),
+        request: { key: sessionKey, owner: { type: "agent", id: "research" } },
+        authorizationOverride: {
+          assertCurrent: () => {
+            if (!requesterCurrent) {
+              throw new Error("assignment requester authority ended");
+            }
+          },
+          assertTargetCurrent: () => {},
+        },
+      });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      requesterCurrent = false;
+      release.resolve();
+      await lifecycle;
+      await expect(assignment).rejects.toThrow("assignment requester authority ended");
+      expect(
+        loadSessionEntry({ agentId: "main", env: state.env, sessionKey })?.owner,
+      ).toBeUndefined();
+    });
+  });
+
   it("records the trusted in-process agent tool caller as the assigning agent", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const sessionKey = "agent:main:handoff";

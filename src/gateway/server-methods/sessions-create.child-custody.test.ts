@@ -25,7 +25,8 @@ import { initializeGlobalHookRunner } from "../../plugins/hook-runner-global.js"
 import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import type { PluginHookBeforeMessageWriteEvent } from "../../plugins/types.js";
 import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
-import { ensureProfileForEmail } from "../../state/user-profiles.js";
+import { retainUserProfileCatalog } from "../../state/user-profile-list.js";
+import { ensureProfileForEmail, linkEmail } from "../../state/user-profiles.js";
 import { createGatewayMethodRegistry } from "../methods/registry.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
@@ -49,22 +50,43 @@ async function createHostedChildFixture(
   system = false,
   toolInvocation = false,
   existingChild = false,
+  mismatchedParentOwner = false,
+  humanParent = !system,
+  sandboxRequired = false,
+  mergedParentCreator = false,
 ) {
   const storePath = path.join(temporaryDirs.make("openclaw-child-custody-"), "sessions.json");
   testState.sessionStorePath = storePath;
   const parentKey = "agent:main:parent";
   const childKey = "agent:main:dashboard:accepted-child";
   const existingOwnerId = "existing-child-owner";
-  const profile = ensureProfileForEmail("child-owner@example.test");
+  const releaseProfileCatalog = mergedParentCreator ? retainUserProfileCatalog() : undefined;
+  const profile = ensureProfileForEmail(
+    mergedParentCreator ? "child-owner-current@example.test" : "child-owner@example.test",
+  );
+  const parentCreator = mergedParentCreator
+    ? ensureProfileForEmail("child-owner-historical@example.test")
+    : profile;
+  if (mergedParentCreator) {
+    linkEmail("child-owner-historical@example.test", profile.id);
+  }
+  const parentOwner = mismatchedParentOwner
+    ? ensureProfileForEmail("other-parent-owner@example.test")
+    : undefined;
   await writeSessionStore({
     entries: {
       [parentKey]: {
         sessionId: "parent-session",
         updatedAt: Date.now(),
-        ...(!system
+        ...(humanParent
           ? {
               createdVia: "operator" as const,
-              createdActor: { type: "human" as const, source: "profile" as const, id: profile.id },
+              createdActor: {
+                type: "human" as const,
+                source: "profile" as const,
+                id: parentCreator.id,
+              },
+              ...(sandboxRequired ? { sandbox: "required" as const } : {}),
             }
           : {}),
       },
@@ -78,6 +100,15 @@ async function createHostedChildFixture(
         : {}),
     },
   });
+  if (parentOwner) {
+    assignSessionOwner(
+      { agentId: "main", sessionKey: parentKey, storePath },
+      {
+        owner: { type: "human", id: parentOwner.id },
+        assignedBy: { type: "system", id: "fixture" },
+      },
+    );
+  }
   if (existingChild) {
     assignSessionOwner(
       { agentId: "main", sessionKey: childKey, storePath },
@@ -283,6 +314,7 @@ async function createHostedChildFixture(
       } finally {
         parent.close();
         captured?.release();
+        releaseProfileCatalog?.();
         dispatchInboundMessageMock.mockReset();
       }
     },
@@ -322,6 +354,59 @@ describe("hosted creation transfers accepted child input", () => {
       expect(loadSessionEntry(fixture.scope())?.owner?.actor).toMatchObject({
         type: "human",
         id: fixture.existingOwnerId,
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("inherits a historical owner alias into the requester's canonical profile", async () => {
+    const fixture = await createHostedChildFixture(false, false, false, false, true, false, true);
+    try {
+      await fixture.send();
+      expect(loadSessionEntry(fixture.scope())?.owner?.actor).toEqual({
+        type: "human",
+        id: fixture.profileId,
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("does not inherit a different human owner's assignment", async () => {
+    const fixture = await createHostedChildFixture(false, false, false, true);
+    try {
+      await fixture.send();
+      expect(loadSessionEntry(fixture.scope())?.owner?.actor).toEqual({
+        type: "agent",
+        id: "main",
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("does not inherit a human parent owner without an active human requester", async () => {
+    const fixture = await createHostedChildFixture(true, false, false, false, true);
+    try {
+      await fixture.send();
+      expect(loadSessionEntry(fixture.scope())?.owner?.actor).toEqual({
+        type: "agent",
+        id: "main",
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("keeps agent ownership when required sandbox provenance retains a human creator", async () => {
+    const fixture = await createHostedChildFixture(true, false, false, false, true, true);
+    try {
+      await fixture.send();
+      expect(loadSessionEntry(fixture.scope())).toMatchObject({
+        createdActor: { type: "human", source: "profile", id: fixture.profileId },
+        owner: { actor: { type: "agent", id: "main" } },
+        sandbox: "required",
       });
     } finally {
       await fixture.cleanup();

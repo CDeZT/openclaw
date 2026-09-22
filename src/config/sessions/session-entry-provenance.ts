@@ -35,11 +35,13 @@ export function sessionPersonalProfileId(
   return assigned?.type === "human" ? assigned.id : sessionCreatorProfileId(entry?.createdActor);
 }
 
-/** Visible spawns keep a verified human parent owner without changing agent creator attribution. */
+/** Visible spawns keep the matching verified human parent owner without changing creator attribution. */
 export function inheritSpawnSessionOwner(
   source: { owner?: SessionOwnerAssignment; createdActor?: SessionCreatedActor } | undefined,
   assignedBy: SessionActor | undefined,
+  requesterProfileId: string | undefined,
   now = Date.now(),
+  resolveProfileId: (profileId: string) => string | undefined = (profileId) => profileId,
 ): SessionOwnerAssignment | undefined {
   const assigned = source?.owner?.actor;
   const owner = assigned
@@ -49,15 +51,29 @@ export function inheritSpawnSessionOwner(
     : source?.createdActor?.type === "human" && source.createdActor.source === "profile"
       ? source.createdActor
       : undefined;
-  if (!owner?.id) {
+  const directMatch = owner?.id && requesterProfileId && owner.id === requesterProfileId;
+  const resolvedOwnerId = !directMatch && owner?.id ? resolveProfileId(owner.id) : owner?.id;
+  const resolvedRequesterId =
+    !directMatch && requesterProfileId ? resolveProfileId(requesterProfileId) : requesterProfileId;
+  const assignmentActor =
+    resolvedOwnerId && resolvedOwnerId === resolvedRequesterId
+      ? {
+          type: "human" as const,
+          id: resolvedRequesterId,
+          ...(owner?.label ? { label: owner.label } : {}),
+        }
+      : assignedBy?.type === "agent" && assignedBy.id
+        ? {
+            type: "agent" as const,
+            id: assignedBy.id,
+            ...(assignedBy.label ? { label: assignedBy.label } : {}),
+          }
+        : undefined;
+  if (!assignmentActor) {
     return undefined;
   }
   return {
-    actor: {
-      type: "human",
-      id: owner.id,
-      ...(owner.label ? { label: owner.label } : {}),
-    },
+    actor: assignmentActor,
     ...(assignedBy?.id
       ? {
           assignedBy: {
