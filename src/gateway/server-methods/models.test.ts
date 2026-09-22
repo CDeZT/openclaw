@@ -411,7 +411,7 @@ describe("models.list", () => {
           {
             id,
             provider: "proxy",
-            thinkingLevels: ["low", "medium", "high", "xhigh", "max"].map((level) => ({
+            thinkingLevels: ["low", "medium", "high", "xhigh", "max", "ultra"].map((level) => ({
               id: level,
               label: level,
             })),
@@ -567,6 +567,7 @@ describe("models.list", () => {
           { id: "low", label: "low" },
           { id: "medium", label: "medium" },
           { id: "high", label: "high" },
+          { id: "ultra", label: "ultra" },
         ],
       });
     }
@@ -615,7 +616,10 @@ describe("models.list", () => {
     ).toMatchObject({
       reasoning: false,
       agentRuntime: { id: "claude-cli" },
-      thinkingLevels: [{ id: "off", label: "off" }],
+      thinkingLevels: [
+        { id: "off", label: "off" },
+        { id: "ultra", label: "ultra" },
+      ],
     });
   });
 
@@ -679,6 +683,7 @@ describe("models.list", () => {
         { id: "high", label: "high" },
         { id: "xhigh", label: "xhigh" },
         { id: "max", label: "max" },
+        { id: "ultra", label: "ultra" },
       ],
       thinkingDefault: "high",
     });
@@ -787,7 +792,10 @@ describe("models.list", () => {
       provider: "anthropic",
       reasoning: true,
       agentRuntime: { id: "claude-cli" },
-      thinkingLevels: [{ id: "off", label: "off" }],
+      thinkingLevels: [
+        { id: "off", label: "off" },
+        { id: "ultra", label: "ultra" },
+      ],
       thinkingDefault: "off",
     });
     expect(model).not.toHaveProperty("thinkingPolicyProvider");
@@ -889,6 +897,7 @@ describe("models.list", () => {
                 { id: "low", label: "low" },
                 { id: "medium", label: "medium" },
                 { id: "high", label: "high" },
+                { id: "ultra", label: "ultra" },
               ],
               thinkingDefault: "medium",
             },

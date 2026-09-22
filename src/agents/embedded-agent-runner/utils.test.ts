@@ -9,11 +9,19 @@ describe("mapThinkingLevel", () => {
   });
 
   it("maps logical Ultra to provider max effort", () => {
-    expect(mapThinkingLevel("ultra")).toBe("max");
-    expect(mapThinkingLevelForProvider("ultra")).toBe("max");
+    const level = mapThinkingLevelForProvider("ultra", {
+      provider: "custom",
+      id: "max-model",
+      reasoning: true,
+      thinkingLevelMap: { max: "max" },
+    });
+    expect(level).toBe("max");
+    expect(mapThinkingLevel(level)).toBe("max");
   });
 
   it("preserves provider-native adaptive outside agent-core", () => {
-    expect(mapThinkingLevelForProvider("adaptive")).toBe("adaptive");
+    expect(
+      mapThinkingLevelForProvider("adaptive", { provider: "custom", id: "adaptive-model" }),
+    ).toBe("adaptive");
   });
 });

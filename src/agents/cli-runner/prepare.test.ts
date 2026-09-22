@@ -506,6 +506,63 @@ describe("prepareCliRunContext", () => {
     },
   );
 
+  it("lowers Ultra to supported CLI effort and adds only current-turn guidance", async () => {
+    const prepareExecution = vi.fn(async () => undefined);
+    setCliBackendForPrepareTest({ prepareExecution });
+    const context = await fixture.prepare({
+      provider: "claude-cli",
+      model: "claude-sonnet-4-5",
+      thinkLevel: "ultra",
+    });
+    expect(prepareExecution).toHaveBeenCalledWith(
+      expect.objectContaining({ thinkingLevel: "high" }),
+    );
+    expect(context.providerThinkingLevel).toBe("high");
+    expect(context.systemPrompt).not.toContain("Ultra active");
+    expect([context.params.prompt, context.promptContext?.appendContext].join("\n")).toContain(
+      "Ultra active for this turn",
+    );
+    const nextContext = await fixture.prepare({
+      provider: "claude-cli",
+      model: "claude-sonnet-4-5",
+      thinkLevel: "high",
+    });
+    expect(nextContext.params.sessionId).toBe(context.params.sessionId);
+    expect(
+      [
+        nextContext.systemPrompt,
+        nextContext.params.prompt,
+        nextContext.promptContext?.appendContext,
+      ].join("\n"),
+    ).not.toContain("Ultra active");
+  });
+
+  it("lowers Ultra through logical CLI catalog identity without context-window options", async () => {
+    const prepareExecution = vi.fn(async () => undefined);
+    setCliBackendForPrepareTest({ prepareExecution });
+    setCliRunnerPrepareTestDeps({
+      loadManifestModelCatalog: vi.fn(() => [
+        {
+          id: "claude-sonnet-4-5",
+          name: "Claude Sonnet 4.5",
+          provider: "anthropic",
+          reasoning: true,
+          thinkingLevelMap: { high: null },
+        },
+      ]),
+    });
+    const context = await fixture.prepare({
+      provider: "claude-cli",
+      model: "claude-sonnet-4-5",
+      config: {},
+      thinkLevel: "ultra",
+    });
+    expect(context.providerThinkingLevel).toBe("medium");
+    expect(prepareExecution).toHaveBeenCalledWith(
+      expect.objectContaining({ thinkingLevel: "medium" }),
+    );
+  });
+
   it("uses the prepared model context budget before discovery cache settlement", async () => {
     const prepareExecution = vi.fn(async () => undefined);
     setCliBackendForPrepareTest({ prepareExecution });

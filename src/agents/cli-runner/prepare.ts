@@ -5,6 +5,7 @@ import { ensureSystemPromptCacheBoundary } from "@openclaw/ai/internal/shared";
  */
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { messageToolOwnsVisibleReply } from "../../auto-reply/source-reply-delivery-mode.js";
+import { resolveProviderThinkingLevel } from "../../auto-reply/thinking.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
 import { runWithSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
@@ -123,6 +124,7 @@ import { findModelCatalogEntry, loadManifestModelCatalog } from "../model-catalo
 import type { ModelCatalogEntry } from "../model-catalog.types.js";
 import { resolveModelContextWindowProfile } from "../model-context-window.js";
 import { recordAdmittedModelRoutingDecision } from "../model-routing-decision.js";
+import { buildConfiguredModelCatalog } from "../model-selection-shared.js";
 import { applyPluginTextReplacements } from "../plugin-text-transforms.js";
 import {
   prepareRootedExecutionCapability,
@@ -136,6 +138,7 @@ import { appendModelIdentitySystemPrompt, buildModelIdentityPromptLine } from ".
 import { expandToolGroups, normalizeToolPolicyName } from "../tool-policy.js";
 import { resolveQuestionTimeoutMs } from "../tools/ask-user-tool-normalization.js";
 import { assertNativeCronCreatorCapabilities } from "../tools/cron-tool-creator-cap.js";
+import { buildProactiveSubagentOrchestrationSection } from "../ultra-orchestration.js";
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
 import {
   DEFAULT_BOOTSTRAP_FILENAME,
@@ -239,15 +242,16 @@ const defaultPrepareDeps = {
 };
 const prepareDeps = { ...defaultPrepareDeps };
 
-function findSelectableContextWindowEntry(params: {
+function findCliCatalogEntry(params: {
   catalog: ModelCatalogEntry[];
   providers: string[];
   models: string[];
+  requireContextWindows?: boolean;
 }): ModelCatalogEntry | undefined {
   for (const provider of params.providers) {
     for (const model of params.models) {
       const entry = findModelCatalogEntry(params.catalog, { provider, modelId: model });
-      if (entry?.contextWindows?.length) {
+      if (entry && (!params.requireContextWindows || entry.contextWindows?.length)) {
         return entry;
       }
     }
@@ -1091,16 +1095,31 @@ async function prepareCliRunContextWithinReadFence(
   // resolveAnthropicFixedContextWindow deliberately ignores catalog scalars,
   // so the selected (or default) option must apply after it or a 200k session
   // would auto-compact against a 1M budget.
-  const selectableContextEntry = findSelectableContextWindowEntry({
-    catalog: params.config
-      ? prepareDeps.loadManifestModelCatalog({ config: params.config, workspaceDir })
-      : [],
+  const modelCatalog = params.config
+    ? params.config.models?.mode === "replace"
+      ? buildConfiguredModelCatalog({ cfg: params.config, workspaceDir })
+      : prepareDeps.loadManifestModelCatalog({ config: params.config, workspaceDir })
+    : [];
+  const catalogQuery = {
+    catalog: modelCatalog,
     providers: uniqueStrings(
       [params.provider, backendResolved.modelProvider].filter(
         (provider): provider is string => typeof provider === "string" && provider.length > 0,
       ),
     ),
     models: uniqueStrings([modelId, normalizedCatalogModel]),
+  };
+  const selectableContextEntry = findCliCatalogEntry({
+    ...catalogQuery,
+    requireContextWindows: true,
+  });
+  const thinkingCatalogEntry = findCliCatalogEntry(catalogQuery);
+  const providerThinkingLevel = resolveProviderThinkingLevel({
+    provider: thinkingCatalogEntry?.provider ?? params.provider,
+    model: thinkingCatalogEntry?.id ?? normalizedCatalogModel,
+    catalog: modelCatalog,
+    agentRuntime: backendResolved.id,
+    level: params.thinkLevel,
   });
   if (selectableContextEntry) {
     const contextWindowProfile = resolveModelContextWindowProfile({
@@ -1666,7 +1685,7 @@ async function prepareCliRunContextWithinReadFence(
       modelId,
       ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),
       contextTokenBudget: contextWindowInfo.tokens,
-      thinkingLevel: params.thinkLevel === "ultra" ? "max" : params.thinkLevel,
+      thinkingLevel: providerThinkingLevel,
       authProfileId: effectiveAuthProfileId,
       executionMode,
       toolAvailability: params.cliToolAvailability,
@@ -2080,7 +2099,14 @@ async function prepareCliRunContextWithinReadFence(
           isNewSession:
             !reusableCliSessionId?.trim() || reusableCliSession.mode === "reuse-with-drift",
           systemPrompt,
-          context: [hookResult?.appendContext, authorizedPromptBuildResult?.appendContext],
+          context: [
+            hookResult?.appendContext,
+            authorizedPromptBuildResult?.appendContext,
+            buildProactiveSubagentOrchestrationSection({
+              enabled: params.thinkLevel === "ultra",
+              hasSessionsSpawn: promptTools.some((tool) => tool.name === "sessions_spawn"),
+            }).join("\n"),
+          ],
         });
         const logicalPrompt = composeCliPromptContext(preparedPrompt, {
           prependContext,
@@ -2212,6 +2238,7 @@ async function prepareCliRunContextWithinReadFence(
       contextEngineConfig: runConfig,
       modelId,
       normalizedModel,
+      providerThinkingLevel,
       contextWindowInfo,
       systemPrompt,
       systemPromptReport,

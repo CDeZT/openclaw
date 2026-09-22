@@ -67,6 +67,31 @@ describe("worker turn execution", () => {
         { sessionId: SESSION_ID, sessionKey: SESSION_KEY, agentId: "main", runId: "run-scheduled" },
         {
           ...turn("run-scheduled"),
+          thinkLevel: "ultra",
+          provider: "custom",
+          model: "plain",
+          config: {
+            models: {
+              mode: "replace",
+              providers: {
+                custom: {
+                  baseUrl: "https://example.invalid/v1",
+                  api: "openai-completions",
+                  models: [
+                    {
+                      id: "plain",
+                      name: "Plain",
+                      reasoning: false,
+                      input: ["text"],
+                      contextWindow: 8192,
+                      maxTokens: 2048,
+                      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                    },
+                  ],
+                },
+              },
+            },
+          },
           permissionMode: "full",
           execSession: { permissionMode: "full" },
           execOverrides: { host: "gateway", security: "full", ask: "off" },
@@ -81,6 +106,9 @@ describe("worker turn execution", () => {
       ),
     ).rejects.toBeInstanceOf(WorkerRunnerCapacityError);
     expect(launchTurn).toHaveBeenCalledOnce();
+    expect(descriptor?.assignment.inferenceOptions.reasoning).toBe("off");
+    expect(descriptor?.assignment.systemPrompt).toContain("Ultra active for this turn");
+    expect(descriptor?.assignment.systemPrompt).not.toContain("Use `sessions_spawn`");
     expect(runLocal).not.toHaveBeenCalled();
     expect(descriptor?.assignment.toolAuthority).toMatchObject({
       allowedToolNames: [],
