@@ -2149,6 +2149,7 @@ describe("gateway hot reload model state", () => {
     expect(hoisted.refreshPreparedModelRuntimeSnapshots).toHaveBeenCalledWith(nextConfig, {
       allowGatewaySubagentBinding: true,
       catalogMode: "static",
+      joinSupersedingPublication: true,
       agentIds: new Set(["alpha"]),
     });
   });
@@ -2180,6 +2181,7 @@ describe("gateway hot reload model state", () => {
     expect(hoisted.refreshPreparedModelRuntimeSnapshots).toHaveBeenCalledWith(nextConfig, {
       allowGatewaySubagentBinding: true,
       catalogMode: "static",
+      joinSupersedingPublication: true,
     });
     expect(heartbeatRunner.updateConfig).not.toHaveBeenCalled();
     expect(cron.stop).not.toHaveBeenCalled();
@@ -2851,6 +2853,7 @@ describe("gateway hot reload model state", () => {
     expect(hoisted.refreshPreparedModelRuntimeSnapshots).toHaveBeenCalledWith(nextConfig, {
       allowGatewaySubagentBinding: true,
       catalogMode: "static",
+      joinSupersedingPublication: true,
     });
   });
 
