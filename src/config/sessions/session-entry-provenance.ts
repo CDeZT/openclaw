@@ -35,6 +35,42 @@ export function sessionPersonalProfileId(
   return assigned?.type === "human" ? assigned.id : sessionCreatorProfileId(entry?.createdActor);
 }
 
+/** Visible spawns keep a verified human parent owner without changing agent creator attribution. */
+export function inheritSpawnSessionOwner(
+  source: { owner?: SessionOwnerAssignment; createdActor?: SessionCreatedActor } | undefined,
+  assignedBy: SessionActor | undefined,
+  now = Date.now(),
+): SessionOwnerAssignment | undefined {
+  const assigned = source?.owner?.actor;
+  const owner = assigned
+    ? assigned.type === "human"
+      ? assigned
+      : undefined
+    : source?.createdActor?.type === "human" && source.createdActor.source === "profile"
+      ? source.createdActor
+      : undefined;
+  if (!owner?.id) {
+    return undefined;
+  }
+  return {
+    actor: {
+      type: "human",
+      id: owner.id,
+      ...(owner.label ? { label: owner.label } : {}),
+    },
+    ...(assignedBy?.id
+      ? {
+          assignedBy: {
+            type: assignedBy.type,
+            id: assignedBy.id,
+            ...(assignedBy.label ? { label: assignedBy.label } : {}),
+          },
+        }
+      : {}),
+    assignedAt: now,
+  };
+}
+
 export type SessionCreatedVia =
   | "operator" // gateway sessions.create (Control UI / operator clients)
   | "spawn" // sessions_spawn native or ACP subagent spawn

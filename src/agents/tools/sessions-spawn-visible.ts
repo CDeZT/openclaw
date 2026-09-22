@@ -14,6 +14,7 @@ import {
 } from "../../config/agent-limits.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { resolveControlUiSessionUrl } from "../../config/control-ui-link-base.js";
+import type { SessionEntry } from "../../config/sessions.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -131,6 +132,21 @@ type VisibleSessionsSpawnOptions = VisibleSessionsSpawnDeps &
     config?: OpenClawConfig;
     requesterAgentIdOverride?: string;
   };
+
+function resolveVisibleSessionOwner(
+  entry: Pick<SessionEntry, "createdActor" | "owner"> | undefined,
+  fallback: { type: "agent"; id: string; label?: string },
+) {
+  const actor = entry?.owner?.actor ?? entry?.createdActor;
+  if (!actor?.id) {
+    return fallback;
+  }
+  return {
+    type: actor.type,
+    id: actor.id,
+    ...(actor.label ? { label: actor.label } : {}),
+  };
+}
 
 function summarizeSessionsSpawnError(error: unknown): string {
   return error instanceof Error ? error.message : typeof error === "string" ? error : "error";
@@ -447,7 +463,7 @@ export async function maybeSpawnVisibleSession(params: {
     let response: {
       key?: string;
       sessionId?: string;
-      entry?: { lifecycleRevision?: string };
+      entry?: Pick<SessionEntry, "createdActor" | "lifecycleRevision" | "owner">;
       runStarted?: boolean;
       runId?: string;
       runError?: unknown;
@@ -684,11 +700,11 @@ export async function maybeSpawnVisibleSession(params: {
       cleanup: "keep",
       ...(response.placement ? { placement: response.placement } : {}),
       ...(sessionUrl ? { sessionUrl } : {}),
-      owner: {
+      owner: resolveVisibleSessionOwner(response.entry, {
         type: "agent",
         id: requesterAgentId,
         ...(ownerLabel ? { label: ownerLabel } : {}),
-      },
+      }),
     };
   } finally {
     reservation.release();

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { sessionPersonalProfileId, type SessionCreatedActor } from "./session-entry-provenance.js";
+import {
+  inheritSpawnSessionOwner,
+  sessionPersonalProfileId,
+  type SessionCreatedActor,
+} from "./session-entry-provenance.js";
 
 describe("sessionPersonalProfileId", () => {
   const creator: SessionCreatedActor = { type: "human", source: "profile", id: "profile-creator" };
@@ -65,6 +69,44 @@ describe("sessionPersonalProfileId", () => {
         owner: { actor: { type: "agent", id: "profile-owner" } },
         createdActor: { type: "system", id: "profile-creator" },
       }),
+    ).toBeUndefined();
+  });
+});
+
+describe("inheritSpawnSessionOwner", () => {
+  const creator: SessionCreatedActor = { type: "human", source: "profile", id: "profile-vito" };
+  const spawningAgent = { type: "agent" as const, id: "roboclaw" };
+
+  it("assigns an authenticated human parent creator to the visible child", () => {
+    expect(inheritSpawnSessionOwner({ createdActor: creator }, spawningAgent, 42)).toEqual({
+      actor: { type: "human", id: "profile-vito" },
+      assignedBy: spawningAgent,
+      assignedAt: 42,
+    });
+  });
+
+  it("uses the current human owner instead of the original creator", () => {
+    expect(
+      inheritSpawnSessionOwner(
+        { owner: { actor: { type: "human", id: "profile-owner" } }, createdActor: creator },
+        spawningAgent,
+        42,
+      ),
+    ).toMatchObject({ actor: { type: "human", id: "profile-owner" } });
+  });
+
+  it("does not override an explicit agent owner or adopt an unlinked channel identity", () => {
+    expect(
+      inheritSpawnSessionOwner(
+        { owner: { actor: { type: "agent", id: "another-agent" } }, createdActor: creator },
+        spawningAgent,
+      ),
+    ).toBeUndefined();
+    expect(
+      inheritSpawnSessionOwner(
+        { createdActor: { type: "human", source: "channel", id: "discord-user" } },
+        spawningAgent,
+      ),
     ).toBeUndefined();
   });
 });

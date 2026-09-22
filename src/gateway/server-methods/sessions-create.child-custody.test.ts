@@ -14,6 +14,7 @@ import { callInProcessGatewayToolWithCreation } from "../../agents/tools/in-proc
 import type { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import {
+  assignSessionOwner,
   listSessionPendingInputs,
   loadSessionEntry,
   loadTranscriptEventsSync,
@@ -44,14 +45,48 @@ installGatewayTestHooks();
 registerAgentSessionLoopTestLifecycle();
 const temporaryDirs = useAutoCleanupTempDirTracker(afterEach);
 
-async function createHostedChildFixture(system = false, toolInvocation = false) {
+async function createHostedChildFixture(
+  system = false,
+  toolInvocation = false,
+  existingChild = false,
+) {
   const storePath = path.join(temporaryDirs.make("openclaw-child-custody-"), "sessions.json");
   testState.sessionStorePath = storePath;
   const parentKey = "agent:main:parent";
   const childKey = "agent:main:dashboard:accepted-child";
+  const existingOwnerId = "existing-child-owner";
+  const profile = ensureProfileForEmail("child-owner@example.test");
   await writeSessionStore({
-    entries: { [parentKey]: { sessionId: "parent-session", updatedAt: Date.now() } },
+    entries: {
+      [parentKey]: {
+        sessionId: "parent-session",
+        updatedAt: Date.now(),
+        ...(!system
+          ? {
+              createdVia: "operator" as const,
+              createdActor: { type: "human" as const, source: "profile" as const, id: profile.id },
+            }
+          : {}),
+      },
+      ...(existingChild
+        ? {
+            [childKey]: {
+              sessionId: "existing-child",
+              updatedAt: Date.now(),
+            },
+          }
+        : {}),
+    },
   });
+  if (existingChild) {
+    assignSessionOwner(
+      { agentId: "main", sessionKey: childKey, storePath },
+      {
+        owner: { type: "human", id: existingOwnerId },
+        assignedBy: { type: "system", id: "fixture" },
+      },
+    );
+  }
   const releaseDispatch = createDeferred();
   const dispatchEntered = createDeferred();
   const provider = vi.fn();
@@ -114,7 +149,6 @@ async function createHostedChildFixture(system = false, toolInvocation = false) 
       ],
       registry,
     );
-  const profile = ensureProfileForEmail("child-owner@example.test");
   const captured = system
     ? undefined
     : captureGatewayOperatorRunAuthority({
@@ -218,6 +252,8 @@ async function createHostedChildFixture(system = false, toolInvocation = false) 
     send,
     scope,
     context,
+    profileId: profile.id,
+    existingOwnerId,
     beforeInputCommit,
     provider,
     persistenceResult,
@@ -266,6 +302,32 @@ function userMessages(
 }
 
 describe("hosted creation transfers accepted child input", () => {
+  it("assigns the verified requester as the visible child owner", async () => {
+    const fixture = await createHostedChildFixture();
+    try {
+      await fixture.send();
+      expect(loadSessionEntry(fixture.scope())?.owner).toMatchObject({
+        actor: { type: "human", id: fixture.profileId },
+        assignedBy: { type: "agent", id: "main" },
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("does not replace the owner of an existing target session", async () => {
+    const fixture = await createHostedChildFixture(false, false, true);
+    try {
+      await expect(fixture.send()).rejects.toThrow("spawn tool policy requires a new session");
+      expect(loadSessionEntry(fixture.scope())?.owner?.actor).toMatchObject({
+        type: "human",
+        id: fixture.existingOwnerId,
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it.each([false, true])(
     "continues after the inherited tool invocation completes (system=%s)",
     async (system) => {
