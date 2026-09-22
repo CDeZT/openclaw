@@ -6,13 +6,17 @@ import { createAccountListHelpers } from "../channels/plugins/account-helpers.js
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { createAccountCronScheduledToolPolicy } from "../cron/scheduled-tool-policy.js";
+import {
+  createAccountCronScheduledToolPolicy,
+  type CronScheduledToolCallerOrigin,
+} from "../cron/scheduled-tool-policy.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import { resolveConversationCapabilityProfile } from "./conversation-capability-profile.js";
 import { projectConversationToolNames } from "./conversation-tool-policy-pipeline.js";
 import { resolvePluginHarnessPolicyToolsAllow } from "./harness/execution-environment.js";
+import type { ScheduledToolPolicyContext } from "./scheduled-tool-policy.js";
 import { resolveWebSearchToolPolicy } from "./web-search-tool-policy.js";
 
 describe("resolveConversationCapabilityProfile", () => {
@@ -498,30 +502,49 @@ describe("resolveConversationCapabilityProfile scheduled account authority", () 
     expect(() => scheduledProfile({})).toThrow('Scheduled account "work" is unavailable');
   });
 
-  it.each([
-    { name: "configured creator", knownOrigin: true, configured: true, delivery: "telegram" },
-    { name: "unknown creator origin", knownOrigin: false, configured: true, delivery: "whatsapp" },
-    { name: "removed creator account", knownOrigin: true, configured: false, delivery: "telegram" },
+  it.each<{
+    name: string;
+    origin: CronScheduledToolCallerOrigin["kind"];
+    configured: boolean;
+    delivery: string;
+  }>([
+    { name: "configured creator", origin: "external", configured: true, delivery: "telegram" },
+    { name: "unknown creator origin", origin: "unknown", configured: true, delivery: "whatsapp" },
+    {
+      name: "removed creator account",
+      origin: "external",
+      configured: false,
+      delivery: "telegram",
+    },
+    { name: "local creator", origin: "local", configured: true, delivery: "whatsapp" },
+    {
+      name: "removed local resource account",
+      origin: "local",
+      configured: false,
+      delivery: "whatsapp",
+    },
   ])(
-    "preserves scheduled DM authority for $name across tool consumers",
-    ({ knownOrigin, configured, delivery }) => {
+    "preserves scheduled creator authority for $name across tool consumers",
+    ({ origin, configured, delivery }) => {
+      const config: OpenClawConfig = {
+        channels: { whatsapp: { accounts: configured ? { work: {} } : {} } },
+      };
+      const ownerOrigin: CronScheduledToolCallerOrigin =
+        origin === "external" ? { kind: origin, channel: "whatsapp" } : { kind: origin };
       const params = {
-        config: {
-          channels: { whatsapp: { accounts: configured ? { work: {} } : {} } },
-        },
+        config,
         sessionKey: "agent:main:cron:job:run:turn",
         agentId: "main",
         agentAccountId: "default",
         messageProvider: delivery,
         scheduledToolPolicy: {
-          version: 1 as const,
-          mode: "account" as const,
-          ownerSessionKey: "agent:main:whatsapp:direct:sender",
+          version: 1,
+          mode: "account",
+          ownerSessionKey:
+            origin === "local" ? "agent:main:main" : "agent:main:whatsapp:direct:sender",
           ownerAccountId: "work",
-          ownerOrigin: knownOrigin
-            ? { kind: "external" as const, channel: "whatsapp" }
-            : { kind: "unknown" as const },
-        },
+          ownerOrigin,
+        } satisfies ScheduledToolPolicyContext,
       };
       const conversationTools = () =>
         projectConversationToolNames({
@@ -543,7 +566,7 @@ describe("resolveConversationCapabilityProfile scheduled account authority", () 
           conversationToolPolicy: { deny: ["*"] },
         });
 
-      if (!knownOrigin || !configured) {
+      if (origin === "unknown" || !configured) {
         for (const resolve of [conversationTools, webSearch, harnessTools]) {
           expect(resolve).toThrow('Scheduled account "work" is unavailable');
         }

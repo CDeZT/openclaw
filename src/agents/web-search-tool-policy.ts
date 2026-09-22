@@ -79,7 +79,9 @@ export function resolveWebSearchToolPolicy(
     config: params.config,
     sessionKey: params.scheduledToolPolicy?.ownerSessionKey ?? params.sessionKey,
     spawnedBy: params.spawnedBy,
-    messageProvider: callerContext.channel ?? undefined,
+    messageProvider: callerContext.local
+      ? params.messageProvider
+      : (callerContext.channel ?? undefined),
     groupId: params.groupId,
     groupChannel: params.groupChannel,
     groupSpace: params.groupSpace,

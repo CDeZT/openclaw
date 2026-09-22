@@ -16,7 +16,7 @@ import { onTimer } from "../service/timer-scheduler.js";
 import { loadCronStore, saveCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
 import { readCronTaskRunHistoryPage } from "../task-run-history.js";
-import type { CronJob } from "../types.js";
+import type { CronStoredJob } from "../types.js";
 import {
   getChannelPluginMock,
   loadRunCronIsolatedAgentTurn,
@@ -54,7 +54,7 @@ describe("scheduled account policy outcomes", () => {
     toolsAllow?: string[];
     fails: boolean;
     ownerSessionKey?: string;
-    callerOrigin?: NonNullable<CronJob["toolsAllowProvenance"]>["callerOrigin"];
+    callerOrigin?: NonNullable<CronStoredJob["toolsAllowProvenance"]>["callerOrigin"];
   }>([
     { name: "removed named account", accountId: "removed", toolsAllow: ["read"], fails: true },
     { name: "configured named account", accountId: "work", toolsAllow: ["read"], fails: false },
@@ -105,7 +105,7 @@ describe("scheduled account policy outcomes", () => {
     }) => {
       const { storePath } = fixtures.makeStorePath();
       const cfg: OpenClawConfig = { channels: { whatsapp: { accounts: { work: {} } } } };
-      const job: CronJob = {
+      const job: CronStoredJob = {
         ...createDueIsolatedJob({
           id: name.replaceAll(" ", "-"),
           nowMs: Date.now(),

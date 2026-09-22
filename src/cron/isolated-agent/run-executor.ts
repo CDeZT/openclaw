@@ -183,7 +183,7 @@ function createCronPromptExecutor(
     resolveGroupToolPolicy({
       config: params.cfgWithAgentDefaults,
       sessionKey: scheduledToolPolicy.ownerSessionKey,
-      messageProvider: callerContext.channel ?? undefined,
+      messageProvider: callerContext.local ? messageChannel : (callerContext.channel ?? undefined),
       accountId: scheduledToolPolicy.ownerAccountId,
       requireConfiguredAccount: true,
       senderPolicyMode: "never",

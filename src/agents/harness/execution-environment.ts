@@ -406,7 +406,7 @@ export function resolvePluginHarnessToolPolicies(
     config: params.config,
     sessionKey: params.scheduledToolPolicy?.ownerSessionKey ?? params.sessionKey,
     spawnedBy: params.spawnedBy,
-    messageProvider: callerContext.channel ?? undefined,
+    messageProvider: callerContext.local ? messageProvider : (callerContext.channel ?? undefined),
     groupId: params.groupId,
     groupChannel: params.groupChannel,
     groupSpace: params.groupSpace,

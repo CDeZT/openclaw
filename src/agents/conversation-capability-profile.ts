@@ -152,7 +152,7 @@ export function resolveConversationCapabilityProfile(params: ConversationCapabil
     preparedSessionEntry: params.preparedSessionEntry,
     agentId: effective.agentId,
     spawnedBy: params.spawnedBy,
-    messageProvider: callerContext.channel,
+    messageProvider: callerContext.local ? messageProvider : callerContext.channel,
     groupId: trustedGroup.groupId,
     groupChannel: trustedGroupChannel,
     groupSpace: trustedGroupSpace,
