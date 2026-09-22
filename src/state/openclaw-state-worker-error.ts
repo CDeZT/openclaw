@@ -12,6 +12,10 @@ import { StateDatabaseCoordinatorContentionError } from "../infra/state-database
 import { PluginBlobStoreError } from "../plugin-state/plugin-blob-store.types.js";
 import { SkillUploadRequestError } from "../skills/lifecycle/upload-store-error.js";
 import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "./openclaw-agent-db-migration-required.js";
+import {
+  DATABASE_QUARANTINE_READ_CLEANUP_ERROR_NAME,
+  OpenClawQuarantineReadCleanupError,
+} from "./openclaw-quarantine-error.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
 import {
   isOpenClawStateLeaseErrorCode,
@@ -204,7 +208,10 @@ export function encodeOpenClawStateWorkerError(
     for (const current of errors) {
       const identity = identifyError(current);
       const nativeOpen = isSqliteNativeOpenFailure(current);
-      canonical ||= nativeOpen || (identity.type !== "error" && identity.type !== "aggregate");
+      canonical ||=
+        nativeOpen ||
+        current instanceof OpenClawQuarantineReadCleanupError ||
+        (identity.type !== "error" && identity.type !== "aggregate");
       const code = "code" in current ? current.code : undefined;
       const errcode = "errcode" in current ? current.errcode : undefined;
       nodes.push({
@@ -500,7 +507,9 @@ function decodeErrorGraph(
       visited.add(ref);
       const node = nodes[ref]!;
       canonical ||=
-        node.nativeOpen === true || (node.type !== "error" && node.type !== "aggregate");
+        node.nativeOpen === true ||
+        (node.type === "aggregate" && node.name === DATABASE_QUARANTINE_READ_CLEANUP_ERROR_NAME) ||
+        (node.type !== "error" && node.type !== "aggregate");
       for (const edge of [...(node.cause ? [node.cause] : []), ...(node.errors ?? [])]) {
         if ("ref" in edge) {
           pending.push(edge.ref);
