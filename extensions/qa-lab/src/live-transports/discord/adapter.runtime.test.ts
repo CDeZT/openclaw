@@ -21,7 +21,7 @@ function mockAdapterIo() {
       sutBotToken: "sut-token",
       sutApplicationId: "323456789012345678",
     },
-    assertHealthy: vi.fn(),
+    assertHealthy() {},
     heartbeat: vi.fn(async () => {}),
     heartbeatIntervalMs: 30_000,
     leaseTtlMs: 120_000,
