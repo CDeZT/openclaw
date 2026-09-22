@@ -2,12 +2,24 @@ import { render } from "lit";
 import { describe, expect, it } from "vitest";
 import { i18n } from "../../i18n/index.ts";
 import { captureI18nStateForTesting } from "../../i18n/lib/translate.test-support.ts";
+import { createInitialCronState } from "../../lib/cron/index.ts";
 import { renderRunsSection } from "./view-runs.ts";
 
 type CronRunsSectionProps = Parameters<typeof renderRunsSection>[0];
 
-function createRunsProps(overrides: Partial<CronRunsSectionProps> = {}): CronRunsSectionProps {
-  return {
+type LegacyRunsProps = {
+  runs: CronRunsSectionProps["state"]["cronRuns"];
+  runsHasMore: boolean;
+  runsLoadingMore: boolean;
+  runsStatuses: CronRunsSectionProps["state"]["cronRunsStatuses"];
+  runsDeliveryStatuses: CronRunsSectionProps["state"]["cronRunsDeliveryStatuses"];
+  runsQuery: string;
+  runsSortDir: CronRunsSectionProps["state"]["cronRunsSortDir"];
+};
+type RunsOverrides = Partial<CronRunsSectionProps & LegacyRunsProps>;
+
+function createRunsProps(overrides: RunsOverrides = {}): CronRunsSectionProps {
+  const legacy = {
     basePath: "",
     agentId: "main",
     runs: [],
@@ -23,9 +35,24 @@ function createRunsProps(overrides: Partial<CronRunsSectionProps> = {}): CronRun
     onRunsFiltersChange: () => undefined,
     ...overrides,
   };
+  return {
+    ...legacy,
+    runsState: legacy.runsState as CronRunsSectionProps["runsState"],
+    state: {
+      ...createInitialCronState(),
+      cronRuns: legacy.runs,
+      cronRunsHasMore: legacy.runsHasMore,
+      cronRunsLoadingMore: legacy.runsLoadingMore,
+      cronRunsStatuses: legacy.runsStatuses,
+      cronRunsDeliveryStatuses: legacy.runsDeliveryStatuses,
+      cronRunsQuery: legacy.runsQuery,
+      cronRunsSortDir: legacy.runsSortDir as CronRunsSectionProps["state"]["cronRunsSortDir"],
+      ...overrides.state,
+    },
+  };
 }
 
-function renderRuns(overrides: Partial<CronRunsSectionProps> = {}) {
+function renderRuns(overrides: RunsOverrides = {}) {
   const container = document.createElement("div");
   render(renderRunsSection(createRunsProps(overrides)), container);
   return container;

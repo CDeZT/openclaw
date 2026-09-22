@@ -1,6 +1,7 @@
 import { render } from "lit";
 import { expect } from "vitest";
 import type { CronJob } from "../../api/types.ts";
+import { createInitialCronState } from "../../lib/cron/index.ts";
 import { DEFAULT_CRON_FORM } from "../../test-helpers/cron.ts";
 import type { CronProps } from "./view-types.ts";
 import { renderCron } from "./view.ts";
@@ -20,8 +21,12 @@ export function createCronViewJob(id: string, overrides: Partial<CronJob> = {}):
   } as CronJob;
 }
 
-function createCronViewProps(overrides: Partial<CronProps> = {}): CronProps {
-  return {
+type CronTestOverrides = Record<string, unknown>;
+
+function createCronViewProps<T extends CronTestOverrides>(overrides: T): CronProps & T;
+function createCronViewProps(): CronProps;
+function createCronViewProps(overrides: CronTestOverrides = {}): CronProps {
+  const legacy = {
     basePath: "",
     agentId: "main",
     loading: false,
@@ -32,7 +37,7 @@ function createCronViewProps(overrides: Partial<CronProps> = {}): CronProps {
     status: {
       enabled: true,
       triggersEnabled: true,
-      jobs: Math.max(overrides.jobsTotal ?? 0, overrides.jobs?.length ?? 0),
+      jobs: 0,
     },
     jobs: [],
     jobsTotal: 0,
@@ -56,6 +61,7 @@ function createCronViewProps(overrides: Partial<CronProps> = {}): CronProps {
     detailTab: "settings",
     channels: [],
     channelLabels: {},
+    channelMeta: [] as NonNullable<CronProps["channels"]["channelsSnapshot"]>["channelMeta"],
     runs: [],
     runsState: "ready",
     runsTotal: 0,
@@ -91,9 +97,59 @@ function createCronViewProps(overrides: Partial<CronProps> = {}): CronProps {
     onRunsFiltersChange: () => undefined,
     ...overrides,
   };
+  const state = createInitialCronState();
+  Object.assign(state, {
+    cronLoading: legacy.loading,
+    cronJobsError: legacy.listError,
+    cronJobsLoadingMore: legacy.jobsLoadingMore,
+    cronStatus: legacy.status,
+    cronJobs: legacy.jobs,
+    cronJobsTotal: legacy.jobsTotal,
+    cronJobsHasMore: legacy.jobsHasMore,
+    cronJobsSnapshotRevision: legacy.hasLoaded ? "test" : null,
+    cronJobsQuery: legacy.jobsQuery,
+    cronJobsEnabledFilter: legacy.jobsEnabledFilter,
+    cronJobsScheduleKindFilter: legacy.jobsScheduleKindFilter,
+    cronJobsLastStatusFilter: legacy.jobsLastStatusFilter,
+    cronJobsTriggerFilter: legacy.jobsTriggerFilter,
+    cronJobsSortBy: legacy.jobsSortBy,
+    cronJobsSortDir: legacy.jobsSortDir,
+    cronError: legacy.error,
+    cronBusy: legacy.busy,
+    cronForm: legacy.form,
+    cronFieldErrors: legacy.fieldErrors,
+    cronEditingJob: legacy.editingJob,
+    cronCreateOpen: legacy.createOpen,
+    cronRuns: legacy.runs,
+    cronRunsTotal: legacy.runsTotal,
+    cronRunsHasMore: legacy.runsHasMore,
+    cronRunsLoadingMore: legacy.runsLoadingMore,
+    cronRunsStatuses: legacy.runsStatuses,
+    cronRunsDeliveryStatuses: legacy.runsDeliveryStatuses,
+    cronRunsQuery: legacy.runsQuery,
+    cronRunsSortDir: legacy.runsSortDir,
+    ...(overrides.state as Partial<CronProps["state"]> | undefined),
+  });
+  const channels = {
+    channelsSnapshot: {
+      channelOrder: legacy.channels,
+      channelLabels: legacy.channelLabels,
+      channelMeta: legacy.channelMeta ?? [],
+    },
+  } as unknown as CronProps["channels"];
+  const suggestions: CronProps["suggestions"] = {
+    agentSuggestions: legacy.agentSuggestions,
+    modelSuggestions: legacy.modelSuggestions,
+    timezoneSuggestions: legacy.timezoneSuggestions,
+    deliveryToSuggestions: legacy.deliveryToSuggestions,
+    accountTargets: legacy.accountSuggestions,
+  };
+  return { ...legacy, state, channels, suggestions } as CronProps;
 }
 
-export function renderCronView(overrides: Partial<CronProps> = {}) {
+export function renderCronView(overrides: CronTestOverrides): HTMLDivElement;
+export function renderCronView(): HTMLDivElement;
+export function renderCronView(overrides: CronTestOverrides = {}) {
   const container = document.createElement("div");
   render(renderCron(createCronViewProps(overrides)), container);
   return container;

@@ -66,7 +66,6 @@ export type SessionMembersListEvidenceResult =
   import("../../../packages/gateway-protocol/src/index.js").SessionMembersListEvidenceResult;
 export type { SessionRunStatus } from "../../../packages/gateway-protocol/src/schema/sessions-row.js";
 export type ChannelsStatusSnapshot = ChannelsStatusResult;
-export type ChannelUiMetaEntry = NonNullable<ChannelsStatusResult["channelMeta"]>[number];
 export type ChannelAccountSnapshot = ChannelsStatusResult["channelAccounts"][string][number];
 
 type WhatsAppSelf = {

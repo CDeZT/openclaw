@@ -1,8 +1,6 @@
 import type {
-  ChannelUiMetaEntry,
   CronJob,
   CronRunLogEntry,
-  CronStatus,
   CronDeliveryStatus,
   CronJobsEnabledFilter,
   CronJobsScheduleKindFilter,
@@ -11,65 +9,25 @@ import type {
   CronJobsSortBy,
   CronSortDir,
 } from "../../api/types.ts";
+import type { ChannelsState } from "../../lib/channels/index.ts";
 import type { CronRunsViewState } from "../../lib/cron/runs.ts";
-import type {
-  CronFieldErrors,
-  CronFormState,
-  CronJobsLastStatusFilter,
-} from "../../lib/cron/types.ts";
+import type { CronFormState, CronJobsLastStatusFilter, CronState } from "../../lib/cron/types.ts";
+import type { buildCronSuggestions } from "./form-suggestions.ts";
 
 export type CronListTab = "tasks" | "activity";
 export type CronDetailTab = "settings" | "history";
 export type CronProps = {
-  basePath: string;
-  agentId: string;
-  loading: boolean;
-  /** True once a cron.list response has completed (initial load finished). */
-  hasLoaded: boolean;
-  listError: string | null;
+  state: CronState;
   /** Canonical gateway capability for every mutation-capable cron control. */
   canManage: boolean;
-  jobsLoadingMore: boolean;
-  status: CronStatus | null;
-  jobs: CronJob[];
-  jobsTotal: number;
-  jobsHasMore: boolean;
-  jobsQuery: string;
-  jobsEnabledFilter: CronJobsEnabledFilter;
-  jobsScheduleKindFilter: CronJobsScheduleKindFilter;
-  jobsLastStatusFilter: CronJobsLastStatusFilter;
-  jobsTriggerFilter: CronJobsTriggerFilter;
-  jobsSortBy: CronJobsSortBy;
-  jobsSortDir: CronSortDir;
   error: string | null;
-  busy: boolean;
-  form: CronFormState;
   heartbeatScratch: string;
-  fieldErrors: CronFieldErrors;
-  canSubmit: boolean;
-  editingJob: CronJob | null;
-  createOpen: boolean;
   listTab: CronListTab;
   detailTab: CronDetailTab;
-  channels: string[];
-  channelLabels?: Record<string, string>;
-  channelMeta?: ChannelUiMetaEntry[];
-  runs: CronRunLogEntry[];
+  channels: ChannelsState;
   runsState: CronRunsViewState;
   highlightedRunId?: string | null;
-  runsTotal: number;
-  runsHasMore: boolean;
-  runsLoadingMore: boolean;
-  runsStatuses: CronRunsStatusValue[];
-  runsDeliveryStatuses: CronDeliveryStatus[];
-  runsQuery: string;
-  runsSortDir: CronSortDir;
-  agentSuggestions: string[];
-  modelSuggestions: string[];
-  thinkingSuggestions: string[];
-  timezoneSuggestions: string[];
-  deliveryToSuggestions: string[];
-  accountSuggestions: string[];
+  suggestions: ReturnType<typeof buildCronSuggestions>;
   onListTabChange: (tab: CronListTab) => void;
   onDetailTabChange: (tab: CronDetailTab) => void;
   onFormChange: (patch: Partial<CronFormState>) => void;

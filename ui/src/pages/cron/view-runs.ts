@@ -9,6 +9,7 @@ import "../../components/web-awesome.ts";
 import { toSanitizedMarkdownHtml } from "../../components/markdown.ts";
 import { i18n, t } from "../../i18n/index.ts";
 import { registerCronEnglish } from "../../i18n/locales/en-cron.ts";
+import { isCronJobActiveFailure, isCronJobRunning } from "../../lib/cron-status.ts";
 import { formatDurationCompact, formatDurationHuman } from "../../lib/format-duration.ts";
 import { formatUiExternalText } from "../../lib/format-error.ts";
 import {
@@ -21,19 +22,91 @@ import type { CronProps } from "./view-types.ts";
 
 registerCronEnglish();
 
+type CronJob = CronProps["state"]["cronJobs"][number];
+
+export function renderJobStateIndicator(job: CronJob) {
+  const autoDisabled = job.state?.autoDisabled;
+  const state = isCronJobRunning(job)
+    ? {
+        className: "cron-table__state--running",
+        iconName: "loader" as const,
+        label: t("cron.runs.runStatusRunning"),
+      }
+    : autoDisabled
+      ? {
+          className: "cron-table__state--error",
+          iconName: "lock" as const,
+          label: disabledNoteLabel(job),
+        }
+      : isCronJobActiveFailure(job)
+        ? {
+            className: "cron-table__state--error",
+            iconName: "alertTriangle" as const,
+            label: t("cron.runs.runStatusError"),
+          }
+        : !job.enabled
+          ? {
+              className: "cron-table__state--paused",
+              iconName: "pause" as const,
+              label: t("cron.list.paused"),
+            }
+          : {
+              className: "cron-table__state--active",
+              iconName: null,
+              label: t("cron.detail.active"),
+            };
+  return html`<span
+    class="cron-table__state ${state.className}"
+    role="img"
+    aria-label=${state.label}
+    title=${state.label}
+    >${state.iconName ? icon(state.iconName) : html`<span class="cron-table__state-dot"></span>`}</span
+  >`;
+}
+
+export function renderTriggerIndicator() {
+  const label = t("cron.form.triggerConfigured");
+  return html`<span class="cron-trigger-icon" role="img" aria-label=${label} title=${label}
+    >${icon("gitBranch")}</span
+  >`;
+}
+
+/** Auto-disabled is the escalated failure state, not an operator pause: the
+ * recorded fact (state.autoDisabled) must stay visible or the job silently
+ * drops out of every failure surface the moment the problem became permanent. */
+export function renderDisabledNote(job: CronJob) {
+  const autoDisabled = job.state?.autoDisabled;
+  if (!autoDisabled) {
+    return html`<span class="muted cron-table__paused-note">${t("cron.list.paused")}</span>`;
+  }
+  const label = disabledNoteLabel(job);
+  const lastError = job.state?.lastError?.trim();
+  return html`<span
+    class="cron-table__paused-note cron-table__auto-disabled"
+    data-test-id=${`cron-row-auto-disabled-${job.id}`}
+    title=${lastError ? formatUiExternalText(lastError) : label}
+    >${label}</span
+  >`;
+}
+
+function disabledNoteLabel(job: CronJob) {
+  const autoDisabled = job.state?.autoDisabled;
+  if (!autoDisabled) {
+    return t("cron.list.paused");
+  }
+  return t(
+    autoDisabled.reason === "schedule-errors"
+      ? "cron.list.autoDisabledScheduleErrors"
+      : "cron.list.autoDisabledRunFailures",
+    { count: String(autoDisabled.consecutiveErrors) },
+  );
+}
+
 type CronRunsSectionProps = Pick<
   CronProps,
-  | "basePath"
-  | "agentId"
-  | "runs"
+  | "state"
   | "runsState"
   | "highlightedRunId"
-  | "runsHasMore"
-  | "runsLoadingMore"
-  | "runsStatuses"
-  | "runsDeliveryStatuses"
-  | "runsQuery"
-  | "runsSortDir"
   | "onLoadMoreRuns"
   | "onRefresh"
   | "onRunsFiltersChange"
@@ -201,25 +274,25 @@ function renderFilterDropdown(params: {
 
 export function renderRunsSection(props: CronRunsSectionProps) {
   const formatTimestamp = createMsFormatter();
-  const runs = props.runs.toSorted((a, b) =>
-    props.runsSortDir === "asc" ? a.ts - b.ts : b.ts - a.ts,
+  const runs = props.state.cronRuns.toSorted((a, b) =>
+    props.state.cronRunsSortDir === "asc" ? a.ts - b.ts : b.ts - a.ts,
   );
   const hasRunFilters =
-    props.runsQuery.trim().length > 0 ||
-    props.runsStatuses.length > 0 ||
-    props.runsDeliveryStatuses.length > 0;
+    props.state.cronRunsQuery.trim().length > 0 ||
+    props.state.cronRunsStatuses.length > 0 ||
+    props.state.cronRunsDeliveryStatuses.length > 0;
   const runStatusOptions = getRunStatusOptions();
   const runDeliveryOptions = getRunDeliveryOptions();
   const selectedStatusLabels = runStatusOptions
-    .filter((option) => props.runsStatuses.includes(option.value))
+    .filter((option) => props.state.cronRunsStatuses.includes(option.value))
     .map((option) => option.label);
   const selectedDeliveryLabels = runDeliveryOptions
-    .filter((option) => props.runsDeliveryStatuses.includes(option.value))
+    .filter((option) => props.state.cronRunsDeliveryStatuses.includes(option.value))
     .map((option) => option.label);
   const statusSummary = summarizeSelection(selectedStatusLabels, t("cron.runs.allStatuses"));
   const deliverySummary = summarizeSelection(selectedDeliveryLabels, t("cron.runs.allDelivery"));
   const sortLabel =
-    props.runsSortDir === "asc" ? t("cron.runs.oldestFirst") : t("cron.runs.newestFirst");
+    props.state.cronRunsSortDir === "asc" ? t("cron.runs.oldestFirst") : t("cron.runs.newestFirst");
   return html`
     <div class="cron-runs" aria-busy=${String(props.runsState === "pending")}>
       ${props.conditionActivity ? renderConditionActivity(props.conditionActivity) : nothing}
@@ -229,7 +302,7 @@ export function renderRunsSection(props: CronRunsSectionProps) {
           <input
             type="search"
             class="settings-input"
-            .value=${props.runsQuery}
+            .value=${props.state.cronRunsQuery}
             aria-label=${t("cron.runs.searchRuns")}
             placeholder=${t("cron.runs.searchPlaceholder")}
             @input=${(e: Event) =>
@@ -241,9 +314,13 @@ export function renderRunsSection(props: CronRunsSectionProps) {
           title: t("cron.runs.status"),
           summary: statusSummary,
           options: runStatusOptions,
-          selected: props.runsStatuses,
+          selected: props.state.cronRunsStatuses,
           onToggle: (value, checked) => {
-            const next = toggleSelection(props.runsStatuses, value as CronRunsStatusValue, checked);
+            const next = toggleSelection(
+              props.state.cronRunsStatuses,
+              value as CronRunsStatusValue,
+              checked,
+            );
             void props.onRunsFiltersChange({ cronRunsStatuses: next });
           },
           onClear: () => {
@@ -255,10 +332,10 @@ export function renderRunsSection(props: CronRunsSectionProps) {
           title: t("cron.runs.delivery"),
           summary: deliverySummary,
           options: runDeliveryOptions,
-          selected: props.runsDeliveryStatuses,
+          selected: props.state.cronRunsDeliveryStatuses,
           onToggle: (value, checked) => {
             const next = toggleSelection(
-              props.runsDeliveryStatuses,
+              props.state.cronRunsDeliveryStatuses,
               value as CronDeliveryStatus,
               checked,
             );
@@ -288,16 +365,22 @@ export function renderRunsSection(props: CronRunsSectionProps) {
               <span>${sortLabel}</span>
               ${icon("chevronDown")}
             </button>
-            <wa-dropdown-item value="desc" aria-current=${String(props.runsSortDir === "desc")}>
+            <wa-dropdown-item
+              value="desc"
+              aria-current=${String(props.state.cronRunsSortDir === "desc")}
+            >
               ${t("cron.runs.newestFirst")}
               <span slot="details" aria-hidden="true">
-                ${props.runsSortDir === "desc" ? icon("check") : nothing}
+                ${props.state.cronRunsSortDir === "desc" ? icon("check") : nothing}
               </span>
             </wa-dropdown-item>
-            <wa-dropdown-item value="asc" aria-current=${String(props.runsSortDir === "asc")}>
+            <wa-dropdown-item
+              value="asc"
+              aria-current=${String(props.state.cronRunsSortDir === "asc")}
+            >
               ${t("cron.runs.oldestFirst")}
               <span slot="details" aria-hidden="true">
-                ${props.runsSortDir === "asc" ? icon("check") : nothing}
+                ${props.state.cronRunsSortDir === "asc" ? icon("check") : nothing}
               </span>
             </wa-dropdown-item>
           </wa-dropdown>
@@ -351,14 +434,14 @@ export function renderRunsSection(props: CronRunsSectionProps) {
             `
       }
       ${
-        props.runsHasMore
+        props.state.cronRunsHasMore
           ? html`
               <button
                 class="btn btn--sm cron-load-more"
-                ?disabled=${props.runsLoadingMore}
+                ?disabled=${props.state.cronRunsLoadingMore}
                 @click=${props.onLoadMoreRuns}
               >
-                ${props.runsLoadingMore ? t("cron.list.loading") : t("cron.runs.loadMore")}
+                ${props.state.cronRunsLoadingMore ? t("cron.list.loading") : t("cron.runs.loadMore")}
               </button>
             `
           : nothing

@@ -17,7 +17,6 @@ import {
   addCronJob,
   cancelCronEdit,
   createInitialCronState,
-  hasCronFormErrors,
   invalidateCronRefresh,
   loadCronJobsPage,
   loadCronStatus,
@@ -40,12 +39,11 @@ import type { CronFormState, CronState } from "../../lib/cron/types.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { loadModelCatalog, modelCatalogRefreshError } from "../../lib/model-catalog-store.ts";
 import { shouldHandleNavigationClick } from "../../lib/navigation-click.ts";
-import { resolveSessionNavigationAgentId } from "../../lib/sessions/route-navigation.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import { CronEditorClearance } from "./editor-clearance.ts";
-import { buildCronSuggestions, THINKING_SUGGESTIONS } from "./form-suggestions.ts";
+import { buildCronSuggestions } from "./form-suggestions.ts";
 import { resolveCronRouteData } from "./route-model.ts";
 import { CronRunTranscript } from "./run-transcript.ts";
 import type { CronDetailTab, CronListTab } from "./view-types.ts";
@@ -553,7 +551,6 @@ class CronPage extends OpenClawLightDomElement {
 
   override render() {
     const channels = this.context.channels.state;
-    const fallbackAgentId = resolveSessionNavigationAgentId(this.context);
     const suggestions = buildCronSuggestions({
       channels,
       runtimeConfig: this.context.runtimeConfig.state,
@@ -588,55 +585,16 @@ class CronPage extends OpenClawLightDomElement {
       ${this.runTranscript.render()}
       ${renderSettingsWorkspace(
         renderCron({
-          basePath: this.context.basePath,
-          agentId: fallbackAgentId,
-          loading: this.cron.cronLoading,
-          hasLoaded: this.cron.cronJobsSnapshotRevision !== null,
-          listError: this.cron.cronJobsError,
+          state: this.cron,
           canManage,
-          status: this.cron.cronStatus,
-          jobs: this.cron.cronJobs,
-          jobsLoadingMore: this.cron.cronJobsLoadingMore,
-          jobsTotal: this.cron.cronJobsTotal,
-          jobsHasMore: this.cron.cronJobsHasMore,
-          jobsQuery: this.cron.cronJobsQuery,
-          jobsEnabledFilter: this.cron.cronJobsEnabledFilter,
-          jobsScheduleKindFilter: this.cron.cronJobsScheduleKindFilter,
-          jobsLastStatusFilter: this.cron.cronJobsLastStatusFilter,
-          jobsTriggerFilter: this.cron.cronJobsTriggerFilter,
-          jobsSortBy: this.cron.cronJobsSortBy,
-          jobsSortDir: this.cron.cronJobsSortDir,
-          editingJob: this.cron.cronEditingJob,
-          createOpen: this.cron.cronCreateOpen,
           listTab: this.listTab,
           detailTab: this.detailTab,
           error: this.cron.cronError ?? this.cron.cronRunsError ?? this.modelSuggestionsError,
-          busy: this.cron.cronBusy,
-          form: this.cron.cronForm,
           heartbeatScratch: canManage ? this.heartbeatScratch : "",
-          channels: channels.channelsSnapshot?.channelMeta?.length
-            ? channels.channelsSnapshot.channelMeta.map((entry) => entry.id)
-            : (channels.channelsSnapshot?.channelOrder ?? []),
-          channelLabels: channels.channelsSnapshot?.channelLabels ?? {},
-          channelMeta: channels.channelsSnapshot?.channelMeta ?? [],
-          runs: this.cron.cronRuns,
+          channels,
           runsState: getCronRunsViewState(this.cron),
           highlightedRunId: this.highlightedRunId,
-          runsTotal: this.cron.cronRunsTotal,
-          runsHasMore: this.cron.cronRunsHasMore,
-          runsLoadingMore: this.cron.cronRunsLoadingMore,
-          runsStatuses: this.cron.cronRunsStatuses,
-          runsDeliveryStatuses: this.cron.cronRunsDeliveryStatuses,
-          runsQuery: this.cron.cronRunsQuery,
-          runsSortDir: this.cron.cronRunsSortDir,
-          fieldErrors: this.cron.cronFieldErrors,
-          canSubmit: !hasCronFormErrors(this.cron.cronFieldErrors),
-          agentSuggestions: suggestions.agentSuggestions,
-          modelSuggestions: suggestions.modelSuggestions,
-          thinkingSuggestions: THINKING_SUGGESTIONS,
-          timezoneSuggestions: suggestions.timezoneSuggestions,
-          deliveryToSuggestions: suggestions.deliveryToSuggestions,
-          accountSuggestions: suggestions.accountTargets,
+          suggestions,
           onListTabChange: (tab) => {
             this.listTab = tab;
           },
