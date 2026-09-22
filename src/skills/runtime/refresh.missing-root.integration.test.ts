@@ -214,13 +214,13 @@ it("refreshes skills created beneath an initially missing project skills root", 
 });
 
 describe("shared missing skill ancestors", () => {
-  let captureFailure: (() => void) | undefined;
+  let captureFailure: ((stage: "before test teardown" | "afterEach fallback") => void) | undefined;
   const roots = useAutoCleanupTempDirTracker((cleanup) =>
     afterEach(async ({ task }) => {
-      // onTestFailed runs after afterEach. Freeze the failed operation's state
-      // before closing watches or clearing their pending timers.
+      // Setup/teardown failures may bypass the operation catch. Test teardown
+      // may already have run; never replace an earlier snapshot.
       if (task.result?.state === "fail") {
-        captureFailure?.();
+        captureFailure?.("afterEach fallback");
       }
       captureFailure = undefined;
       const { closeSkillsWatchers } = await import("./refresh.js");
@@ -270,8 +270,12 @@ describe("shared missing skill ancestors", () => {
           stack: string | undefined;
         }
       >();
-      captureFailure = () => {
+      captureFailure = (captureStage) => {
+        if (failureSnapshot !== undefined) {
+          return;
+        }
         failureSnapshot = JSON.stringify({
+          captureStage,
           ancestor,
           phase,
           pendingTimers: Array.from(pendingTimers.values(), ({ delayMs, createdAt, stack }) => ({
@@ -291,7 +295,7 @@ describe("shared missing skill ancestors", () => {
         });
       };
       onTestFailed(() => {
-        console.error(`[skills ancestor failure before cleanup] ${failureSnapshot}`);
+        console.error(`[skills ancestor failure] ${failureSnapshot}`);
       });
       const root = await fs.realpath(roots.make("skills-shared-ancestor-"));
       const source = (name: string) => {
@@ -513,6 +517,13 @@ describe("shared missing skill ancestors", () => {
         await writeSkill(second, "recreated-proof");
         phase = "discover recreated sibling skill";
         await expect.poll(() => read(second), { timeout: 3_000 }).toContain("recreated-proof");
+      } catch (error) {
+        try {
+          captureFailure?.("before test teardown");
+        } finally {
+          // Diagnostic capture must not replace the original operation failure.
+          throw error;
+        }
       } finally {
         unregister();
         await closeSkillsWatchers(true);
