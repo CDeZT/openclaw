@@ -5290,9 +5290,15 @@ describe("ci workflow guards", () => {
   );
 
   it.each([
+    ["pull_request", "compact", "hybrid", 131],
+    ["pull_request", "precise", "hybrid", 131],
     ["pull_request", "compact", "blacksmith", 130],
+    ["pull_request", "precise", "blacksmith", 130],
+    ["pull_request", "compact", "github", 130],
     ["pull_request", "precise", "github", 130],
     ["push", "compact", "hybrid", 70],
+    ["push", "compact", "blacksmith", 70],
+    ["push", "compact", "github", 70],
     ["workflow_dispatch", "compact", "blacksmith", null],
   ] as const)(
     "bounds the final Node matrix for %s %s plans",

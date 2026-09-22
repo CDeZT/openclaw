@@ -362,7 +362,7 @@ async function main() {
     `Sampled successful main CI, release-check and PR merge-ref runs: ${runIds.join(", ")}\n`,
   );
   console.log(`Timing source: ${timings.source}\n`);
-  console.log("| Key | Old seconds | New seconds | Delta |\n| --- | ---: | ---: | ---: |");
+  console.log("| Key | Old value | New value | Delta |\n| --- | ---: | ---: | ---: |");
   for (const change of changes) {
     const delta =
       change.next === undefined
@@ -373,7 +373,9 @@ async function main() {
     console.log(`| ${change.key} | ${change.old ?? "—"} | ${change.next ?? "—"} | ${delta} |`);
   }
   if (changes.length === 0) {
-    console.log("\nNo timing changes exceed the 15% write threshold.");
+    console.log(
+      "\nNo timing changes exceed the 15% write threshold and no capacity metadata changed.",
+    );
   } else if (!values["dry-run"]) {
     mkdirSync(path.dirname(values.out), { recursive: true });
     writeFileSync(values.out, `${JSON.stringify(timings, null, 2)}\n`);

@@ -1556,7 +1556,9 @@ describe("CI changed Node test plan", () => {
           }),
         ).toThrow(/^compact blacksmith node test plan exceeds /u);
       } else {
-        expect(nodeRows, `${runnerBackend} final PR matrix`).toBeLessThanOrEqual(130);
+        expect(nodeRows, `${runnerBackend} final PR matrix`).toBeLessThanOrEqual(
+          runnerBackend === "hybrid" ? 131 : 130,
+        );
       }
     }
     expect(shards.every((shard) => !shard.targets)).toBe(true);

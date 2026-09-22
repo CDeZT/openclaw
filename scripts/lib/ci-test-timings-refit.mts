@@ -463,11 +463,14 @@ function runtimePlacementSecondsMap(observations: readonly RuntimePlacementTimin
   );
 }
 
-function compactWorkerSecondsMap(observations: readonly CompactWorkerTiming[] = []) {
+function compactWorkerValueMap(
+  observations: readonly CompactWorkerTiming[] | undefined,
+  field: "seconds" | "totalMemoryBytes",
+) {
   return Object.fromEntries(
-    observations.map((observation) => [
+    (observations ?? []).map((observation) => [
       compactWorkerTimingIdentity(observation),
-      observation.seconds,
+      observation[field],
     ]),
   );
 }
@@ -682,13 +685,16 @@ export function refitTestTimings(
     // PRs can select arbitrary subsets. Keep unobserved classes and workloads;
     // one run, including retries, cannot establish a new class measurement.
     compactWorkerTimings: Object.entries(
-      refitMap(samples.compactWorkers, compactWorkerSecondsMap(previous?.compactWorkerTimings), 0),
-    ).map(([identity, measuredSeconds]) => {
-      const retained = previousCompactWorkers.get(identity);
-      return retained?.seconds === measuredSeconds
-        ? retained
-        : Object.assign({}, compactWorkerDescriptors.get(identity)!, { seconds: measuredSeconds });
-    }),
+      refitMap(
+        samples.compactWorkers,
+        compactWorkerValueMap(previous?.compactWorkerTimings, "seconds"),
+        0,
+      ),
+    ).map(([identity, measuredSeconds]) =>
+      // Capacity evidence remains conservative even when the duration stays inside
+      // the retention threshold; the descriptor already holds the observed minimum.
+      Object.assign({}, compactWorkerDescriptors.get(identity)!, { seconds: measuredSeconds }),
+    ),
     repoE2eFileSeconds: refitMap(
       samples.repoE2e,
       previous?.repoE2eFileSeconds,
@@ -742,8 +748,13 @@ export function refitTestTimings(
   const comparedMaps: [string, Record<string, number>, Record<string, number> | undefined][] = [
     [
       "compactWorkerTimings",
-      compactWorkerSecondsMap(timings.compactWorkerTimings),
-      compactWorkerSecondsMap(previous?.compactWorkerTimings),
+      compactWorkerValueMap(timings.compactWorkerTimings, "seconds"),
+      compactWorkerValueMap(previous?.compactWorkerTimings, "seconds"),
+    ],
+    [
+      "compactWorkerTimings.totalMemoryBytes",
+      compactWorkerValueMap(timings.compactWorkerTimings, "totalMemoryBytes"),
+      compactWorkerValueMap(previous?.compactWorkerTimings, "totalMemoryBytes"),
     ],
     ...(["blacksmith", "github"] as const).map(
       (profile): [string, Record<string, number>, Record<string, number>] => [

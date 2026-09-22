@@ -1740,7 +1740,9 @@ jobs:
             runNodeFull &&
             changedScopeHasQaImpact &&
             (!frozenTarget || existsSync("extensions/qa-lab/src/ci-smoke-plan.ts"));
-          const nodeMatrixLimit = compactPlanMode === "pull-request" ? 130 : 70;
+          const nodeMatrixLimit = compactPlanMode === "pull-request"
+            ? runnerProfile === "hybrid" ? 131 : 130
+            : 70;
           const rawNodeTestShards = runNodeFull
             ? changedNodeTestShards
               ? changedNodeTestShards

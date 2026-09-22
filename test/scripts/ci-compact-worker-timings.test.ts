@@ -191,6 +191,31 @@ describe("compact worker timing refit", () => {
     ).toEqual([]);
   });
 
+  it.each([480, 500])(
+    "retains lower observed memory when a %ss sample keeps the duration",
+    (seconds) => {
+      const runs = (ids: number[], duration: number, memoryGiB: number) =>
+        ids.map((id) =>
+          timingRun(id, [
+            { kind: "tooling", labels: [runner], text: workerLog(duration, { memoryGiB }) },
+          ]),
+        );
+      const previous = refitTestTimings(runs([1, 2], 480, 8)).timings;
+      const result = refitTestTimings(runs([3, 4], seconds, 7), previous);
+      expect(result.timings.compactWorkerTimings).toEqual([
+        expect.objectContaining({ seconds: 480, totalMemoryBytes: 7 * 1024 ** 3 }),
+      ]);
+      expect(result.changes).toEqual([
+        expect.objectContaining({
+          key: expect.stringContaining("totalMemoryBytes"),
+          old: 8 * 1024 ** 3,
+          next: 7 * 1024 ** 3,
+        }),
+      ]);
+      expect(refitTestTimings(runs([5, 6], seconds, 9), result.timings).changes).toEqual([]);
+    },
+  );
+
   it.each([
     workerLog(80).replace(/.*\[shard:resources\].*\n/u, ""),
     workerLog(80).replace("end (exit 0)", "end (exit 1)"),
@@ -265,36 +290,57 @@ describe("compact worker sampler provenance", () => {
     },
   };
 
-  it("samples PR capacity observations when the selected workload contains no tooling files", () => {
-    withSamplerFixture(
-      {
-        baseline: retained,
-        runs: [samplerRun(1), samplerRun(2)],
-        toolingRuns: [3, 4].map((id) =>
-          samplerRun(id, { event: "pull_request", head_branch: "feature" }),
-        ),
-        jobs: [
-          samplerJob(11, 1),
-          samplerJob(21, 2),
-          ...[3, 4].map((id) => samplerJob(id * 10, id, { log: workerLog(480) })),
-        ],
-      },
-      (fixture) => {
-        const result = fixture.invoke();
-        expect(result.status, result.stderr).toBe(0);
-        const timings = ciTestTimingsSchema.parse(JSON.parse(fixture.contents()));
-        expect(timings.compactWorkerTimings).toEqual([
-          expect.objectContaining({ workers: 2, seconds: 480 }),
-        ]);
-        expect(timings.compactGroupSeconds).toEqual(retained.compactGroupSeconds);
-        expect(timings.runtimePlacementTimings).toEqual(retained.runtimePlacementTimings);
-        expect(timings.toolingFileSeconds).toEqual(retained.toolingFileSeconds);
-        expect(result.stdout).toContain("Independent compact worker contributors: 2.");
-        expect(timings.source).toContain("main CI runs: 1, 2;");
-        expect(timings.source).toContain(
-          "pull_request CI merge-ref runs (tooling files and exact compact worker observations): 3, 4",
-        );
-      },
-    );
-  });
+  it.each([false, true])(
+    "samples PR capacity without tooling files (retained class=%s)",
+    (hasRetainedClass) => {
+      const previous = {
+        ...retained,
+        compactWorkerTimings: hasRetainedClass
+          ? refitTestTimings(
+              [1, 2].map((id) =>
+                timingRun(id, [
+                  {
+                    kind: "tooling",
+                    labels: ["blacksmith-4vcpu-ubuntu-2404"],
+                    text: workerLog(480),
+                  },
+                ]),
+              ),
+            ).timings.compactWorkerTimings
+          : [],
+      };
+      withSamplerFixture(
+        {
+          baseline: previous,
+          runs: [samplerRun(1), samplerRun(2)],
+          toolingRuns: [3, 4].map((id) =>
+            samplerRun(id, { event: "pull_request", head_branch: "feature" }),
+          ),
+          jobs: [
+            samplerJob(11, 1),
+            samplerJob(21, 2),
+            ...[3, 4].map((id) =>
+              samplerJob(id * 10, id, { log: workerLog(480, { memoryGiB: 7 }) }),
+            ),
+          ],
+        },
+        (fixture) => {
+          const result = fixture.invoke();
+          expect(result.status, result.stderr).toBe(0);
+          const timings = ciTestTimingsSchema.parse(JSON.parse(fixture.contents()));
+          expect(timings.compactWorkerTimings).toEqual([
+            expect.objectContaining({ workers: 2, seconds: 480, totalMemoryBytes: 7 * 1024 ** 3 }),
+          ]);
+          expect(timings.compactGroupSeconds).toEqual(retained.compactGroupSeconds);
+          expect(timings.runtimePlacementTimings).toEqual(retained.runtimePlacementTimings);
+          expect(timings.toolingFileSeconds).toEqual(retained.toolingFileSeconds);
+          expect(result.stdout).toContain("Independent compact worker contributors: 2.");
+          expect(timings.source).toContain("main CI runs: 1, 2;");
+          expect(timings.source).toContain(
+            "pull_request CI merge-ref runs (tooling files and exact compact worker observations): 3, 4",
+          );
+        },
+      );
+    },
+  );
 });
