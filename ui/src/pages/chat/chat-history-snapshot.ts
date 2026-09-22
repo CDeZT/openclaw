@@ -71,6 +71,13 @@ export type ChatHistoryResponse =
 export type ChatHistoryObservation = {
   owner: ChatHistorySessions;
   reconcile: ReturnType<ChatHistorySessions["captureReconcile"]>;
+  run?: ChatHistoryRunObservation;
+};
+
+export type ChatHistoryRunObservation = {
+  runId: string;
+  sessionId: string;
+  isCurrent: () => boolean;
 };
 
 export type ObservedChatHistoryResult = ChatHistoryResult & {

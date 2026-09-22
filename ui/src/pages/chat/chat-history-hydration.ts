@@ -13,6 +13,7 @@ import {
 import { isSessionRunActive } from "../../lib/session-run-state.ts";
 import { requestSharedHistory } from "./chat-history-request.ts";
 import {
+  type ChatHistoryRunObservation,
   type ObservedChatHistoryResult,
   isHistoryCursor,
   resolveChatHistoryPagination,
@@ -101,6 +102,22 @@ export async function hydrateChatHistory(
 ): Promise<ObservedChatHistoryResult | undefined> {
   const ownership = beginHistoryRequest(state, client, connectionEpoch, sessionKey, requestAgentId);
   const isCurrent = () => state.sessions === sessions && acceptsHistoryResult(state, ownership);
+  const captureRun = (): ChatHistoryRunObservation | undefined => {
+    const runId = state.chatRunId;
+    const sessionId = state.currentSessionId;
+    const generation = state.chatRunLifecycleGeneration ?? 0;
+    return isCurrent() && runId && sessionId
+      ? {
+          runId,
+          sessionId,
+          isCurrent: () =>
+            isCurrent() &&
+            state.chatRunId === runId &&
+            (state.chatRunLifecycleGeneration ?? 0) === generation &&
+            state.currentSessionId === sessionId,
+        }
+      : undefined;
+  };
   const startedAtMs = controlUiNowMs();
   const previousMessages = state.chatMessages;
   const previousRunProjections = readRunProjections(state, sessionKey, requestAgentId);
@@ -129,7 +146,7 @@ export async function hydrateChatHistory(
       sessionKey,
       requestAgentId,
       state,
-      isCurrent,
+      { isCurrent, captureRun },
       deltaCursor,
       inputRunIds,
     );
@@ -153,7 +170,7 @@ export async function hydrateChatHistory(
         sessionKey,
         requestAgentId,
         state,
-        isCurrent,
+        { isCurrent, captureRun },
         undefined,
         inputRunIds,
       );

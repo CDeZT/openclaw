@@ -20,6 +20,7 @@ import {
   uiSessionRowMatchesSelectedChat,
   type UiSessionDefaultsHost,
 } from "../../lib/sessions/session-key.ts";
+import type { ChatHistoryRunObservation } from "./chat-history-snapshot.ts";
 import type { ChatRunStartupState } from "./chat-run-startup.ts";
 import { readChatSessionActionAccess } from "./chat-session-action-access.ts";
 import { formatConnectError } from "./connect-error.ts";
@@ -711,7 +712,11 @@ export function reconcileChatRunAfterSessionStatePublication(host: RunLifecycleH
 export function reconcileChatRunFromSessionRow(
   host: RunLifecycleHost,
   row: GatewaySessionRow,
-  options: { publishRunStatus?: boolean } = {},
+  options: {
+    publishRunStatus?: boolean;
+    // Null marks history with no usable run observation.
+    historyRun?: ChatHistoryRunObservation | null;
+  } = {},
 ): boolean {
   if (!uiSessionRowMatchesSelectedChat(host, row.key, host.sessionKey, row.agentId)) {
     return false;
@@ -736,6 +741,28 @@ export function reconcileChatRunFromSessionRow(
     return false;
   }
   const runId = host.chatRunId;
+  if (runId && row.lastRunId !== runId && (row.lastRunId || options.historyRun !== undefined)) {
+    const historyRun = options.historyRun;
+    if (
+      row.hasActiveRun !== false ||
+      !historyRun ||
+      historyRun.runId !== runId ||
+      historyRun.sessionId !== row.sessionId ||
+      !historyRun.isCurrent()
+    ) {
+      return false;
+    }
+    // A fresh idle read can retire custody without identifying this run's outcome.
+    // An identity-less response still cannot retire a run that began after issuance.
+    reconcileChatRunLifecycle(host, {
+      runId,
+      clearLocalRun: true,
+      clearChatStream: true,
+      clearToolStreamForRun: true,
+      clearRunStatus: true,
+    });
+    return true;
+  }
   let errorMessage: string | undefined;
   if (runId && row.lastRunId === runId && (row.status === "failed" || row.status === "timeout")) {
     // Session publication can beat (or replace) chat.error. Show its diagnostic
