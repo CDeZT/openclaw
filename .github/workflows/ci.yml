@@ -5606,7 +5606,6 @@ jobs:
             '
           )"
           mkdir -p apps/ios/build/LifecycleTestResults
-          echo "simulator_id=${simulator_id}" >> "$GITHUB_OUTPUT"
           run_apple_command_logged apps/ios/build/LifecycleTestResults/OpenClawVoiceCleanupTests.log xcodebuild \
             -project apps/ios/OpenClaw.xcodeproj \
             -scheme OpenClaw \
@@ -5619,22 +5618,6 @@ jobs:
             -only-testing:OpenClawTests/TalkRealtimeTranscriptWriteQueueTests \
             -only-testing:OpenClawTests/TalkModeManagerTests \
             test
-
-      # Task-only before/after evidence for #154839. Remove this caller and helper
-      # after capture; it does not extend the delivered smoke-test contract.
-      - name: Capture PR 154839 Guest model policy on iOS
-        id: ios_guest_model_policy_proof
-        if: >-
-          github.event_name == 'pull_request' && github.repository == 'openclaw/openclaw' &&
-          github.event.pull_request.number == 154839 && github.run_attempt == 1 &&
-          matrix.phase == 'smoke' && needs.preflight.outputs.compatibility_target == 'false'
-        env:
-          IOS_GUEST_POLICY_SIMULATOR: ${{ steps.ios_voice_cleanup_tests.outputs.simulator_id }}
-          IOS_GUEST_POLICY_CHECKOUT_SHA: ${{ needs.preflight.outputs.checkout_revision }}
-          IOS_GUEST_POLICY_BASE_SHA: ${{ needs.preflight.outputs.diff_base_revision }}
-          IOS_GUEST_POLICY_PUBLIC_HEAD: ${{ github.event.pull_request.head.sha }}
-          IOS_GUEST_POLICY_PHASE: ${{ matrix.phase }}
-        run: node scripts/temporary-pr-154839-ios-proof.mjs
 
       # App compilation and screenshots do not execute approval or notification
       # lifecycles. Exercise both owners on the already provisioned simulator.
@@ -5762,7 +5745,6 @@ jobs:
           path: |
             apps/ios/build/LifecycleTestResults/*.xcresult
             apps/ios/build/LifecycleTestResults/*.log
-            apps/ios/build/LifecycleTestResults/GuestModelPolicyPR154839/
           if-no-files-found: warn
           retention-days: 14
 

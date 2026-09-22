@@ -1,12 +1,14 @@
 /* @vitest-environment jsdom */
 
 import { DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS } from "@openclaw/gateway-client/browser";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
-import type { ModelCatalogResult } from "../../api/types.ts";
+import type { ModelCatalogEntry, ModelCatalogResult } from "../../api/types.ts";
 import { loadModelCatalog } from "../../lib/model-catalog-store.ts";
+import { identityPreferences } from "./draft-worktree-preferences.test-support.ts";
 import { contextWith, renderControl } from "./model-control.test-support.ts";
 import { NewSessionModelControl } from "./model-control.ts";
+import { loadNewSessionPreference } from "./preferences.ts";
 
 const models = [{ id: "permitted", name: "Permitted model", provider: "fixture", available: true }];
 const restricted: ModelCatalogResult = {
@@ -203,6 +205,135 @@ describe("New Session policy presentation", () => {
       } finally {
         wire.resolve(restricted);
         control.reset();
+      }
+    },
+  );
+});
+
+describe("New Session stored model preference policy", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  it.each([
+    { storage: "browser", identified: false },
+    { storage: "identity", identified: true },
+  ])(
+    "preserves saved model preferences across a restricted policy mask ($storage)",
+    async ({ identified }) => {
+      const saved = {
+        model: "fixture/excluded",
+        agentRuntime: "openclaw",
+        thinkingLevel: "high",
+        fastMode: true,
+      };
+      const { model, ...savedControls } = saved;
+      const savedModel: ModelCatalogEntry = {
+        id: "excluded",
+        provider: "fixture",
+        name: "Saved model",
+        available: true,
+        agentRuntime: { id: "openclaw", source: "model" },
+        reasoning: true,
+        thinkingLevels: [{ id: "high", label: "High" }],
+        supportsFastMode: true,
+      };
+      let catalog: ModelCatalogResult = { models: [...models, savedModel] };
+      const prefs = identityPreferences(identified, async () => catalog);
+      const first = prefs.make();
+      const drafts = [first];
+      const client = first.context.gateway.snapshot.client!;
+      const control = first.place.modelControl;
+      const browserBytes = () => {
+        const entries: Record<string, string | null> = {};
+        for (let index = 0; index < localStorage.length; index += 1) {
+          const key = localStorage.key(index);
+          if (key !== null) {
+            entries[key] = localStorage.getItem(key);
+          }
+        }
+        return entries;
+      };
+      try {
+        // This owner promise includes identity hydration and its initial browser mirror.
+        await first.gateway.persistPreference("main", "/repo", saved);
+        await loadModelCatalog(client, scope);
+        control.reset();
+        first.place.adoptAgentDefaults();
+        expect(control).toMatchObject({ ...savedControls, selected: model });
+        const stored = structuredClone(prefs.stored());
+        expect(stored).toMatchObject(saved);
+        const browser = browserBytes();
+        const writes = vi.spyOn(first.gateway, "persistPreference");
+        first.request.mockClear();
+
+        catalog = restricted;
+        control.invalidate();
+        await loadModelCatalog(client, scope);
+        first.place.adoptAgentDefaults();
+        // Adopt uses the accepted cached receipt; join any real queued writer it started.
+        for (const result of writes.mock.results) {
+          await result.value;
+        }
+        expect(control).toMatchObject({
+          selected: "",
+          agentRuntime: undefined,
+          thinkingLevel: "",
+          fastMode: undefined,
+        });
+        expect(prefs.stored()).toEqual(stored);
+        expect(browserBytes()).toEqual(browser);
+        expect(first.request.mock.calls.filter(([method]) => method === "users.prefs.set")).toEqual(
+          [],
+        );
+        expect(writes).not.toHaveBeenCalled();
+
+        catalog = { ...restricted, models: [...models, savedModel] };
+        control.invalidate();
+        await loadModelCatalog(client, scope);
+        const next = prefs.make(first.context.gateway);
+        drafts.push(next);
+        expect(next.place.modelControl).toMatchObject({ ...savedControls, selected: model });
+        expect(prefs.stored()).toEqual(stored);
+
+        const repairs = vi.spyOn(next.gateway, "persistPreference");
+        first.request.mockClear();
+        catalog = { models };
+        next.place.modelControl.invalidate();
+        await loadModelCatalog(client, scope);
+        next.place.adoptAgentDefaults();
+        for (const result of repairs.mock.results) {
+          await result.value;
+        }
+        if (identified) {
+          expect(prefs.stored()).toMatchObject({
+            model: "",
+            agentRuntime: "",
+            thinkingLevel: "",
+            fastMode: undefined,
+          });
+        }
+        for (const field of ["model", "agentRuntime", "thinkingLevel", "fastMode"]) {
+          if (!identified) {
+            expect(prefs.stored()).not.toHaveProperty(field);
+          }
+          expect(loadNewSessionPreference("ws://gateway.example", "main")).not.toHaveProperty(
+            field,
+          );
+        }
+        expect(first.request.mock.calls.some(([method]) => method === "users.prefs.set")).toBe(
+          identified,
+        );
+        expect(repairs).toHaveBeenCalled();
+      } finally {
+        for (const draft of drafts) {
+          draft.place.modelControl.reset();
+          draft.gateway.disconnect();
+          draft.place.browser.disconnect();
+          draft.flow.disconnect();
+        }
       }
     },
   );

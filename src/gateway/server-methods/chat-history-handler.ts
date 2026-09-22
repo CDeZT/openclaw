@@ -8,6 +8,10 @@ import { CHAT_HISTORY_MAX_ENTRIES } from "../../../packages/gateway-protocol/src
 import { resolveAgentConfig } from "../../agents/agent-scope.js";
 import { findModelCatalogEntry } from "../../agents/model-catalog.js";
 import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
+import {
+  getSubagentSessionListReadSnapshotIdentity,
+  prepareOptionalSubagentSessionListReadCache,
+} from "../../agents/subagents/registry/subagent-registry-state.js";
 import { composeTranscriptDisplay } from "../../chat/transcript-display-position.js";
 import {
   listSessionPendingInputReceipts,
@@ -112,30 +116,22 @@ export async function handleChatHistoryRequest({
     inputRunIds,
   } = params;
   const requestedSessionId = retainedSessionId ?? wireSessionId;
+  let selectorError: string | undefined;
   if (offset !== undefined && messageId !== undefined) {
-    respond(
-      false,
-      undefined,
-      errorShape(ErrorCodes.INVALID_REQUEST, "offset and messageId cannot be used together"),
-    );
+    selectorError = "offset and messageId cannot be used together";
+  } else if (cursor !== undefined && (offset !== undefined || messageId !== undefined)) {
+    selectorError = "cursor cannot be used with offset or messageId";
+  } else if (wireSessionId !== undefined && messageId === undefined) {
+    selectorError = "sessionId requires messageId";
+  }
+  if (selectorError) {
+    respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, selectorError));
     return;
   }
-  if (cursor !== undefined && (offset !== undefined || messageId !== undefined)) {
-    respond(
-      false,
-      undefined,
-      errorShape(ErrorCodes.INVALID_REQUEST, "cursor cannot be used with offset or messageId"),
-    );
-    return;
+  if (!getSubagentSessionListReadSnapshotIdentity()) {
+    await prepareOptionalSubagentSessionListReadCache();
   }
-  if (wireSessionId !== undefined && messageId === undefined) {
-    respond(
-      false,
-      undefined,
-      errorShape(ErrorCodes.INVALID_REQUEST, "sessionId requires messageId"),
-    );
-    return;
-  }
+  signal?.throwIfAborted();
   const requestConfig = context.getRuntimeConfig();
   const agentIdOverride = normalizeOptionalText((params as { agentId?: string }).agentId);
   const requestedAgent = resolveRequestedSessionAgentId(requestConfig, sessionKey, agentIdOverride);
@@ -490,13 +486,12 @@ export async function handleChatHistoryRequest({
       if (sessionInfo) {
         Object.assign(sessionInfo, currentSharing);
       }
-      const activeRunAgentId = sessionAgentId;
       const activeRunState = resolveVisibleActiveSessionRunState({
         context,
         requestedKey: sessionKey,
         canonicalKey,
         sessionId,
-        ...(activeRunAgentId ? { agentId: activeRunAgentId } : {}),
+        ...(sessionAgentId ? { agentId: sessionAgentId } : {}),
         defaultAgentId: compatibilityOwnerAgentId,
         // History stays active until the terminal row is queryable or its write fails.
         includeTerminalPersistence: true,
@@ -598,7 +593,7 @@ export async function handleChatHistoryRequest({
           // falls back to the default agent for alias keys, misses the abort entry's
           // stored key, and drops the in-flight snapshot for non-default agents.
           canonicalSessionKey: canonicalKey,
-          agentId: activeRunAgentId,
+          agentId: sessionAgentId,
           defaultAgentId: compatibilityOwnerAgentId,
         }) ?? embeddedRecovery;
       if (cursor !== undefined) {

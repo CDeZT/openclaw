@@ -96,10 +96,13 @@ Other selection rules:
 
 On shared Gateways, an administrator can also configure a [named role's model
 policy](/gateway/operator-scopes#named-operator-roles). Model discovery and the
-Control UI and macOS chat pickers show only the models permitted by that policy.
+Control UI, macOS, and iOS chat pickers show only the models permitted by that policy.
 This also applies to New Session in the Control UI. The Default choice uses a permitted automatic default; it does not grant additional
 manual choices. Configuration changes discard old choices before refreshing the
 catalog. Saved conversations retain their historical model information.
+Filtering alone does not overwrite saved New Session model preferences. A saved
+choice can return when the policy permits it again; explicitly choosing another
+model still updates the preference.
 
 The Gateway prepares one model catalog for the CLI, `/models`, the Control UI,
 and native apps. Ordinary browsing and opening or reopening a model picker read

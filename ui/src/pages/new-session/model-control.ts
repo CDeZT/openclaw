@@ -532,6 +532,7 @@ export class NewSessionModelControl {
     if (!preference) {
       return;
     }
+    const policy = this.metadataState.modelSelectionPolicy;
     const selection = reconcileDraftModelSelection({
       model: preference.model ?? "",
       agentRuntime: preference.agentRuntime,
@@ -539,11 +540,12 @@ export class NewSessionModelControl {
       fastMode: preference.fastMode,
       agent: this.pendingAgent,
       defaults: this.pendingContext?.sessions.state.result?.defaults,
-      modelSelectionPolicy: this.metadataState.modelSelectionPolicy,
+      modelSelectionPolicy: policy,
       catalog: this.catalog,
     });
     this.applyModelSelection(selection);
-    if (selection.repaired && !this.initialModelPending) {
+    // Role filtering can hide a valid saved preference until access is restored.
+    if (selection.repaired && !this.initialModelPending && !policy?.restricted) {
       this.persistSelection(preference.agentRuntime ? (this.agentRuntime ?? "") : undefined);
     }
   }

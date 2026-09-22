@@ -116,6 +116,5 @@ it("routes each iOS simulator test through workflow-owned log capture and retain
   expect(upload?.with?.path?.trim().split("\n")).toEqual([
     "apps/ios/build/LifecycleTestResults/*.xcresult",
     "apps/ios/build/LifecycleTestResults/*.log",
-    "apps/ios/build/LifecycleTestResults/GuestModelPolicyPR154839/",
   ]);
 });

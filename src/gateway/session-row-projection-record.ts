@@ -3,6 +3,7 @@ import { resolveSessionParentSessionKey } from "../channels/plugins/session-conv
 import { projectGatewaySessionEntry } from "../config/sessions/combined-store-gateway.js";
 import type { SessionStoreTarget } from "../config/sessions/targets.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveProjectedAgentRunModel } from "../infra/agent-run-registry.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import {
@@ -14,7 +15,17 @@ import { readSessionListSelectionFacts } from "./session-list-target.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
 import * as rowProjection from "./session-utils-row.js";
+import type { WorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 
+export type ProjectionOptions = {
+  cfg: OpenClawConfig;
+  getConfig?: () => OpenClawConfig;
+  getPolicyConfig?: () => OpenClawConfig;
+  modelCatalog?: Inputs["modelCatalog"];
+  getModelCatalog?: () => Promise<Inputs["modelCatalog"]>;
+  context?: Parameters<typeof readSessionRowFacts>[0]["context"];
+  placementFactsReader?: Pick<WorkerSessionPlacementStore, "readProjection">;
+};
 export type Row = {
   key: string;
   agentId: string;
@@ -155,6 +166,18 @@ export function first(candidates: Row[], storePaths: Iterable<string>) {
     }
   }
   return undefined;
+}
+
+export function firstReferenced(
+  ref: string,
+  rows: ReadonlyMap<string, Row>,
+  byKey: ReadonlyMap<string, ReadonlySet<string>>,
+  storePaths: Iterable<string>,
+) {
+  return first(
+    [...(byKey.get(ref) ?? [])].flatMap((id) => rows.get(id) ?? []),
+    storePaths,
+  );
 }
 
 export function present(
