@@ -111,28 +111,16 @@ export async function handleChatHistoryRequest({
     inputRunIds,
   } = params;
   const requestedSessionId = retainedSessionId ?? wireSessionId;
+  let selectorError: string | undefined;
   if (offset !== undefined && messageId !== undefined) {
-    respond(
-      false,
-      undefined,
-      errorShape(ErrorCodes.INVALID_REQUEST, "offset and messageId cannot be used together"),
-    );
-    return;
+    selectorError = "offset and messageId cannot be used together";
+  } else if (cursor !== undefined && (offset !== undefined || messageId !== undefined)) {
+    selectorError = "cursor cannot be used with offset or messageId";
+  } else if (wireSessionId !== undefined && messageId === undefined) {
+    selectorError = "sessionId requires messageId";
   }
-  if (cursor !== undefined && (offset !== undefined || messageId !== undefined)) {
-    respond(
-      false,
-      undefined,
-      errorShape(ErrorCodes.INVALID_REQUEST, "cursor cannot be used with offset or messageId"),
-    );
-    return;
-  }
-  if (wireSessionId !== undefined && messageId === undefined) {
-    respond(
-      false,
-      undefined,
-      errorShape(ErrorCodes.INVALID_REQUEST, "sessionId requires messageId"),
-    );
+  if (selectorError) {
+    respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, selectorError));
     return;
   }
   const requestConfig = context.getRuntimeConfig();
