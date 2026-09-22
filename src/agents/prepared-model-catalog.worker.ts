@@ -470,7 +470,8 @@ async function runCatalogRequest(
       authStore,
       authModes: resolveUsableAgentCredentialModes(catalogCredentials),
     };
-    await work.drain();
+    work.beginClose();
+    await work.runWhenIdle(() => undefined);
     if (acquiredDiscovery) {
       const previous = prepared.discovery;
       prepared.discovery = acquiredDiscovery;
@@ -486,8 +487,9 @@ async function runCatalogRequest(
   } finally {
     try {
       // A catalog deadline can finish observing OAuth before its credential write settles.
-      // Join that admitted work before releasing its plugin generation and source context.
-      await work.drain();
+      // Join it before releasing plugins, but keep their cleanup admitted until the final drain.
+      work.beginClose();
+      await work.runWhenIdle(() => undefined);
       if (acquiredDiscovery && !completed) {
         if (prepared?.discovery === acquiredDiscovery) {
           prepared.discovery = undefined;
@@ -502,6 +504,7 @@ async function runCatalogRequest(
         }
       }
     } finally {
+      await work.drain();
       if (directoryOwner && registeredDirectoryOwner) {
         unregisterResolvedAgentDir(directoryOwner);
       }
