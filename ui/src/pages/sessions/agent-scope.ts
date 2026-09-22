@@ -2,7 +2,7 @@ import type { AgentIdentityResult, SessionsListResult } from "../../api/types.ts
 import type { AgentIdentityCapability } from "../../lib/agents/identity.ts";
 import { parseAgentSessionKey } from "../../lib/sessions/session-key.ts";
 
-export function sessionAgentIds(result: SessionsListResult | null): string[] {
+function sessionAgentIds(result: SessionsListResult | null): string[] {
   return [
     ...new Set(
       (result?.sessions ?? [])
