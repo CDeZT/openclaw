@@ -8,7 +8,7 @@ import {
 } from "./openclaw-state-db.js";
 import { getUserPreferences, setUserPreferences } from "./user-preferences.js";
 import {
-  listUserProfileGitHubLogins,
+  selectStoredGitHubIdentities,
   resolveCachedGitHubIdentity,
   resolveUserProfileGitHubAttribution,
 } from "./user-profile-github-identity.js";
@@ -166,10 +166,12 @@ describe("multi-account people", () => {
     expect(
       listUserProfilesSync(options).filter((profile) => profile.mergedInto === null),
     ).toHaveLength(1);
-    expect(listUserProfileGitHubLogins(options).get(person.id)?.toSorted()).toEqual([
-      "person",
-      "person-work",
-    ]);
+    expect(
+      selectStoredGitHubIdentities(openOpenClawStateDatabase(options).db, [person.id])
+        .get(person.id)
+        ?.accounts.map(({ login }) => login)
+        .toSorted(),
+    ).toEqual(["person", "person-work"]);
     const signInAlias = ensureProfileForTailscaleIdentity(
       { login: `${secondary.canonicalLogin}@github` },
       options,
@@ -222,10 +224,12 @@ describe("multi-account people", () => {
       githubIdentity: { login: "primary-person" },
     });
     expect(getProfileAvatar(older.id, options)?.bytes).toEqual(new Uint8Array([4, 5]));
-    expect(listUserProfileGitHubLogins(options).get(target.id)?.toSorted()).toEqual([
-      "older-work",
-      "primary-person",
-    ]);
+    expect(
+      selectStoredGitHubIdentities(openOpenClawStateDatabase(options).db, [target.id])
+        .get(target.id)
+        ?.accounts.map(({ login }) => login)
+        .toSorted(),
+    ).toEqual(["older-work", "primary-person"]);
     expect(getUserPreferences(target.id, [GIT_COAUTHOR_PREFERENCE_KEY], options)).toEqual({
       [GIT_COAUTHOR_PREFERENCE_KEY]: false,
     });

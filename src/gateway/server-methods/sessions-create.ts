@@ -217,7 +217,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, normalized.error));
         return;
       }
-      const eligible = context.mentionInbox?.validateRecipients(
+      const eligible = await context.mentionInbox?.validateRecipients(
         client,
         {
           agentId: explicitlyRequestedAgent.agentId,
@@ -225,6 +225,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
         },
         p.mentions.map((mention) => mention.profileId),
       );
+      commitGuard();
       if (!eligible?.ok) {
         respond(
           false,

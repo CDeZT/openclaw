@@ -33,6 +33,7 @@ import {
   listManagedImageRecordEntriesInDatabase,
   listManagedImageOriginalMediaIdsInDatabase,
 } from "../gateway/managed-image-record-store.kernel.js";
+import { mutateMentionInboxInWorker } from "../gateway/mention-inbox.worker.js";
 import {
   executeOperatorApprovalCommand,
   isOperatorApprovalCommand,
@@ -157,6 +158,13 @@ export function executeSharedStateCommand(
   // Dispatch preparation has loaded this module; do not open or observe token state.
   if (command.type === "deviceAuth.prepare") {
     return undefined;
+  }
+  if (command.type === "mentions.mutate") {
+    return mutateMentionInboxInWorker(command.input, {
+      database: open(),
+      path: context.databasePath,
+      env: getSqliteWorkerStateContext().environment,
+    });
   }
   if (command.type === "mcpOAuth.read") {
     return readMcpOAuthStoreInDatabase(open().db, command.input);
@@ -379,7 +387,6 @@ export function executeSharedStateCommand(
   }
   if (
     command.type === "userProfiles.list" ||
-    command.type === "userProfiles.directory" ||
     command.type === "userProfiles.email.ensure" ||
     command.type === "userProfiles.avatar.inspect" ||
     command.type === "userProfiles.avatar.adopt"

@@ -19,6 +19,8 @@ import { ExecutionDecisionCursorError } from "../audit/execution-decision-receip
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { observeCronRunRecoveryInDatabase } from "../cron/store/run-recovery.read.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
+import { readHumanMentionPolicyInDatabase } from "../gateway/human-mention-policy-read.kernel.js";
+import { readMentionStoreSnapshotInDatabase } from "../gateway/mention-inbox-store.js";
 import { listTerminalOperatorApprovalsInDatabase } from "../gateway/operator-approval-store.kernel.js";
 import { readWorkerSessionPlacementProjectionInDatabase } from "../gateway/worker-environments/placement-read-projection.js";
 import { readWorkerPlacementChangeSnapshotInDatabase } from "../gateway/worker-environments/placement-row-codec.js";
@@ -85,9 +87,16 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     isRecord(coordinatorRuntime) &&
     typeof coordinatorRuntime.directory === "string" &&
     typeof coordinatorRuntime.keepAlive === "boolean" &&
-    ((input.command.type === "mcpOAuth.statuses" &&
-      Array.isArray(input.command.input) &&
-      input.command.input.every((key) => typeof key === "string")) ||
+    ((input.command.type === "mentions.policy" &&
+      isRecord(input.command.input) &&
+      Array.isArray(input.command.input.profileIds) &&
+      input.command.input.profileIds.length <= 10000 &&
+      input.command.input.profileIds.every((id: unknown) => typeof id === "string") &&
+      typeof input.command.input.directory === "boolean") ||
+      (input.command.type === "mentions.snapshot" && typeof input.command.revision === "number") ||
+      (input.command.type === "mcpOAuth.statuses" &&
+        Array.isArray(input.command.input) &&
+        input.command.input.every((key) => typeof key === "string")) ||
       ((input.command.type === "mcpOAuth.readOnly" ||
         input.command.type === "mcpOAuth.keys" ||
         input.command.type === "mcpOAuth.pending" ||
@@ -405,6 +414,22 @@ serveOwnedWorkerTasks(
                     value: tableExists(db, "skill_library_entries")
                       ? selectSkillLibraryRevisionManifestsBatch(db, command.input)
                       : undefined,
+                  };
+                }
+                if (command.type === "mentions.policy") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    result: readHumanMentionPolicyInDatabase(db, command.input),
+                  };
+                }
+                if (command.type === "mentions.snapshot") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    snapshot: readMentionStoreSnapshotInDatabase(command.revision, db),
                   };
                 }
                 if (command.type === "operatorApprovals.history") {

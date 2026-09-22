@@ -430,7 +430,7 @@ describe("board and progress event session ownership", () => {
         } finally {
           await flushPendingSessionsChangedEvents(context);
           projection.dispose();
-          connection.mentionInbox.dispose();
+          await connection.mentionInbox.dispose();
         }
       });
     },
@@ -1037,7 +1037,7 @@ it("delivers committed collector updates to a parent-only cross-agent viewer", a
       unsubscribe();
       await Promise.allSettled(publications);
       rowProjection.dispose();
-      connection.mentionInbox.dispose();
+      await connection.mentionInbox.dispose();
       clearSubagentRunsReadCacheForTest();
       invalidateSessionSharingSnapshot();
     }

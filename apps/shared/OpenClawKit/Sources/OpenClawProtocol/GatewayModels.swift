@@ -8614,6 +8614,7 @@ public struct MentionInboxItem: Codable, Sendable {
     public let createdat: Int
     public let expiresat: Int
     public let excerpt: String?
+    public let excerptmention: [String: AnyCodable]?
 
     public init(
         id: String,
@@ -8626,7 +8627,8 @@ public struct MentionInboxItem: Codable, Sendable {
         messageid: String,
         createdat: Int,
         expiresat: Int,
-        excerpt: String? = nil)
+        excerpt: String? = nil,
+        excerptmention: [String: AnyCodable]? = nil)
     {
         self.id = id
         self.senderprofileid = senderprofileid
@@ -8639,6 +8641,7 @@ public struct MentionInboxItem: Codable, Sendable {
         self.createdat = createdat
         self.expiresat = expiresat
         self.excerpt = excerpt
+        self.excerptmention = excerptmention
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -8653,6 +8656,7 @@ public struct MentionInboxItem: Codable, Sendable {
         case createdat = "createdAt"
         case expiresat = "expiresAt"
         case excerpt
+        case excerptmention = "excerptMention"
     }
 }
 

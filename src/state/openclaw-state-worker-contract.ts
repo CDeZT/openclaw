@@ -22,6 +22,7 @@ import type {
   ManagedImageRecord,
   ManagedImageRecordEntry,
 } from "../gateway/managed-image-record-store.types.js";
+import type { MentionInboxWorkerOperations } from "../gateway/mention-inbox.worker-contract.js";
 import type { OperatorApprovalWorkerOperations } from "../gateway/operator-approval-store.worker-contract.js";
 import type { WorkerEnvironmentWorkerOperations } from "../gateway/worker-environments/store-worker-contract.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
@@ -85,7 +86,8 @@ import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 export type OpenClawStateWorkerOpenPreparation = { type: "deviceIdentity"; identityKey: string };
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
-export type OpenClawStateWorkerOperations = McpOAuthReadOperations &
+export type OpenClawStateWorkerOperations = MentionInboxWorkerOperations &
+  McpOAuthReadOperations &
   CurrentConversationBindingWorkerOperations &
   WebPushWorkerOperations &
   ApnsRegistrationWorkerOperations &

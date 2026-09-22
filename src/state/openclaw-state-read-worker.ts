@@ -86,6 +86,9 @@ function readPool(): ReadPool {
 }
 
 function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCommand {
+  if (command.type === "mentions.policy") {
+    return { ...command, input: { ...command.input, profileIds: [...command.input.profileIds] } };
+  }
   if (command.type === "mcpOAuth.statuses") {
     return { type: command.type, input: [...command.input] };
   }
@@ -178,6 +181,12 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
 
 function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   let bytes = Buffer.byteLength(command.type, "utf8");
+  if (command.type === "mentions.policy") {
+    return bytes + command.input.profileIds.reduce((sum, id) => sum + Buffer.byteLength(id), 1);
+  }
+  if (command.type === "mentions.snapshot") {
+    return bytes + 8;
+  }
   if (command.type === "mcpOAuth.statuses") {
     return command.input.reduce((total, key) => total + Buffer.byteLength(key, "utf8"), bytes);
   }
