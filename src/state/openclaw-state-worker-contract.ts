@@ -1,5 +1,6 @@
 import type { AuthProfileRowRead, UserModelAuthProfile } from "../agents/auth-profiles/types.js";
 import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
+import type { McpOAuthReadOperations } from "../agents/mcp-oauth-store.kernel.js";
 import type { SubagentRegistryWrite } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import type { ManagedWorktreeRecord } from "../agents/worktrees/types.js";
 import type { AuditEventListQuery, AuditEventListPage } from "../audit/audit-event-types.js";
@@ -22,9 +23,11 @@ import type {
   ManagedImageRecordEntry,
 } from "../gateway/managed-image-record-store.types.js";
 import type { OperatorApprovalWorkerOperations } from "../gateway/operator-approval-store.worker-contract.js";
+import type { WorkerEnvironmentWorkerOperations } from "../gateway/worker-environments/store-worker-contract.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
 import type * as deviceAuth from "../infra/device-auth-store.kernel.js";
+import type { DeviceIdentity } from "../infra/device-identity-store.js";
 import type { DevicePairingWorkerOperations } from "../infra/device-pairing-worker-contract.js";
 import type { ExecAuthorizationWorkerOperations } from "../infra/exec-approvals-contracts.js";
 import type { CurrentConversationBindingWorkerOperations } from "../infra/outbound/current-conversation-bindings.worker-contract.js";
@@ -37,6 +40,10 @@ import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
 import type { SqliteWorkerPreparedBackend } from "../infra/sqlite-worker-contract.js";
 import type { SqliteWorkerAdmissionFactory } from "../infra/sqlite-worker-operation-admission.js";
 import type { TelemetryWorkerOperations } from "../infra/telemetry-worker-contract.js";
+import type {
+  InterruptedUpdateSettlement,
+  InterruptedUpdateSettlementResult,
+} from "../infra/update-run-interruption-contract.js";
 import type { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
 import type { NodeWorkerJournalWorkerOperations } from "../node-host/node-worker-journal.worker-contract.js";
 import type { PluginBlobWorkerOperations } from "../plugin-state/plugin-blob-worker-contract.js";
@@ -75,8 +82,11 @@ import type {
 import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
 import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 
+export type OpenClawStateWorkerOpenPreparation = { type: "deviceIdentity"; identityKey: string };
+
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
-export type OpenClawStateWorkerOperations = CurrentConversationBindingWorkerOperations &
+export type OpenClawStateWorkerOperations = McpOAuthReadOperations &
+  CurrentConversationBindingWorkerOperations &
   WebPushWorkerOperations &
   ApnsRegistrationWorkerOperations &
   DevicePairingWorkerOperations &
@@ -93,12 +103,19 @@ export type OpenClawStateWorkerOperations = CurrentConversationBindingWorkerOper
   UserProfileWorkerOperations &
   CronStateWorkerOperations &
   FleetRegistryWriteOperations &
+  WorkerEnvironmentWorkerOperations &
   SessionDeliveryWorkerOperations &
   DeliveryQueueWorkerOperations &
   TranscriptReadOperations &
   TranscriptWriteOperations &
   NodeWorkerJournalWorkerOperations &
   TaskRegistryWorkerOperations & {
+    "deviceIdentity.read": { input: { identityKey: string }; output: DeviceIdentity | null };
+    "deviceIdentity.load": { input: { identityKey: string }; output: DeviceIdentity };
+    "updateRuns.reconcileInterrupted": {
+      input: InterruptedUpdateSettlement;
+      output: InterruptedUpdateSettlementResult;
+    };
     "githubRepository.personalPending": {
       input: RepositoryGitHubPublicationPendingQuery;
       output: RepositoryGitHubPublicationStatusRow | undefined;
@@ -120,6 +137,7 @@ export type OpenClawStateWorkerOperations = CurrentConversationBindingWorkerOper
       };
       output: OpenClawStateLeaseAcquisition;
     };
+    "deviceAuth.prepare": { input: undefined; output: void };
     "deviceAuth.list": { input: { deviceId: string }; output: DeviceAuthEntry[] };
     "deviceAuth.read": {
       input: Parameters<typeof deviceAuth.readDeviceAuthTokenObservationFromDatabase>[1] & {
@@ -275,6 +293,7 @@ export type OpenClawStateWorkerBackend = SqliteWorkerPreparedBackend<
 
 /** Host-only admission options; never serialized with a worker command. */
 export type OpenClawStateWorkerOperationOptions = {
+  preparation?: OpenClawStateWorkerOpenPreparation;
   /** Acquire matching lifecycle custody for each dispatched command. */
   requireStateLifecycle?: boolean;
   existingOnly?: boolean;

@@ -302,7 +302,8 @@ state temporary directory, `~/.openclaw/tmp` even when another state directory i
 selected, the current system temporary directory, `/tmp` on
 POSIX hosts, and recorded managed-service `TMPDIR` locations. It deduplicates
 directory aliases and reports each capture's path and regular-file size without
-following links inside captures.
+following links inside captures. Catalog roots include all nested
+`openclaw-plugin-build-*` trees in their reported size and removal receipt.
 
 `openclaw doctor --fix` reclaims these legacy roots only while Doctor holds Gateway
 maintenance and a complete host process census finds no other OpenClaw producer.
@@ -325,6 +326,9 @@ Configured Gateway agents share one model-catalog worker per plugin-inventory
 lifetime. Agent and authentication facts belong to each task; plugin registrations
 and captured source remain with the shared inventory. Standalone hosts that supply
 their own environment retain an isolated catalog worker for that environment.
+Provider-discovery entries use the exact selected runtime instance's captured
+source when it is already loaded, so discovery does not create a second copy of
+the same plugin package. Standalone discovery keeps its own setup lifetime.
 Each worker retains one prepared catalog generation. Replacement releases the
 previous generation's registrations after its work settles. Successfully disposed
 registrations leave their plugin caches; unchanged registrations remain reusable
@@ -673,6 +677,26 @@ The practical effect is that OpenClaw knows, up front, which plugin owns which s
 </Tabs>
 
 When in doubt, raise the abstraction level: define the capability first, then let plugins plug into it.
+
+## Skill previews
+
+The Control UI previews a declared plugin skill without installing or executing it.
+Opening a preview reads its file inventory and only the entry `SKILL.md` body.
+Selecting another file reads that body on demand; navigation never prefetches
+sibling contents. The file tree remains available while a selected file loads,
+and failed reads can be retried in place.
+
+Catalog reads stay pinned to the selected package version and validate the
+inventory’s paths, sizes, and SHA-256 hashes. Installed reads stay inside the
+resolved plugin root, reject unsafe links, and reject a changed plugin version.
+Both paths retain the file-count, tree-depth, per-file, and aggregate bundle
+limits. The aggregate limit applies to the inventory, not selection order.
+
+Loaded bodies and pending reads belong to one open preview and Gateway connection.
+Closing, reopening, navigating away, or reconnecting retires that cache. A late
+file response can populate its own cache entry but cannot change the selected
+file. New selected-file requests revalidate the inventory; only already loaded
+bodies are reused. Installed files edited in place become visible on reopening.
 
 ## Execution model
 

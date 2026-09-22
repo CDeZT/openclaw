@@ -425,29 +425,40 @@ describe("security-sensitive guard entry point", () => {
     expect(result.statuses).toEqual(["failure"]);
   });
 
-  it("refuses success if the PR changes after approval is read", () => {
-    const pr = {
-      number: 7,
-      state: "open",
-      draft: false,
-      created_at: "2026-01-01T00:00:00Z",
-      user: author,
-      changed_files: 1,
-      head: { sha: headSha, ref: "change", repo: { id: 2 } },
-      base: { sha: "b".repeat(40), ref: "main", repo: { id: 1 } },
-    };
-    const result = runGuard({
-      comments: [notice, approval],
-      routes: {
-        [`GET ${pullPath}`]: {
-          responses: [pr, pr, { ...pr, head: { ...pr.head, sha: "c".repeat(40) } }],
+  it.each(["security-sensitive-guard", "dependency-guard"] as const)(
+    "%s skips a superseded head after approval is read",
+    (script) => {
+      const pr = {
+        number: 7,
+        state: "open",
+        draft: false,
+        created_at: "2026-01-01T00:00:00Z",
+        user: author,
+        changed_files: 1,
+        head: { sha: headSha, ref: "change", repo: { id: 2 } },
+        base: { sha: "b".repeat(40), ref: "main", repo: { id: 1 } },
+      };
+      const result = runGuard({
+        script,
+        files: [
+          {
+            filename: script === "dependency-guard" ? "pnpm-workspace.yaml" : "src/gateway/auth.ts",
+          },
+        ],
+        authorRole: "maintain",
+        comments: [notice, approval],
+        routes: {
+          [`GET ${pullPath}`]: {
+            responses: [pr, pr, { ...pr, head: { ...pr.head, sha: "c".repeat(40) } }],
+          },
         },
-      },
-    });
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("pull request changed");
-    expect(result.statuses).toEqual(["failure"]);
-  });
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("Superseded");
+      expect(result.statuses).toEqual(["failure"]);
+      expect(result.comment).toBeUndefined();
+    },
+  );
 
   it("leaves hard-tier approval to CODEOWNERS and ignores ordinary changes", () => {
     const result = runGuard({
