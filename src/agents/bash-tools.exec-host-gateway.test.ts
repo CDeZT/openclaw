@@ -2533,24 +2533,29 @@ Command: ${command}`;
   });
 
   it.each([
-    ["openclaw config get security.audit.suppressions", false],
-    ["openclaw --profile rescue config get security.audit.suppressions", false],
+    ["openclaw config get security.audit.suppressions", false, process.platform],
+    ["openclaw --profile rescue config get security.audit.suppressions", false, process.platform],
+    ["openclaw config get security.audit.suppressions", false, "win32"],
+    ["pnpm openclaw --profile rescue config schema security.audit.suppressions", false, "win32"],
+    ["openclaw config set security.audit.suppressions []", true, "win32"],
+    ["openclaw config get security.audit.suppressions > openclaw.json", true, "win32"],
+    ["openclaw config get security.audit.suppressions; whoami", true, "win32"],
     ...(process.platform === "win32"
       ? []
       : ([
-          ["grep security.audit.suppressions src | head -n 10", false],
-          ["grep security.audit.suppressions src | tee openclaw.json", true],
-          ["grep security.audit.suppressions src > openclaw.json", true],
+          ["grep security.audit.suppressions src | head -n 10", false, process.platform],
+          ["grep security.audit.suppressions src | tee openclaw.json", true, process.platform],
+          ["grep security.audit.suppressions src > openclaw.json", true, process.platform],
         ] as const)),
   ] as const)(
-    "handles suppression inspection through Gateway policy: %s",
-    async (command, blocked) => {
+    "handles suppression inspection through Gateway policy: %s (blocked=%s, platform=%s)",
+    async (command, blocked, platform) => {
       evaluateShellAllowlistWithAuthorizationMock.mockReturnValue(
         await evaluateRealShellAllowlist({
           command,
           allowlist: [],
           safeBins: new Set(),
-          platform: "linux",
+          platform,
         }),
       );
       resolveExecHostApprovalContextMock.mockReturnValue({

@@ -142,7 +142,7 @@ export function requiresSystemRunSuppressionApproval(params: {
     command: params.commandPreview ?? params.commandText,
     env: params.env,
     trustedSafeBinDirs: params.trustedSafeBinDirs,
-    segments: [{ argv: params.argv }, ...params.analysis.segments],
+    originalArgv: params.argv,
     transportExecutable:
       params.commandPreview === null
         ? undefined

@@ -87,8 +87,7 @@ export async function buildExecAutoReviewInputForShellCommand(params: {
     commandRequiresSecurityAuditSuppressionApproval({
       command,
       cwd: params.cwd ?? undefined,
-      segments: allowlistEval.segments,
-      authorizationPlan: allowlistEval.authorizationPlan,
+      ...allowlistEval,
     })
   ) {
     return undefined;

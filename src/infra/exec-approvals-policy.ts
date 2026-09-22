@@ -12,6 +12,7 @@ import type { ExecAuthorizationPlan } from "./exec-authorization-plan.js";
 import { parseExecArgvToken, type ExecutableResolution } from "./exec-command-resolution.js";
 import { getTrustedSafeBinDirs, isTrustedSafeBinPath } from "./exec-safe-bin-trust.js";
 import { resolveEnvironmentValue } from "./process-env.js";
+import { tokenizeWindowsSegment } from "./windows-shell-command.js";
 
 export function requiresExecApproval(params: {
   ask: ExecAsk;
@@ -169,6 +170,8 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   segments: Array<{ argv: string[]; raw?: string }>;
+  originalArgv?: string[];
+  analysisOk?: boolean;
   authorizationPlan?: ExecAuthorizationPlan;
   trustedSafeBinDirs?: ReadonlySet<string>;
   transportExecutable?: ExecutableResolution;
@@ -177,21 +180,34 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
 }): boolean {
   if (
     !textMentionsSecurityAuditSuppressions(params.command) &&
+    !textMentionsSecurityAuditSuppressions(params.originalArgv?.join(" ") ?? "") &&
     !params.segments.some((segment) =>
       textMentionsSecurityAuditSuppressions(segment.argv.join(" ")),
     )
   ) {
     return false;
   }
-  const plan = params.authorizationPlan;
-  if (!plan?.ok || plan.originalCommand !== params.command || plan.groups.length === 0) {
-    return true;
-  }
   if (
     params.transportExecutable &&
     !params.deferReaderTrustToNode &&
     !isTrustedInspectionExecutable(params.transportExecutable, params.trustedSafeBinDirs)
   ) {
+    return true;
+  }
+  const plan = params.authorizationPlan;
+  if (plan === undefined) {
+    // Windows supplies complete shell analysis, not a POSIX authorization plan.
+    // Preserve direct config reads only: a stripped PowerShell wrapper may have
+    // -File or other flags that execute something other than the parsed payload.
+    const [segment] = params.segments;
+    return !(
+      params.analysisOk === true &&
+      params.segments.length === 1 &&
+      segment?.raw === params.command &&
+      isReadOnlySecurityAuditSuppressionInspection(tokenizeWindowsSegment(params.command) ?? [])
+    );
+  }
+  if (!plan.ok || plan.originalCommand !== params.command || plan.groups.length === 0) {
     return true;
   }
   // A parsed prefix or a reader feeding a writer cannot exempt the whole command.

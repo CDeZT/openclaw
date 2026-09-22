@@ -2,13 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import { evaluateShellAllowlistWithAuthorization } from "./exec-approvals-allowlist.js";
 import { commandRequiresSecurityAuditSuppressionApproval } from "./exec-approvals-policy.js";
 
-async function inspect(command: string, env: NodeJS.ProcessEnv = { RIPGREP_CONFIG_PATH: "" }) {
+async function inspect(
+  command: string,
+  env: NodeJS.ProcessEnv = { RIPGREP_CONFIG_PATH: "" },
+  platform: NodeJS.Platform = "linux",
+) {
   const analysis = await evaluateShellAllowlistWithAuthorization({
     command,
     env,
     allowlist: [],
     safeBins: new Set(),
-    platform: "linux",
+    platform,
   });
   return { command, env, ...analysis };
 }
@@ -46,6 +50,40 @@ describe("suppression inspection preflight", () => {
         deferReaderTrustToNode: true,
       }),
     ).toBe(expected);
+  });
+
+  it.each([
+    ["openclaw config validate security.audit.suppressions", false],
+    ["openclaw config unset security.audit.suppressions", true],
+    ["rg security.audit.suppressions src", true],
+    ["openclaw config get $(security.audit.suppressions)", true],
+    [
+      'powershell -File writer.ps1 -Command "openclaw config get security.audit.suppressions"',
+      true,
+    ],
+  ] as const)("preserves Windows config-read analysis: %s", async (command, expected) => {
+    const input = await inspect(command, {}, "win32");
+    expect(input.authorizationPlan).toBeUndefined();
+    expect(commandRequiresSecurityAuditSuppressionApproval(input)).toBe(expected);
+  });
+
+  it("does not use incomplete or stale analysis as the config-read exception", async () => {
+    const input = await inspect("openclaw config get security.audit.suppressions", {}, "win32");
+    for (const incomplete of [
+      { ...input, analysisOk: false },
+      { ...input, segments: [] },
+      { ...input, command: input.command + "; whoami" },
+      {
+        ...input,
+        transportExecutable: {
+          kind: "executable" as const,
+          rawExecutable: "./powershell",
+          executableName: "powershell",
+        },
+      },
+    ]) {
+      expect(commandRequiresSecurityAuditSuppressionApproval(incomplete)).toBe(true);
+    }
   });
 
   it.each(["linux", "win32"] as const)(
