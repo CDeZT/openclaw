@@ -454,7 +454,7 @@ internal fun ChatMessageAttachmentGroup(
           Box(Modifier.widthIn(max = if (compact && part.type == "image") 136.dp else 360.dp)) {
             when {
               part.type == "image" && !part.base64.isNullOrBlank() -> {
-                ChatBase64Image(part.base64, part.mimeType, compact)
+                ChatBase64Image(part.base64, part.mimeType, compact = compact)
               }
 
               part.type == "image" && !part.artifactId.isNullOrBlank() -> {
