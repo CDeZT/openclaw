@@ -71,6 +71,8 @@ export type SessionEntryReadSource = Readonly<{ agentId: string; path: string }>
 export type SessionEntryListScope = Partial<Omit<SessionEntryReadScope, "sessionKey">> & {
   /** Select exact persisted keys after validating the complete listing snapshot. */
   sessionKeys?: readonly string[];
+  /** Validate the complete listing, then hydrate only expired cron rows for this logical owner. */
+  expiredCronRuns?: { agentId: string; updatedBefore: number };
 };
 
 export type ResolvedSessionEntryAccessTarget = {

@@ -124,6 +124,14 @@ Synchronous operator inspection uses the same selected-row reader. An unavailabl
 schema refuses the read rather than reporting missing backing sessions. Canonical
 admission, malformed-row handling, retention, and update behavior are unchanged.
 
+Cron retention discovery also uses the session reader worker. It validates the
+complete physical store's metadata, selects expired cron runs for the logical
+agent, and hydrates only those full entries within the same read snapshot. The
+host retains pending-media, descendant-settlement, and busy-session checks; the
+lifecycle mutation still compares each complete expected entry and rechecks its
+commit guard. Shared-store ownership, retention, schemas, and update behavior
+are unchanged.
+
 For writes, shared-state domain operations registered by
 `src/state/openclaw-state-worker-runtime.ts` reuse the broker and publish results
 through their original store/projection owner.

@@ -4,6 +4,10 @@ import {
   executeSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
+import { withSqlitePostCommitPublications } from "../../infra/sqlite-post-commit.js";
+import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import { isCronRunSessionKey } from "../../sessions/session-key-utils.js";
 import {
   createOpenClawAgentDatabaseClaim,
   type OpenClawAgentDatabaseClaim,
@@ -48,6 +52,7 @@ import {
   applySessionEntryPatchInDatabase,
   replaceSessionEntryInDatabase,
 } from "./session-accessor.sqlite-entry-mutation.js";
+import { prepareExactSessionEntryRowReads } from "./session-accessor.sqlite-entry-read.js";
 import {
   parseReadableSqliteSessionEntryRows,
   readExactSessionEntryRowValidated,
@@ -291,6 +296,37 @@ function listSqliteSessionEntriesFromDatabase(
   resolved: ResolvedSqliteScope,
   scope: SessionEntryListScope,
 ): SessionEntrySummary[] {
+  if (scope.expiredCronRuns) {
+    const { agentId, updatedBefore } = scope.expiredCronRuns;
+    const requestedOwner = normalizeAgentId(agentId);
+    return withSqlitePostCommitPublications(database.db, () =>
+      runSqliteDeferredTransactionSync(database.db, () => {
+        const candidates = listSqliteSessionEntriesFromDatabase(database, resolved, {
+          ...scope,
+          expiredCronRuns: undefined,
+          projection: "list",
+          clone: false,
+        }).filter(
+          ({ sessionKey, entry }) =>
+            isCronRunSessionKey(sessionKey) &&
+            normalizeAgentId(parseAgentSessionKey(sessionKey)!.agentId) === requestedOwner &&
+            !((entry.updatedAt ?? 0) >= updatedBefore),
+        );
+        if (candidates.length === 0) {
+          return [];
+        }
+        // Lifecycle deletion compares the complete entry, including retained prompt snapshots.
+        const read = prepareExactSessionEntryRowReads(
+          database,
+          candidates.map(({ sessionKey }) => sessionKey),
+        );
+        return candidates.flatMap(({ sessionKey }) => {
+          const selected = read(sessionKey);
+          return selected ? [{ sessionKey, entry: selected.entry }] : [];
+        });
+      }),
+    );
+  }
   const projection = scope.projection ?? "full";
   const cache = !isIncognitoOpenClawAgentSqlitePath(database.path, {
     agentId: database.agentId,
