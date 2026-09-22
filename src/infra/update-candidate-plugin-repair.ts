@@ -228,7 +228,7 @@ export async function completeUpdateCandidatePluginRehearsal(params: {
   const plan = await prepareUpdateCandidatePluginTrees({
     roots: new Map(
       originals
-        .flatMap((graph) => [...graph.packageRoots, ...graph.files])
+        .flatMap((graph) => graph.packageRoots.concat(graph.files))
         .map((source) => [source, project(source)]),
     ),
     project,
